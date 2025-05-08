@@ -5,11 +5,11 @@ plugins {
 }
 
 android {
-    namespace = "com.ash.simplede"
+    namespace = "com.ash.simpledataentry"
     compileSdk = 35
 
     defaultConfig {
-        applicationId = "com.ash.simplede"
+        applicationId = "com.ash.simpledataentry"
         minSdk = 24
         targetSdk = 35
         versionCode = 1
