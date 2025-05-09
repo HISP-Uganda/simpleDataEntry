@@ -123,11 +123,7 @@ fun DatasetInstancesScreen(
                                 ),
                                 additionalInfoColumnState = rememberAdditionalInfoColumnState(
                                     additionalInfoList = listOf(
-                                        AdditionalInfoItem(
-                                            key = "Organization Unit",
-                                            value = instance.organisationUnit.name,
-                                            isConstantItem = true
-                                        ),
+
                                         AdditionalInfoItem(
                                             key = "Last Updated",
                                             value = instance.lastUpdated?.toString() ?: "N/A",

@@ -17,6 +17,7 @@ import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.Snackbar
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
@@ -32,11 +33,9 @@ import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.unit.dp
 import androidx.hilt.navigation.compose.hiltViewModel
-import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.navigation.NavController
 import com.ash.simpledataentry.navigation.Screen.DatasetsScreen
 import androidx.compose.ui.platform.LocalContext
-import kotlinx.coroutines.delay
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -48,9 +47,8 @@ fun LoginScreen(
 
     LaunchedEffect(state.isLoggedIn) {
         if (state.isLoggedIn) {
-
             navController.navigate("datasets") {
-                popUpTo("Login") { inclusive = true }
+                popUpTo("login") { inclusive = true }
             }
         }
     }
@@ -87,77 +85,76 @@ fun LoginScreen(
 
         val context = LocalContext.current
 
-        Column(
-            modifier = Modifier
-                .fillMaxSize()
-                .padding(16.dp),
-            horizontalAlignment = Alignment.CenterHorizontally,
-            verticalArrangement = Arrangement.Center
-        ) {
-            // Display loading or error states
-            if (state.isLoading) {
-                CircularProgressIndicator()
-                Spacer(modifier = Modifier.height(16.dp))
-            }
-
-            state.error?.let { error ->
-                Text(
-                    text = error,
-                    color = MaterialTheme.colorScheme.error,
-                    modifier = Modifier.padding(bottom = 16.dp)
-                )
-            }
-
-            OutlinedTextField(
-                value = serverUrl,
-                onValueChange = { serverUrl = it },
-                label = { Text("Server URL") },
+        Box(modifier = Modifier.fillMaxSize()) {
+            Column(
                 modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(bottom = 8.dp),
-                enabled = !state.isLoading,
-                keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Uri)
-            )
-
-            Spacer(modifier = Modifier.height(8.dp))
-
-            OutlinedTextField(
-                value = username,
-                onValueChange = { username = it },
-                label = { Text("Username") },
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(bottom = 8.dp),
-                enabled = !state.isLoading
-            )
-
-            Spacer(modifier = Modifier.height(8.dp))
-
-            OutlinedTextField(
-                value = password,
-                onValueChange = { password = it },
-                label = { Text("Password") },
-                visualTransformation = PasswordVisualTransformation(),
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(bottom = 16.dp),
-                enabled = !state.isLoading,
-                keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password)
-            )
-
-            Spacer(modifier = Modifier.height(16.dp))
-
-            Button(
-                onClick = {
-                    viewModel.login(serverUrl, username, password, context)
-                },
-                enabled = !state.isLoading &&
-                        serverUrl.isNotBlank() &&
-                        username.isNotBlank() &&
-                        password.isNotBlank(),
-                modifier = Modifier.fillMaxWidth()
+                    .fillMaxSize()
+                    .padding(16.dp),
+                horizontalAlignment = Alignment.CenterHorizontally,
+                verticalArrangement = Arrangement.Center
             ) {
-                Text("Login")
+                OutlinedTextField(
+                    value = serverUrl,
+                    onValueChange = { serverUrl = it },
+                    label = { Text("Server URL") },
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(bottom = 8.dp),
+                    enabled = !state.isLoading,
+                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Uri)
+                )
+
+                Spacer(modifier = Modifier.height(8.dp))
+
+                OutlinedTextField(
+                    value = username,
+                    onValueChange = { username = it },
+                    label = { Text("Username") },
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(bottom = 8.dp),
+                    enabled = !state.isLoading
+                )
+
+                Spacer(modifier = Modifier.height(8.dp))
+
+                OutlinedTextField(
+                    value = password,
+                    onValueChange = { password = it },
+                    label = { Text("Password") },
+                    visualTransformation = PasswordVisualTransformation(),
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(bottom = 16.dp),
+                    enabled = !state.isLoading,
+                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password)
+                )
+
+                Spacer(modifier = Modifier.height(16.dp))
+
+                Button(
+                    onClick = {
+                        viewModel.login(serverUrl, username, password, context)
+                    },
+                    enabled = !state.isLoading &&
+                            serverUrl.isNotBlank() &&
+                            username.isNotBlank() &&
+                            password.isNotBlank(),
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Text("Login")
+                }
+            }
+
+            // Show error message as a Snackbar
+            state.error?.let { error ->
+                Snackbar(
+                    modifier = Modifier
+                        .align(Alignment.BottomCenter)
+                        .padding(16.dp)
+                ) {
+                    Text(error)
+                }
             }
         }
     }

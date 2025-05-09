@@ -28,8 +28,14 @@ class LoginViewModel @Inject constructor(
 
     fun login(serverUrl: String, username: String, password: String, context: Context) {
         viewModelScope.launch {
-            _state.value = _state.value.copy(isLoading = true, error = null)
             try {
+                // Show splash screen immediately
+                _state.value = _state.value.copy(
+                    isLoading = true,
+                    error = null,
+                    showSplash = true
+                )
+
                 val loginResult = loginUseCase(serverUrl, username, password, context)
                 if (loginResult) {
                     _state.value = _state.value.copy(
@@ -40,13 +46,15 @@ class LoginViewModel @Inject constructor(
                 } else {
                     _state.value = _state.value.copy(
                         isLoading = false,
-                        error = "Login failed: Invalid credentials or server error"
+                        error = "Login failed: Invalid credentials or server error",
+                        showSplash = false
                     )
                 }
             } catch (e: Exception) {
                 _state.value = _state.value.copy(
                     isLoading = false,
-                    error = "Login failed: ${e.message ?: "Unknown error"}"
+                    error = "Login failed: ${e.message ?: "Unknown error"}",
+                    showSplash = false
                 )
             }
         }

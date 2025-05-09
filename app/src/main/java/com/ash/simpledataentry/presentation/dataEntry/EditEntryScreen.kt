@@ -44,101 +44,106 @@ fun EditEntryScreen(
     var isLoading by remember { mutableStateOf(true) }
 
     LaunchedEffect(Unit) {
-        delay(500) // Short delay to ensure smooth transition
+         // Short delay to ensure smooth transition
         isLoading = false
     }
 
-    Box(modifier = Modifier.fillMaxSize()) {
-        if (isLoading || state.isLoading) {
-            Box(
-                modifier = Modifier
-                    .fillMaxSize()
-                    .background(MaterialTheme.colorScheme.surface),
-                contentAlignment = Alignment.Center
-            ) {
-                Column(
-                    horizontalAlignment = Alignment.CenterHorizontally,
-                    verticalArrangement = Arrangement.Center
+    BaseScreen(
+        title = "${state.datasetName} - ${state.period} - ${state.attributeOptionComboName}",
+        navController = navController
+    ) {
+        Box(modifier = Modifier.fillMaxSize()) {
+            if (isLoading || state.isLoading) {
+                Box(
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .background(MaterialTheme.colorScheme.surface),
+                    contentAlignment = Alignment.Center
                 ) {
-                    CircularProgressIndicator(
-                        modifier = Modifier.size(48.dp),
-                        strokeWidth = 4.dp,
-                        color = MaterialTheme.colorScheme.primary
-                    )
-                    Spacer(modifier = Modifier.height(16.dp))
-                    Text(
-                        text = "Loading form...",
-                        style = MaterialTheme.typography.bodyLarge,
-                        color = MaterialTheme.colorScheme.onSurface
-                    )
-                }
-            }
-        } else {
-            Column(
-                modifier = Modifier
-                    .fillMaxSize()
-                    .background(MaterialTheme.colorScheme.background)
-            ) {
-                if (state.dataValues.isEmpty()) {
-                    Text(
-                        text = "No data elements found for this dataset/period/org unit.",
-                        color = MaterialTheme.colorScheme.error,
-                        modifier = Modifier.align(Alignment.CenterHorizontally)
-                    )
-                } else {
-                    // Group data values by their sections and category combinations
-                    val groupedValues = state.dataValues.groupBy { it.sectionName }
-                    val categoryComboStructures = state.categoryComboStructures
-
-                    LazyColumn(
-                        verticalArrangement = Arrangement.spacedBy(8.dp)
+                    Column(
+                        horizontalAlignment = Alignment.CenterHorizontally,
+                        verticalArrangement = Arrangement.Center
                     ) {
-                        items(groupedValues.toList()) { (sectionName, values) ->
-                            // For each section, get the first data value's categoryComboUid
-                            val firstDataValue = values.firstOrNull()
-                            val comboUid = firstDataValue?.categoryOptionCombo
-                            val structure = comboUid?.let { categoryComboStructures[it] }
-                            
-                            SectionContent(
-                                sectionName = sectionName,
-                                isExpanded = sectionName in state.expandedSections,
-                                onToggleSection = { viewModel.toggleSection(sectionName) },
-                                structure = structure,
-                                values = values,
-                                expandedCategoryGroups = state.expandedCategoryGroups,
-                                onToggleCategoryGroup = { categoryGroup ->
-                                    viewModel.toggleCategoryGroup(sectionName, categoryGroup)
-                                },
-                                onValueChange = { value, dataValue ->
-                                    viewModel.updateCurrentValue(value)
-                                    viewModel.saveCurrentValue()
-                                },
-                                optionUidsToComboUid = state.optionUidsToComboUid[comboUid] ?: emptyMap()
-                            )
-                        }
+                        CircularProgressIndicator(
+                            modifier = Modifier.size(48.dp),
+                            strokeWidth = 4.dp,
+                            color = MaterialTheme.colorScheme.primary
+                        )
+                        Spacer(modifier = Modifier.height(16.dp))
+                        Text(
+                            text = "Loading form...",
+                            style = MaterialTheme.typography.bodyLarge,
+                            color = MaterialTheme.colorScheme.onSurface
+                        )
                     }
                 }
+            } else {
+                Column(
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .background(MaterialTheme.colorScheme.background)
+                ) {
+                    if (state.dataValues.isEmpty()) {
+                        Text(
+                            text = "No data elements found for this dataset/period/org unit.",
+                            color = MaterialTheme.colorScheme.error,
+                            modifier = Modifier.align(Alignment.CenterHorizontally)
+                        )
+                    } else {
+                        // Group data values by their sections and category combinations
+                        val groupedValues = state.dataValues.groupBy { it.sectionName }
+                        val categoryComboStructures = state.categoryComboStructures
 
-                // Error message
-                state.error?.let { error ->
-                    Text(
-                        text = error,
-                        color = MaterialTheme.colorScheme.error,
-                        modifier = Modifier.padding(top = 8.dp)
-                    )
-                }
+                        LazyColumn(
+                            verticalArrangement = Arrangement.spacedBy(8.dp)
+                        ) {
+                            items(groupedValues.toList()) { (sectionName, values) ->
+                                // For each section, get the first data value's categoryComboUid
+                                val firstDataValue = values.firstOrNull()
+                                val comboUid = firstDataValue?.categoryOptionCombo
+                                val structure = comboUid?.let { categoryComboStructures[it] }
+                                
+                                SectionContent(
+                                    sectionName = sectionName,
+                                    isExpanded = sectionName in state.expandedSections,
+                                    onToggleSection = { viewModel.toggleSection(sectionName) },
+                                    structure = structure,
+                                    values = values,
+                                    expandedCategoryGroups = state.expandedCategoryGroups,
+                                    onToggleCategoryGroup = { categoryGroup ->
+                                        viewModel.toggleCategoryGroup(sectionName, categoryGroup)
+                                    },
+                                    onValueChange = { value, dataValue ->
+                                        viewModel.updateCurrentValue(value)
+                                        viewModel.saveCurrentValue()
+                                    },
+                                    optionUidsToComboUid = state.optionUidsToComboUid[comboUid] ?: emptyMap()
+                                )
+                            }
+                        }
+                    }
 
-                // Validation message
-                state.validationMessage?.let { message ->
-                    Text(
-                        text = message,
-                        color = when (state.validationState) {
-                            ValidationState.ERROR -> MaterialTheme.colorScheme.error
-                            ValidationState.WARNING -> MaterialTheme.colorScheme.error.copy(alpha = 0.6f)
-                            ValidationState.VALID -> MaterialTheme.colorScheme.primary
-                        },
-                        modifier = Modifier.padding(top = 8.dp)
-                    )
+                    // Error message
+                    state.error?.let { error ->
+                        Text(
+                            text = error,
+                            color = MaterialTheme.colorScheme.error,
+                            modifier = Modifier.padding(top = 8.dp)
+                        )
+                    }
+
+                    // Validation message
+                    state.validationMessage?.let { message ->
+                        Text(
+                            text = message,
+                            color = when (state.validationState) {
+                                ValidationState.ERROR -> MaterialTheme.colorScheme.error
+                                ValidationState.WARNING -> MaterialTheme.colorScheme.error.copy(alpha = 0.6f)
+                                ValidationState.VALID -> MaterialTheme.colorScheme.primary
+                            },
+                            modifier = Modifier.padding(top = 8.dp)
+                        )
+                    }
                 }
             }
         }
