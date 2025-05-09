@@ -11,36 +11,48 @@ import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
 import javax.inject.Inject
 
-
-
-sealed class LoginState {
-    object Idle : LoginState()
-    object Loading : LoginState()
-    object Success : LoginState()
-    data class Error(val message: String) : LoginState()
-}
+data class LoginState(
+    val isLoading: Boolean = false,
+    val isLoggedIn: Boolean = false,
+    val error: String? = null,
+    val showSplash: Boolean = false
+)
 
 @HiltViewModel
 class LoginViewModel @Inject constructor(
     private val loginUseCase: LoginUseCase,
 ) : ViewModel() {
 
-    private val _loginState = MutableStateFlow<LoginState>(LoginState.Idle)
-    val loginState: StateFlow<LoginState> = _loginState.asStateFlow()
+    private val _state = MutableStateFlow(LoginState())
+    val state: StateFlow<LoginState> = _state.asStateFlow()
 
     fun login(serverUrl: String, username: String, password: String, context: Context) {
         viewModelScope.launch {
-            _loginState.value = LoginState.Loading
+            _state.value = _state.value.copy(isLoading = true, error = null)
             try {
                 val loginResult = loginUseCase(serverUrl, username, password, context)
                 if (loginResult) {
-                    _loginState.value = LoginState.Success
+                    _state.value = _state.value.copy(
+                        isLoading = false,
+                        isLoggedIn = true,
+                        showSplash = true
+                    )
                 } else {
-                    _loginState.value = LoginState.Error("Login failed: Invalid credentials or server error")
+                    _state.value = _state.value.copy(
+                        isLoading = false,
+                        error = "Login failed: Invalid credentials or server error"
+                    )
                 }
             } catch (e: Exception) {
-                _loginState.value = LoginState.Error("Login failed: ${e.message ?: "Unknown error"}")
+                _state.value = _state.value.copy(
+                    isLoading = false,
+                    error = "Login failed: ${e.message ?: "Unknown error"}"
+                )
             }
         }
+    }
+
+    fun hideSplash() {
+        _state.value = _state.value.copy(showSplash = false)
     }
 }

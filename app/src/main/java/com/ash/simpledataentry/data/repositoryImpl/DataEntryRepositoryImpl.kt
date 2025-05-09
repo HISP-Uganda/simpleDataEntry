@@ -133,7 +133,11 @@ class DataEntryRepositoryImpl @Inject constructor(
                         .blockingGet()
 
                     if (dataElement != null) {
-                        val dataElementName = dataElement.shortName() ?: dataElement.uid()
+                        // Get form name from data set element, fall back to display name, then short name, then uid
+                        val dataElementName = dataElement.shortName()
+                            ?: dataElement.displayName()
+                            ?: dataElement.uid()
+
                         val categoryComboUid = dataElement.categoryComboUid()
 
                         if (categoryComboUid != null) {
@@ -151,7 +155,7 @@ class DataEntryRepositoryImpl @Inject constructor(
                                 allDataValues.add(
                                     DataValue(
                                         dataElement = dataElement.uid(),
-                                        dataElementName = dataElementName,
+                                        dataElementName = dataElementName.toString(),
                                         sectionName = sectionName,
                                         categoryOptionCombo = coc.uid(),
                                         categoryOptionComboName = coc.displayName() ?: coc.uid(),
@@ -175,7 +179,7 @@ class DataEntryRepositoryImpl @Inject constructor(
                             allDataValues.add(
                                 DataValue(
                                     dataElement = dataElement.uid(),
-                                    dataElementName = dataElementName,
+                                    dataElementName = dataElementName.toString(),
                                     sectionName = sectionName,
                                     categoryOptionCombo = "",
                                     categoryOptionComboName = "Default",
@@ -206,7 +210,10 @@ class DataEntryRepositoryImpl @Inject constructor(
                         .uid(dataElementUid)
                         .blockingGet() ?: return@forEach
 
-                    val dataElementName = dataElement.displayName() ?: dataElementUid
+                    // Get form name from data set element, fall back to display name, then short name, then uid
+                    val dataElementName = dataElement.shortName()
+                        ?: dataElement.displayName()
+                        ?: dataElementUid
 
                     val existingValue = existingValues.find {
                         it.dataElement() == dataElementUid
@@ -235,7 +242,7 @@ class DataEntryRepositoryImpl @Inject constructor(
 
             emit(allDataValues)
         } catch (e: Exception) {
-            android.util.Log.e("DataEntryRepositoryImpl", "Failed to fetch data values", e)
+            Log.e("DataEntryRepositoryImpl", "Failed to fetch data values", e)
             throw e
         }
     }
@@ -266,6 +273,16 @@ class DataEntryRepositoryImpl @Inject constructor(
             val dataElementObj = d2.dataElementModule().dataElements()
                 .uid(dataElement)
                 .blockingGet() ?: throw Exception("Data element not found")
+
+            val dataSet = d2.dataSetModule().dataSets()
+                .withDataSetElements()
+                .uid(datasetId)
+                .blockingGet() ?: throw Exception("Dataset not found")
+
+            // Get form name from data set element, fall back to display name, then short name, then uid
+            val dataElementName = dataElementObj.shortName()
+                ?: dataElementObj.displayName()
+                ?: dataElement
 
             val sectionName = d2.dataSetModule().sections()
                 .byDataSetUid().eq(datasetId)
@@ -304,7 +321,7 @@ class DataEntryRepositoryImpl @Inject constructor(
             Result.success(
                 DataValue(
                     dataElement = dataElement,
-                    dataElementName = dataElementObj.displayName() ?: dataElement,
+                    dataElementName = dataElementName.toString(),
                     sectionName = sectionName,
                     categoryOptionCombo = categoryOptionCombo,
                     categoryOptionComboName = categoryOptionComboName,

@@ -117,8 +117,7 @@ fun AppNavigation(
             viewModel.loadDataValues(datasetId, datasetName, period, orgUnit, attributeOptionCombo, isEditMode = true)
             EditEntryScreen(
                 viewModel = viewModel,
-                navController = navController,
-                modifier = Modifier
+                navController = navController
             )
         }
     }

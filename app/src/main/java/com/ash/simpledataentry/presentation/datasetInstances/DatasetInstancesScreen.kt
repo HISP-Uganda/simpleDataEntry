@@ -9,6 +9,7 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.material.icons.Icons
@@ -28,6 +29,9 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
@@ -53,8 +57,6 @@ fun DatasetInstancesScreen(
     datasetName: String,
     viewModel: DatasetInstancesViewModel = hiltViewModel()
 ) {
-
-
     LaunchedEffect(datasetId) {
         viewModel.setDatasetId(datasetId)
     }
@@ -79,9 +81,27 @@ fun DatasetInstancesScreen(
     ) {
         Box(modifier = Modifier.fillMaxSize()) {
             if (state.isLoading) {
-                CircularProgressIndicator(
-                    modifier = Modifier.align(Alignment.Center)
-                )
+                Box(
+                    modifier = Modifier.fillMaxSize(),
+                    contentAlignment = Alignment.Center
+                ) {
+                    Column(
+                        horizontalAlignment = Alignment.CenterHorizontally,
+                        verticalArrangement = Arrangement.Center
+                    ) {
+                        CircularProgressIndicator(
+                            modifier = Modifier.size(48.dp),
+                            strokeWidth = 4.dp,
+                            color = MaterialTheme.colorScheme.primary
+                        )
+                        Spacer(modifier = Modifier.height(16.dp))
+                        Text(
+                            text = "Loading datasets...",
+                            style = MaterialTheme.typography.bodyLarge,
+                            color = MaterialTheme.colorScheme.onSurface
+                        )
+                    }
+                }
             } else {
                 LazyColumn(
                     modifier = Modifier.fillMaxSize(),
@@ -89,31 +109,36 @@ fun DatasetInstancesScreen(
                     verticalArrangement = Arrangement.spacedBy(8.dp)
                 ) {
                     items(state.instances) { instance ->
+                        var isLoading by remember { mutableStateOf(false) }
+                        
                         ListCard(
-                            modifier = Modifier.fillMaxWidth(),
                             listCardState = rememberListCardState(
                                 title = ListCardTitleModel(
-                                    text = "${instance.period.id}",
+                                    text = instance.period.toString(),
                                     modifier = Modifier.padding(0.dp)
                                 ),
-                                description = if (instance.state == DatasetInstanceState.COMPLETE) {
-                                    ListCardDescriptionModel(
-                                        color= TextColor.OnSurface,
-                                        text = "",
-                                       modifier = Modifier,
-                                    )
-                                } else {
-                                    ListCardDescriptionModel(text = "")
-                                },
+                                description = ListCardDescriptionModel(
+                                    text = if (isLoading) "Loading..." else instance.attributeOptionCombo,
+                                    modifier = Modifier
+                                ),
                                 additionalInfoColumnState = rememberAdditionalInfoColumnState(
                                     additionalInfoList = listOf(
                                         AdditionalInfoItem(
+                                            key = "Organization Unit",
+                                            value = instance.organisationUnit.name,
+                                            isConstantItem = true
+                                        ),
+                                        AdditionalInfoItem(
                                             key = "Last Updated",
-                                            value = instance.lastUpdated?.toString()?.take(10) ?: "N/A",
+                                            value = instance.lastUpdated?.toString() ?: "N/A",
                                             isConstantItem = true
                                         )
                                     ),
-                                    syncProgressItem = AdditionalInfoItem(value = ""),
+                                    syncProgressItem = AdditionalInfoItem(
+                                        key = "",
+                                        value = "",
+                                        isConstantItem = true
+                                    ),
                                     expandLabelText = "Show more",
                                     shrinkLabelText = "Show Less",
                                     minItemsToShow = 1,
@@ -122,12 +147,10 @@ fun DatasetInstancesScreen(
                                 shadow = true
                             ),
                             onCardClick = {
+                                isLoading = true
+                                val encodedDatasetId = URLEncoder.encode(datasetId, "UTF-8")
                                 val encodedDatasetName = URLEncoder.encode(datasetName, "UTF-8")
-                                val encodedPeriod = URLEncoder.encode(instance.period.id, "UTF-8")
-                                val encodedAttributeOptionCombo = URLEncoder.encode(instance.attributeOptionCombo, "UTF-8")
-                                navController.navigate(
-                                    "EditEntry/$datasetId/${instance.period.id}/${instance.organisationUnit.id}/$encodedAttributeOptionCombo/$encodedDatasetName"
-                                )
+                                navController.navigate("EditEntry/$encodedDatasetId/${instance.period}/${instance.organisationUnit}/${instance.attributeOptionCombo}/$encodedDatasetName")
                             }
                         )
                     }
@@ -169,5 +192,19 @@ fun DatasetInstancesScreen(
                 )
             }
         }
+    }
+}
+
+
+@Composable
+private fun LoadingIndicator() {
+    Box(
+        modifier = Modifier.fillMaxSize(),
+        contentAlignment = Alignment.Center
+    ) {
+        CircularProgressIndicator(
+            modifier = Modifier.size(24.dp),
+            strokeWidth = 2.dp
+        )
     }
 }

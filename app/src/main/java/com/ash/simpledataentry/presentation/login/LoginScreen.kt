@@ -1,23 +1,29 @@
 package com.ash.simpledataentry.presentation.login
 
 import android.util.Log
+import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material3.Button
 import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
@@ -30,108 +36,129 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.navigation.NavController
 import com.ash.simpledataentry.navigation.Screen.DatasetsScreen
 import androidx.compose.ui.platform.LocalContext
+import kotlinx.coroutines.delay
 
+@OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun LoginScreen(
     navController: NavController,
-    viewModel: LoginViewModel = hiltViewModel() // Inject ViewModel
+    viewModel: LoginViewModel = hiltViewModel()
 ) {
-    // Observe the UI state from the ViewModel
-    val uiState by viewModel.loginState.collectAsStateWithLifecycle()
+    val state by viewModel.state.collectAsState()
 
-    // Local state for input fields, preserved across configuration changes
-    var serverUrl by rememberSaveable { mutableStateOf("") }
-    var username by rememberSaveable { mutableStateOf("") }
-    var password by rememberSaveable { mutableStateOf("") }
+    LaunchedEffect(state.isLoggedIn) {
+        if (state.isLoggedIn) {
 
-    val context = LocalContext.current
-
-    // Effect to handle navigation on successful login
-    LaunchedEffect(uiState) {
-        if (uiState is LoginState.Success) {
-            navController.navigate(DatasetsScreen.route) {
-                popUpTo(0)
-                launchSingleTop = true
+            navController.navigate("datasets") {
+                popUpTo("Login") { inclusive = true }
             }
-            Log.d("LoginScreen", "Navigating to datasets after successful login")
         }
     }
 
-    Column(
-        modifier = Modifier
-            .fillMaxSize()
-            .padding(16.dp),
-        horizontalAlignment = Alignment.CenterHorizontally,
-        verticalArrangement = Arrangement.Center
-    ) {
-        // Display loading or error states
-        when (uiState) {
-            is LoginState.Loading -> {
+    if (state.showSplash) {
+        Box(
+            modifier = Modifier
+                .fillMaxSize()
+                .background(MaterialTheme.colorScheme.background),
+            contentAlignment = Alignment.Center
+        ) {
+            Column(
+                horizontalAlignment = Alignment.CenterHorizontally,
+                verticalArrangement = Arrangement.Center
+            ) {
+                CircularProgressIndicator(
+                    modifier = Modifier.size(48.dp),
+                    strokeWidth = 4.dp,
+                    color = MaterialTheme.colorScheme.primary
+                )
+                Spacer(modifier = Modifier.height(16.dp))
+                Text(
+                    text = "Loading your data...",
+                    style = MaterialTheme.typography.headlineSmall,
+                    color = MaterialTheme.colorScheme.onBackground
+                )
+            }
+        }
+    } else {
+        // Local state for input fields, preserved across configuration changes
+        var serverUrl by rememberSaveable { mutableStateOf("") }
+        var username by rememberSaveable { mutableStateOf("") }
+        var password by rememberSaveable { mutableStateOf("") }
+
+        val context = LocalContext.current
+
+        Column(
+            modifier = Modifier
+                .fillMaxSize()
+                .padding(16.dp),
+            horizontalAlignment = Alignment.CenterHorizontally,
+            verticalArrangement = Arrangement.Center
+        ) {
+            // Display loading or error states
+            if (state.isLoading) {
                 CircularProgressIndicator()
                 Spacer(modifier = Modifier.height(16.dp))
             }
-            is LoginState.Error -> {
+
+            state.error?.let { error ->
                 Text(
-                    text = (uiState as LoginState.Error).message,
+                    text = error,
                     color = MaterialTheme.colorScheme.error,
                     modifier = Modifier.padding(bottom = 16.dp)
                 )
             }
-            else -> {
-                // No additional UI for Idle or Success since navigation handles Success
+
+            OutlinedTextField(
+                value = serverUrl,
+                onValueChange = { serverUrl = it },
+                label = { Text("Server URL") },
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(bottom = 8.dp),
+                enabled = !state.isLoading,
+                keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Uri)
+            )
+
+            Spacer(modifier = Modifier.height(8.dp))
+
+            OutlinedTextField(
+                value = username,
+                onValueChange = { username = it },
+                label = { Text("Username") },
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(bottom = 8.dp),
+                enabled = !state.isLoading
+            )
+
+            Spacer(modifier = Modifier.height(8.dp))
+
+            OutlinedTextField(
+                value = password,
+                onValueChange = { password = it },
+                label = { Text("Password") },
+                visualTransformation = PasswordVisualTransformation(),
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(bottom = 16.dp),
+                enabled = !state.isLoading,
+                keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password)
+            )
+
+            Spacer(modifier = Modifier.height(16.dp))
+
+            Button(
+                onClick = {
+                    viewModel.login(serverUrl, username, password, context)
+                },
+                enabled = !state.isLoading &&
+                        serverUrl.isNotBlank() &&
+                        username.isNotBlank() &&
+                        password.isNotBlank(),
+                modifier = Modifier.fillMaxWidth()
+            ) {
+                Text("Login")
             }
-        }
-
-        OutlinedTextField(
-            value = serverUrl,
-            onValueChange = { serverUrl = it },
-            label = { Text("Server URL") },
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(bottom = 8.dp),
-            enabled = uiState !is LoginState.Loading,
-            keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Uri)
-        )
-
-        Spacer(modifier = Modifier.height(8.dp))
-
-        OutlinedTextField(
-            value = username,
-            onValueChange = { username = it },
-            label = { Text("Username") },
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(bottom = 8.dp),
-            enabled = uiState !is LoginState.Loading
-        )
-
-        Spacer(modifier = Modifier.height(8.dp))
-
-        OutlinedTextField(
-            value = password,
-            onValueChange = { password = it },
-            label = { Text("Password") },
-            visualTransformation = PasswordVisualTransformation(),
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(bottom = 16.dp),
-            enabled = uiState !is LoginState.Loading,
-            keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password)
-        )
-
-        Spacer(modifier = Modifier.height(16.dp))
-
-        Button(
-            onClick = {
-                viewModel.login(serverUrl, username, password, context)
-            },
-            enabled = uiState !is LoginState.Loading &&
-                    serverUrl.isNotBlank() &&
-                    username.isNotBlank() &&
-                    password.isNotBlank(),
-            modifier = Modifier.fillMaxWidth()
-        ) {
-            Text("Login")
         }
     }
 }
