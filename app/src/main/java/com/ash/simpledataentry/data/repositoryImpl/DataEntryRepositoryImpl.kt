@@ -12,6 +12,7 @@ import org.hisp.dhis.android.core.arch.helpers.Result.Success
 import org.hisp.dhis.android.core.dataelement.DataElement
 import org.hisp.dhis.android.core.common.ValueType
 import javax.inject.Inject
+import android.util.Log
 
 @ViewModelScoped
 class DataEntryRepositoryImpl @Inject constructor(
@@ -389,5 +390,118 @@ class DataEntryRepositoryImpl @Inject constructor(
             .byCategoryComboUid().eq(categoryComboUid)
             .blockingGet()
             .map { it.uid() to (it.displayName() ?: it.uid()) }
+    }
+
+    override suspend fun getCategoryComboStructure(categoryComboUid: String): List<Pair<String, List<Pair<String, String>>>> {
+        try {
+            Log.d("DataEntryRepositoryImpl", "Starting category combo structure fetch for UID: $categoryComboUid")
+            
+            // First get the category option combo to find its category combo
+            val categoryOptionCombo = d2.categoryModule().categoryOptionCombos()
+                .uid(categoryComboUid)
+                .blockingGet()
+
+            if (categoryOptionCombo == null) {
+                Log.d("DataEntryRepositoryImpl", "Category option combo not found for UID: $categoryComboUid")
+                return emptyList()
+            }
+
+            val actualCategoryComboUid = categoryOptionCombo.categoryCombo()
+            Log.d("DataEntryRepositoryImpl", "Found category combo UID: $actualCategoryComboUid for category option combo: $categoryComboUid")
+            
+            // Now get the category combo with its categories
+            val categoryCombo = d2.categoryModule().categoryCombos()
+                .withCategories()
+                .uid(actualCategoryComboUid!!.uid())
+                .blockingGet()
+
+            if (categoryCombo == null) {
+                Log.d("DataEntryRepositoryImpl", "Category combo not found for UID: $actualCategoryComboUid")
+                return emptyList()
+            }
+
+            Log.d("DataEntryRepositoryImpl", "Found category combo: ${categoryCombo.uid()}")
+            val categories = categoryCombo.categories() ?: emptyList()
+            Log.d("DataEntryRepositoryImpl", "Found ${categories.size} categories for combo: $actualCategoryComboUid")
+            
+            if (categories.isEmpty()) {
+                Log.d("DataEntryRepositoryImpl", "No categories found in category combo")
+                return emptyList()
+            }
+
+            return categories.mapNotNull { catRef ->
+                Log.d("DataEntryRepositoryImpl", "Processing category reference: ${catRef.uid()}")
+                
+                // Get category with its options
+                val category = d2.categoryModule().categories()
+                    .withCategoryOptions()
+                    .uid(catRef.uid())
+                    .blockingGet()
+
+                if (category == null) {
+                    Log.d("DataEntryRepositoryImpl", "Category not found for reference: ${catRef.uid()}")
+                    return@mapNotNull null
+                }
+
+                Log.d("DataEntryRepositoryImpl", "Found category: ${category.uid()}")
+                val options = category.categoryOptions() ?: emptyList()
+                Log.d("DataEntryRepositoryImpl", "Found ${options.size} options for category: ${category.uid()}")
+
+                val optionPairs = options.map { optRef ->
+                    val optionUid = optRef.uid()
+                    val optionName = optRef.displayName() ?: optionUid
+                    Log.d("DataEntryRepositoryImpl", "Option: $optionUid -> $optionName")
+                    optionUid to optionName
+                }
+
+                Log.d("DataEntryRepositoryImpl", "Category: ${category.displayName() ?: category.uid()}")
+                Log.d("DataEntryRepositoryImpl", "Options: ${optionPairs.map { it.second }}")
+
+                (category.displayName() ?: category.uid()) to optionPairs
+            }
+        } catch (e: Exception) {
+            Log.e("DataEntryRepositoryImpl", "Error fetching category combo structure", e)
+            e.printStackTrace()
+            return emptyList()
+        }
+    }
+
+    override suspend fun getCategoryOptionCombos(categoryComboUid: String): List<Pair<String, List<String>>> {
+        try {
+            Log.d("DataEntryRepositoryImpl", "Fetching category option combos for UID: $categoryComboUid")
+            
+            // First get the category option combo to find its category combo
+            val categoryOptionCombo = d2.categoryModule().categoryOptionCombos()
+                .uid(categoryComboUid)
+                .blockingGet()
+
+            if (categoryOptionCombo == null) {
+                Log.d("DataEntryRepositoryImpl", "Category option combo not found for UID: $categoryComboUid")
+                return emptyList()
+            }
+
+            val actualCategoryComboUid = categoryOptionCombo.categoryCombo()
+            Log.d("DataEntryRepositoryImpl", "Found category combo UID: $actualCategoryComboUid for category option combo: $categoryComboUid")
+            
+            val combos = d2.categoryModule().categoryOptionCombos()
+                .byCategoryComboUid().eq(actualCategoryComboUid!!.uid())
+                .withCategoryOptions()
+                .blockingGet()
+            
+            Log.d("DataEntryRepositoryImpl", "Found ${combos.size} category option combos")
+            
+            return combos.map { coc ->
+                val optionUids = coc.categoryOptions()?.map { it.uid() } ?: emptyList()
+                
+                Log.d("DataEntryRepositoryImpl", "Combo: ${coc.uid()}")
+                Log.d("DataEntryRepositoryImpl", "Options: $optionUids")
+                
+                coc.uid() to optionUids
+            }
+        } catch (e: Exception) {
+            Log.e("DataEntryRepositoryImpl", "Error fetching category option combos", e)
+            e.printStackTrace()
+            return emptyList()
+        }
     }
 }

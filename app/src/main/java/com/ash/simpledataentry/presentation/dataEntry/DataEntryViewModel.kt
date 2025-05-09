@@ -1,6 +1,7 @@
 package com.ash.simpledataentry.presentation.dataEntry
 
 import android.os.Build
+import android.util.Log
 import androidx.annotation.RequiresApi
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
@@ -29,7 +30,9 @@ data class DataEntryState(
     val validationState: ValidationState = ValidationState.VALID,
     val validationMessage: String? = null,
     val expandedSections: Set<String> = emptySet(),
-    val expandedCategoryGroups: Set<String> = emptySet()
+    val expandedCategoryGroups: Set<String> = emptySet(),
+    val categoryComboStructures: Map<String, List<Pair<String, List<Pair<String, String>>>>> = emptyMap(),
+    val optionUidsToComboUid: Map<String, Map<Set<String>, String>> = emptyMap()
 )
 
 @HiltViewModel
@@ -68,19 +71,48 @@ class DataEntryViewModel @Inject constructor(
                     )
                 }
 
+                val categoryComboStructures = mutableMapOf<String, List<Pair<String, List<Pair<String, String>>>>>()
+                val optionUidsToComboUid = mutableMapOf<String, Map<Set<String>, String>>()
+
                 repository.getDataValues(datasetId, period, orgUnitId, attributeOptionCombo)
                     .collect { values ->
+                        // For each unique categoryComboUid, fetch its structure and combos
+                        val uniqueCategoryCombos = values.mapNotNull { it.categoryOptionCombo }.distinct()
+                        Log.d("DataEntryViewModel", "Found ${uniqueCategoryCombos.size} unique category combos")
+                        
+                        for (comboUid in uniqueCategoryCombos) {
+                            if (comboUid.isNotBlank() && !categoryComboStructures.containsKey(comboUid)) {
+                                Log.d("DataEntryViewModel", "Fetching structure for combo: $comboUid")
+                                val structure = repository.getCategoryComboStructure(comboUid)
+                                Log.d("DataEntryViewModel", "Structure size: ${structure.size}")
+                                categoryComboStructures[comboUid] = structure
+                                
+                                // Fetch all combos for this comboUid
+                                val combos = repository.getCategoryOptionCombos(comboUid)
+                                Log.d("DataEntryViewModel", "Found ${combos.size} combos for $comboUid")
+                                
+                                val map = combos.associate { coc ->
+                                    val optionUids = coc.second.toSet()
+                                    optionUids to coc.first
+                                }
+                                optionUidsToComboUid[comboUid] = map
+                            }
+                        }
+                        
                         _state.update { currentState ->
                             currentState.copy(
                                 dataValues = values,
                                 currentDataValue = values.firstOrNull(),
                                 currentStep = 0,
                                 isLoading = false,
-                                expandedSections = emptySet()
+                                expandedSections = emptySet(),
+                                categoryComboStructures = categoryComboStructures,
+                                optionUidsToComboUid = optionUidsToComboUid
                             )
                         }
                     }
             } catch (e: Exception) {
+                Log.e("DataEntryViewModel", "Error loading data values", e)
                 _state.update { currentState ->
                     currentState.copy(
                         error = "Failed to load data values: ${e.message}",

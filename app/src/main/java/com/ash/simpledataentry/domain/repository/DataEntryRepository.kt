@@ -35,5 +35,7 @@ interface DataEntryRepository {
     suspend fun getUserOrgUnit(datasetId: String): OrganisationUnit
     suspend fun getDefaultAttributeOptionCombo(): String
     suspend fun getAttributeOptionCombos(datasetId: String): List<Pair<String, String>>
+    suspend fun getCategoryComboStructure(categoryComboUid: String): List<Pair<String, List<Pair<String, String>>>>
+    suspend fun getCategoryOptionCombos(categoryComboUid: String): List<Pair<String, List<String>>>
 }
 

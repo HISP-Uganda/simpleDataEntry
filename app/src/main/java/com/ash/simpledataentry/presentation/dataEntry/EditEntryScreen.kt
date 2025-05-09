@@ -1,5 +1,8 @@
+@file:OptIn(ExperimentalMaterial3Api::class)
+
 package com.ash.simpledataentry.presentation.dataEntry
 
+import android.util.Log
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.foundation.clickable
@@ -32,6 +35,11 @@ fun EditEntryScreen(
     val state by viewModel.state.collectAsState()
     val title = "${state.datasetName} - ${state.period} - ${state.attributeOptionComboName}"
 
+    // Add debug logging
+    LaunchedEffect(state.categoryComboStructures) {
+        Log.d("EditEntryScreen", "Category Combo Structures: ${state.categoryComboStructures}")
+    }
+
     BaseScreen(
         title = title,
         navController = navController
@@ -54,29 +62,80 @@ fun EditEntryScreen(
             } else {
                 // Group data values by their sections and category combinations
                 val groupedValues = state.dataValues.groupBy { it.sectionName }
-                    .mapValues { (_, values) ->
-                        values.groupBy { it.categoryOptionCombo }
-                    }
+                val categoryComboStructures = state.categoryComboStructures
 
                 LazyColumn(
                     verticalArrangement = Arrangement.spacedBy(8.dp)
                 ) {
-                    groupedValues.forEach { (sectionName, categoryGroups) ->
+                    groupedValues.forEach { (sectionName, values) ->
+                        // For each section, get the first data value's categoryComboUid
+                        val firstDataValue = values.firstOrNull()
+                        val comboUid = firstDataValue?.categoryOptionCombo
+                        val structure = comboUid?.let { categoryComboStructures[it] }
+                        
+                        // Add debug logging
+                        Log.d("EditEntryScreen", "Section: $sectionName")
+                        Log.d("EditEntryScreen", "ComboUid: $comboUid")
+                        Log.d("EditEntryScreen", "Structure: $structure")
+                        
                         item {
-                            DataElementSection(
-                                sectionName = sectionName,
-                                categoryGroups = categoryGroups,
-                                isExpanded = sectionName in state.expandedSections,
-                                expandedCategoryGroups = state.expandedCategoryGroups,
-                                onToggleSection = { viewModel.toggleSection(sectionName) },
-                                onToggleCategoryGroup = { categoryGroup ->
-                                    viewModel.toggleCategoryGroup(sectionName, categoryGroup)
-                                },
-                                onValueChange = { value, dataValue ->
-                                    viewModel.updateCurrentValue(value)
-                                    viewModel.saveCurrentValue()
+                            val isSectionExpanded = sectionName in state.expandedSections
+                            Surface(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .clickable { viewModel.toggleSection(sectionName) },
+                                color = MaterialTheme.colorScheme.primaryContainer,
+                                shape = MaterialTheme.shapes.medium
+                            ) {
+                                Row(
+                                    modifier = Modifier.padding(16.dp),
+                                    horizontalArrangement = Arrangement.SpaceBetween,
+                                    verticalAlignment = Alignment.CenterVertically
+                                ) {
+                                    Text(
+                                        text = sectionName,
+                                        style = MaterialTheme.typography.titleMedium,
+                                        fontWeight = FontWeight.Bold
+                                    )
+                                    Icon(
+                                        imageVector = Icons.Default.KeyboardArrowDown,
+                                        contentDescription = "Expand/Collapse Section",
+                                        modifier = Modifier.rotate(if (isSectionExpanded) 180f else 0f)
+                                    )
                                 }
-                            )
+                            }
+                            AnimatedVisibility(visible = isSectionExpanded) {
+                                Column {
+                                    if (structure != null && structure.size >= 2) {
+                                        DataElementGridSection(
+                                            sectionName = sectionName,
+                                            rowCategory = structure[0],
+                                            colCategory = structure[1],
+                                            dataValues = values,
+                                            onValueChange = { value, dataValue ->
+                                                viewModel.updateCurrentValue(value)
+                                                viewModel.saveCurrentValue()
+                                            },
+                                            optionUidsToComboUid = state.optionUidsToComboUid[comboUid] ?: emptyMap()
+                                        )
+                                    } else {
+                                        DataElementSection(
+                                            sectionName = sectionName,
+                                            categoryGroups = values.groupBy { it.categoryOptionCombo },
+                                            isExpanded = true, // Always expanded inside section accordion
+                                            expandedCategoryGroups = state.expandedCategoryGroups,
+                                            onToggleSection = {}, // No-op, handled by section accordion
+                                            onToggleCategoryGroup = { categoryGroup ->
+                                                viewModel.toggleCategoryGroup(sectionName, categoryGroup)
+                                            },
+                                            onValueChange = { value, dataValue ->
+                                                viewModel.updateCurrentValue(value)
+                                                viewModel.saveCurrentValue()
+                                            }
+                                        )
+                                    }
+                                }
+                            }
                         }
                     }
                 }
@@ -126,141 +185,111 @@ fun DataElementSection(
     var expandedFilter by remember { mutableStateOf(false) }
 
     Column(
-        modifier = Modifier.fillMaxWidth()
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(bottom = 16.dp)
     ) {
-        Surface(
-            modifier = Modifier
-                .fillMaxWidth()
-                .clickable { onToggleSection() },
-            color = MaterialTheme.colorScheme.primaryContainer,
-            shape = MaterialTheme.shapes.medium
-        ) {
-            Row(
-                modifier = Modifier.padding(16.dp),
-                horizontalArrangement = Arrangement.SpaceBetween,
-                verticalAlignment = Alignment.CenterVertically
+        // Category Filter Dropdown
+        if (categoryGroups.size > 1) {
+            ExposedDropdownMenuBox(
+                expanded = expandedFilter,
+                onExpandedChange = { expandedFilter = !expandedFilter }
             ) {
-                Text(
-                    text = sectionName,
-                    style = MaterialTheme.typography.titleMedium,
-                    fontWeight = FontWeight.Bold
-                )
-                Icon(
-                    imageVector = Icons.Default.KeyboardArrowDown,
-                    contentDescription = "Expand/Collapse Section",
-                    modifier = Modifier.rotate(sectionRotationState)
-                )
-            }
-        }
-
-        AnimatedVisibility(visible = isExpanded) {
-            Column(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(start = 16.dp, top = 8.dp)
-            ) {
-                // Category Filter Dropdown
-                if (categoryGroups.size > 1) {
-                    ExposedDropdownMenuBox(
-                        expanded = expandedFilter,
-                        onExpandedChange = { expandedFilter = !expandedFilter }
-                    ) {
-                        OutlinedTextField(
-                            value = if (selectedCategory.isEmpty()) "All Categories" else selectedCategory,
-                            onValueChange = {},
-                            readOnly = true,
-                            label = { Text("Filter by Category") },
-                            trailingIcon = { 
-                                if (selectedCategory.isNotEmpty()) {
-                                    IconButton(
-                                        onClick = { 
-                                            selectedCategory = ""
-                                            expandedFilter = false
-                                        }
-                                    ) {
-                                        Icon(
-                                            imageVector = Icons.Default.Clear,
-                                            contentDescription = "Clear Filter"
-                                        )
-                                    }
-                                } else {
-                                    ExposedDropdownMenuDefaults.TrailingIcon(expanded = expandedFilter)
-                                }
-                            },
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .menuAnchor()
-                        )
-                        ExposedDropdownMenu(
-                            expanded = expandedFilter,
-                            onDismissRequest = { expandedFilter = false }
-                        ) {
-                            DropdownMenuItem(
-                                text = { Text("All Categories") },
-                                onClick = {
+                OutlinedTextField(
+                    value = if (selectedCategory.isEmpty()) "All Categories" else selectedCategory,
+                    onValueChange = {},
+                    readOnly = true,
+                    label = { Text("Filter by Category") },
+                    trailingIcon = { 
+                        if (selectedCategory.isNotEmpty()) {
+                            IconButton(
+                                onClick = { 
                                     selectedCategory = ""
                                     expandedFilter = false
                                 }
-                            )
-                            categoryGroups.keys.forEach { category ->
-                                val categoryName = categoryGroups[category]?.firstOrNull()?.categoryOptionComboName ?: category
-                                DropdownMenuItem(
-                                    text = { Text(categoryName) },
-                                    onClick = {
-                                        selectedCategory = categoryName
-                                        expandedFilter = false
-                                    }
-                                )
-                            }
-                        }
-                    }
-                    Spacer(modifier = Modifier.height(8.dp))
-                }
-
-                // Display data values based on selected category
-                if (selectedCategory.isEmpty()) {
-                    // Show all categories
-                    categoryGroups.forEach { (categoryGroup, values) ->
-                        if (categoryGroup == "default") {
-                            // For default category, show values directly without a header
-                            values.forEach { dataValue ->
-                                DataValueField(
-                                    dataValue = dataValue,
-                                    onValueChange = { onValueChange(it, dataValue) }
+                            ) {
+                                Icon(
+                                    imageVector = Icons.Default.Clear,
+                                    contentDescription = "Clear Filter"
                                 )
                             }
                         } else {
-                            CategoryGroup(
-                                categoryGroup = values.firstOrNull()?.categoryOptionComboName ?: categoryGroup,
-                                values = values,
-                                isExpanded = "$sectionName:$categoryGroup" in expandedCategoryGroups,
-                                onToggleExpand = { onToggleCategoryGroup(categoryGroup) },
-                                onValueChange = onValueChange
-                            )
+                            ExposedDropdownMenuDefaults.TrailingIcon(expanded = expandedFilter)
                         }
+                    },
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .menuAnchor()
+                )
+                ExposedDropdownMenu(
+                    expanded = expandedFilter,
+                    onDismissRequest = { expandedFilter = false }
+                ) {
+                    DropdownMenuItem(
+                        text = { Text("All Categories") },
+                        onClick = {
+                            selectedCategory = ""
+                            expandedFilter = false
+                        }
+                    )
+                    categoryGroups.keys.forEach { category ->
+                        val categoryName = categoryGroups[category]?.firstOrNull()?.categoryOptionComboName ?: category
+                        DropdownMenuItem(
+                            text = { Text(categoryName) },
+                            onClick = {
+                                selectedCategory = categoryName
+                                expandedFilter = false
+                            }
+                        )
+                    }
+                }
+            }
+            Spacer(modifier = Modifier.height(8.dp))
+        }
+
+        // Display data values based on selected category
+        if (selectedCategory.isEmpty()) {
+            // Show all categories
+            categoryGroups.forEach { (categoryGroup, values) ->
+                if (categoryGroup == "default") {
+                    // For default category, show values directly without a header
+                    values.forEach { dataValue ->
+                        DataValueField(
+                            dataValue = dataValue,
+                            onValueChange = { onValueChange(it, dataValue) }
+                        )
                     }
                 } else {
-                    // Show only selected category
-                    categoryGroups.entries.find { (_, values) -> 
-                        values.firstOrNull()?.categoryOptionComboName == selectedCategory 
-                    }?.let { (categoryGroup, values) ->
-                        if (categoryGroup == "default") {
-                            values.forEach { dataValue ->
-                                DataValueField(
-                                    dataValue = dataValue,
-                                    onValueChange = { onValueChange(it, dataValue) }
-                                )
-                            }
-                        } else {
-                            CategoryGroup(
-                                categoryGroup = values.firstOrNull()?.categoryOptionComboName ?: selectedCategory,
-                                values = values,
-                                isExpanded = true,
-                                onToggleExpand = { },
-                                onValueChange = onValueChange
-                            )
-                        }
+                    CategoryGroup(
+                        categoryGroup = values.firstOrNull()?.categoryOptionComboName ?: categoryGroup,
+                        values = values,
+                        isExpanded = "$sectionName:$categoryGroup" in expandedCategoryGroups,
+                        onToggleExpand = { onToggleCategoryGroup(categoryGroup) },
+                        onValueChange = onValueChange
+                    )
+                    Spacer(modifier = Modifier.height(8.dp))
+                }
+            }
+        } else {
+            // Show only selected category
+            categoryGroups.entries.find { (_, values) -> 
+                values.firstOrNull()?.categoryOptionComboName == selectedCategory 
+            }?.let { (categoryGroup, values) ->
+                if (categoryGroup == "default") {
+                    values.forEach { dataValue ->
+                        DataValueField(
+                            dataValue = dataValue,
+                            onValueChange = { onValueChange(it, dataValue) }
+                        )
                     }
+                } else {
+                    CategoryGroup(
+                        categoryGroup = values.firstOrNull()?.categoryOptionComboName ?: selectedCategory,
+                        values = values,
+                        isExpanded = true,
+                        onToggleExpand = { },
+                        onValueChange = onValueChange
+                    )
                 }
             }
         }
@@ -280,7 +309,9 @@ fun CategoryGroup(
     )
 
     Column(
-        modifier = Modifier.fillMaxWidth()
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(bottom = 8.dp)
     ) {
         Surface(
             modifier = Modifier
@@ -439,6 +470,159 @@ fun DataValueField(
                     style = MaterialTheme.typography.bodySmall,
                     modifier = Modifier.padding(top = 2.dp)
                 )
+            }
+        }
+    }
+}
+
+// Add a new composable for the grid layout
+@Composable
+fun DataElementGridSection(
+    sectionName: String,
+    rowCategory: Pair<String, List<Pair<String, String>>>,
+    colCategory: Pair<String, List<Pair<String, String>>>,
+    dataValues: List<DataValue>,
+    onValueChange: (String, DataValue) -> Unit,
+    optionUidsToComboUid: Map<Set<String>, String>
+) {
+    // Determine which is larger
+    val (smallerCat, largerCat) = if (rowCategory.second.size <= colCategory.second.size) {
+        rowCategory to colCategory
+    } else {
+        colCategory to rowCategory
+    }
+
+    var selectedFilter by remember { mutableStateOf<String?>(null) }
+    var expandedFilter by remember { mutableStateOf(false) }
+
+    Column(
+        modifier = Modifier.fillMaxWidth()
+    ) {
+        // Filter dropdown
+        ExposedDropdownMenuBox(
+            expanded = expandedFilter,
+            onExpandedChange = { expandedFilter = !expandedFilter }
+        ) {
+            OutlinedTextField(
+                value = selectedFilter ?: "All",
+                onValueChange = {},
+                readOnly = true,
+                label = { Text("Filter") },
+                trailingIcon = { 
+                    if (selectedFilter != null) {
+                        IconButton(
+                            onClick = { 
+                                selectedFilter = null
+                                expandedFilter = false
+                            }
+                        ) {
+                            Icon(
+                                imageVector = Icons.Default.Clear,
+                                contentDescription = "Clear Filter"
+                            )
+                        }
+                    } else {
+                        ExposedDropdownMenuDefaults.TrailingIcon(expanded = expandedFilter)
+                    }
+                },
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .menuAnchor()
+                    .padding(bottom = 8.dp)
+            )
+            ExposedDropdownMenu(
+                expanded = expandedFilter,
+                onDismissRequest = { expandedFilter = false }
+            ) {
+                DropdownMenuItem(
+                    text = { Text("All") },
+                    onClick = {
+                        selectedFilter = null
+                        expandedFilter = false
+                    }
+                )
+                (smallerCat.second + largerCat.second).map { it.second }.distinct().forEach { option ->
+                    DropdownMenuItem(
+                        text = { Text(option) },
+                        onClick = {
+                            selectedFilter = option
+                            expandedFilter = false
+                        }
+                    )
+                }
+            }
+        }
+
+        // For each option in the larger category, render an accordion
+        largerCat.second.forEach { largeOpt ->
+            val expandedStates = remember { mutableStateMapOf<String, Boolean>() }
+            val expanded = expandedStates.getOrPut(largeOpt.first) { false }
+            
+            // Skip if filter is active and this option doesn't match
+            if (selectedFilter != null && largeOpt.second != selectedFilter) {
+                return@forEach
+            }
+
+            Surface(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(bottom = 8.dp)
+                    .clickable { expandedStates[largeOpt.first] = !expanded },
+                color = MaterialTheme.colorScheme.secondaryContainer,
+                shape = MaterialTheme.shapes.small
+            ) {
+                Row(
+                    modifier = Modifier.padding(12.dp),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Text(
+                        text = largeOpt.second,
+                        style = MaterialTheme.typography.titleSmall,
+                        fontWeight = FontWeight.Medium
+                    )
+                    Icon(
+                        imageVector = Icons.Default.KeyboardArrowDown,
+                        contentDescription = "Expand/Collapse Section",
+                        modifier = Modifier.rotate(if (expanded) 180f else 0f)
+                    )
+                }
+            }
+            AnimatedVisibility(visible = expanded) {
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(start = 16.dp, top = 8.dp),
+                    horizontalArrangement = Arrangement.spacedBy(12.dp)
+                ) {
+                    smallerCat.second.forEach { smallOpt ->
+                        // Skip if filter is active and this option doesn't match
+                        if (selectedFilter != null && smallOpt.second != selectedFilter) {
+                            return@forEach
+                        }
+
+                        val optionUids = setOf(largeOpt.first, smallOpt.first)
+                        val comboUid = optionUidsToComboUid[optionUids]
+                        val cellDataValues = dataValues.filter { it.categoryOptionCombo == comboUid }
+                        
+                        Column(
+                            modifier = Modifier.weight(1f)
+                        ) {
+                            Text(
+                                text = smallOpt.second,
+                                style = MaterialTheme.typography.bodySmall,
+                                fontWeight = FontWeight.Medium,
+                                modifier = Modifier.padding(bottom = 4.dp)
+                            )
+                            cellDataValues.forEach { dataValue ->
+                                DataValueField(
+                                    dataValue = dataValue,
+                                    onValueChange = { onValueChange(it, dataValue) }
+                                )
+                            }
+                        }
+                    }
+                }
             }
         }
     }
