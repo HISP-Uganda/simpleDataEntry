@@ -58,6 +58,7 @@ import java.net.URLEncoder
 import java.text.SimpleDateFormat
 import java.util.*
 import kotlinx.coroutines.launch
+import android.util.Log
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -142,16 +143,18 @@ fun DatasetInstancesScreen(
                         
                         val formattedDate = try {
                             instance.lastUpdated?.let { dateStr ->
-                                if (dateStr is String && dateStr.length >= 14) {
-                                    val day = dateStr.substring(6, 8)
-                                    val month = dateStr.substring(4, 6)
-                                    val year = dateStr.substring(0, 4)
-                                    "$day/$month/$year"
+                                if (dateStr is String) {
+                                    // Parse the date string
+                                    val inputFormat = SimpleDateFormat("EEE MMM dd HH:mm:ss zzz yyyy", Locale.ENGLISH)
+                                    val outputFormat = SimpleDateFormat("dd/MM/yyyy", Locale.ENGLISH)
+                                    val date = inputFormat.parse(dateStr)
+                                    date?.let { outputFormat.format(it) } ?: "N/A"
                                 } else {
                                     "N/A"
                                 }
                             } ?: "N/A"
                         } catch (e: Exception) {
+                            Log.e("DatasetInstancesScreen", "Error parsing date: ${e.message}")
                             "N/A"
                         }
 

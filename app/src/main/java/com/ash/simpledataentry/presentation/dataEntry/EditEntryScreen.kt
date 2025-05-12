@@ -51,7 +51,7 @@ fun EditEntryScreen(
     }
 
     BaseScreen(
-        title = "${state.datasetName} - ${state.period} - ${state.attributeOptionComboName}",
+        title = "${java.net.URLDecoder.decode(state.datasetName, "UTF-8")} - ${state.period.replace("Period(id=", "").replace(")", "")} - ${state.attributeOptionComboName}",
         navController = navController
     ) {
         Box(modifier = Modifier.fillMaxSize()) {
