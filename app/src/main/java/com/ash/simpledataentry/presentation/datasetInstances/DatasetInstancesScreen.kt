@@ -1,15 +1,18 @@
 package com.ash.simpledataentry.presentation.datasetInstances
 
+import android.text.format.DateFormat
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
+import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.material.icons.Icons
@@ -24,6 +27,9 @@ import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Snackbar
+import androidx.compose.material3.SnackbarDuration
+import androidx.compose.material3.SnackbarHost
+import androidx.compose.material3.SnackbarHostState
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
@@ -36,6 +42,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
 import androidx.hilt.navigation.compose.hiltViewModel
+import androidx.lifecycle.viewModelScope
 import androidx.navigation.NavController
 import com.ash.simpledataentry.domain.model.DatasetInstanceState
 import com.ash.simpledataentry.presentation.core.BaseScreen
@@ -48,6 +55,9 @@ import org.hisp.dhis.mobile.ui.designsystem.component.state.rememberListCardStat
 import org.hisp.dhis.mobile.ui.designsystem.theme.DHIS2Theme
 import org.hisp.dhis.mobile.ui.designsystem.theme.TextColor
 import java.net.URLEncoder
+import java.text.SimpleDateFormat
+import java.util.*
+import kotlinx.coroutines.launch
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -57,11 +67,30 @@ fun DatasetInstancesScreen(
     datasetName: String,
     viewModel: DatasetInstancesViewModel = hiltViewModel()
 ) {
+    val snackbarHostState = remember { SnackbarHostState() }
+    val state by viewModel.state.collectAsState()
+
     LaunchedEffect(datasetId) {
         viewModel.setDatasetId(datasetId)
     }
 
-    val state by viewModel.state.collectAsState()
+    LaunchedEffect(state.error) {
+        state.error?.let {
+            snackbarHostState.showSnackbar(
+                message = it,
+                duration = SnackbarDuration.Short
+            )
+        }
+    }
+
+    LaunchedEffect(state.successMessage) {
+        state.successMessage?.let {
+            snackbarHostState.showSnackbar(
+                message = it,
+                duration = SnackbarDuration.Short
+            )
+        }
+    }
 
     BaseScreen(
         title = datasetName,
@@ -111,22 +140,38 @@ fun DatasetInstancesScreen(
                     items(state.instances) { instance ->
                         var isLoading by remember { mutableStateOf(false) }
                         
+                        val formattedDate = try {
+                            instance.lastUpdated?.let { dateStr ->
+                                if (dateStr is String && dateStr.length >= 14) {
+                                    val day = dateStr.substring(6, 8)
+                                    val month = dateStr.substring(4, 6)
+                                    val year = dateStr.substring(0, 4)
+                                    "$day/$month/$year"
+                                } else {
+                                    "N/A"
+                                }
+                            } ?: "N/A"
+                        } catch (e: Exception) {
+                            "N/A"
+                        }
+
+                        val periodText = instance.period.toString().replace("Period(id=", "").replace(")", "")
+                        
                         ListCard(
                             listCardState = rememberListCardState(
                                 title = ListCardTitleModel(
-                                    text = instance.period.toString(),
+                                    text = periodText,
                                     modifier = Modifier.padding(0.dp)
                                 ),
                                 description = ListCardDescriptionModel(
-                                    text = if (isLoading) "Loading..." else instance.attributeOptionCombo,
+                                    text = if (isLoading) "Loading..." else "",
                                     modifier = Modifier
                                 ),
                                 additionalInfoColumnState = rememberAdditionalInfoColumnState(
                                     additionalInfoList = listOf(
-
                                         AdditionalInfoItem(
                                             key = "Last Updated",
-                                            value = instance.lastUpdated?.toString() ?: "N/A",
+                                            value = formattedDate,
                                             isConstantItem = true
                                         )
                                     ),
@@ -144,39 +189,42 @@ fun DatasetInstancesScreen(
                             ),
                             onCardClick = {
                                 isLoading = true
-                                val encodedDatasetId = URLEncoder.encode(datasetId, "UTF-8")
-                                val encodedDatasetName = URLEncoder.encode(datasetName, "UTF-8")
-                                navController.navigate("EditEntry/$encodedDatasetId/${instance.period}/${instance.organisationUnit}/${instance.attributeOptionCombo}/$encodedDatasetName")
+                                viewModel.viewModelScope.launch {
+                                    try {
+                                        val encodedDatasetId = URLEncoder.encode(datasetId, "UTF-8")
+                                        val encodedDatasetName = URLEncoder.encode(datasetName, "UTF-8")
+                                        navController.navigate("EditEntry/$encodedDatasetId/${instance.period}/${instance.organisationUnit}/${instance.attributeOptionCombo}/$encodedDatasetName") {
+                                            launchSingleTop = true
+                                            popUpTo("DatasetInstances/{datasetId}/{datasetName}") {
+                                                saveState = true
+                                            }
+                                        }
+                                    } catch (e: Exception) {
+                                        isLoading = false
+                                    }
+                                }
                             }
                         )
                     }
                 }
             }
 
-            state.error?.let { error ->
-                Snackbar(
-                    modifier = Modifier
-                        .align(Alignment.BottomCenter)
-                        .padding(16.dp)
-                ) {
-                    Text(error)
-                }
-            }
-
-            state.successMessage?.let { message ->
-                Snackbar(
-                    modifier = Modifier
-                        .align(Alignment.BottomCenter)
-                        .padding(16.dp)
-                ) {
-                    Text(message)
-                }
-            }
+            SnackbarHost(
+                hostState = snackbarHostState,
+                modifier = Modifier
+                    .align(Alignment.BottomCenter)
+                    .padding(16.dp)
+            )
 
             FloatingActionButton(
                 onClick = {
                     val encodedDatasetName = URLEncoder.encode(datasetName, "UTF-8")
-                    navController.navigate("CreateDataEntry/$datasetId/$encodedDatasetName")
+                    navController.navigate("CreateDataEntry/$datasetId/$encodedDatasetName") {
+                        launchSingleTop = true
+                        popUpTo("DatasetInstances/{datasetId}/{datasetName}") {
+                            saveState = true
+                        }
+                    }
                 },
                 modifier = Modifier
                     .align(Alignment.BottomEnd)

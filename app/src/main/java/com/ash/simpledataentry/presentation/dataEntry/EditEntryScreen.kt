@@ -43,8 +43,10 @@ fun EditEntryScreen(
     val state by viewModel.state.collectAsState()
     var isLoading by remember { mutableStateOf(true) }
 
+    // Show loading state immediately
     LaunchedEffect(Unit) {
-         // Short delay to ensure smooth transition
+        // Short delay to ensure smooth transition
+        delay(100)
         isLoading = false
     }
 

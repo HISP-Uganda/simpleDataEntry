@@ -11,6 +11,8 @@ import com.ash.simpledataentry.domain.useCase.DataEntryUseCases
 import dagger.hilt.android.lifecycle.HiltViewModel
 import kotlinx.coroutines.flow.*
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.async
+import kotlinx.coroutines.awaitAll
 import javax.inject.Inject
 
 data class DataEntryState(
@@ -32,7 +34,8 @@ data class DataEntryState(
     val expandedSections: Set<String> = emptySet(),
     val expandedCategoryGroups: Set<String> = emptySet(),
     val categoryComboStructures: Map<String, List<Pair<String, List<Pair<String, String>>>>> = emptyMap(),
-    val optionUidsToComboUid: Map<String, Map<Set<String>, String>> = emptyMap()
+    val optionUidsToComboUid: Map<String, Map<Set<String>, String>> = emptyMap(),
+    val isNavigating: Boolean = false
 )
 
 @HiltViewModel
@@ -53,10 +56,7 @@ class DataEntryViewModel @Inject constructor(
     ) {
         viewModelScope.launch {
             try {
-                // Get attribute option combo name
-                val attributeOptionCombos = repository.getAttributeOptionCombos(datasetId)
-                val attributeOptionComboName = attributeOptionCombos.find { it.first == attributeOptionCombo }?.second ?: attributeOptionCombo
-
+                // Set initial loading state immediately
                 _state.update { currentState ->
                     currentState.copy(
                         isLoading = true,
@@ -66,31 +66,37 @@ class DataEntryViewModel @Inject constructor(
                         period = period,
                         orgUnit = orgUnitId,
                         attributeOptionCombo = attributeOptionCombo,
-                        attributeOptionComboName = attributeOptionComboName,
                         isEditMode = isEditMode
                     )
                 }
 
-                val categoryComboStructures = mutableMapOf<String, List<Pair<String, List<Pair<String, String>>>>>()
-                val optionUidsToComboUid = mutableMapOf<String, Map<Set<String>, String>>()
+                // Load data in parallel
+                val attributeOptionComboDeferred = async {
+                    repository.getAttributeOptionCombos(datasetId)
+                }
 
-                repository.getDataValues(datasetId, period, orgUnitId, attributeOptionCombo)
-                    .collect { values ->
-                        // For each unique categoryComboUid, fetch its structure and combos
-                        val uniqueCategoryCombos = values.mapNotNull { it.categoryOptionCombo }.distinct()
-                        Log.d("DataEntryViewModel", "Found ${uniqueCategoryCombos.size} unique category combos")
-                        
-                        for (comboUid in uniqueCategoryCombos) {
-                            if (comboUid.isNotBlank() && !categoryComboStructures.containsKey(comboUid)) {
-                                Log.d("DataEntryViewModel", "Fetching structure for combo: $comboUid")
+                val dataValuesFlow = repository.getDataValues(datasetId, period, orgUnitId, attributeOptionCombo)
+                
+                // Collect data values
+                dataValuesFlow.collect { values ->
+                    // Get unique category combos that are actually used in the data values
+                    val uniqueCategoryCombos = values
+                        .mapNotNull { it.categoryOptionCombo }
+                        .filter { it.isNotBlank() }
+                        .distinct()
+                        .toSet()
+
+                    // Fetch category combo structures and mappings in parallel
+                    val categoryComboStructures = mutableMapOf<String, List<Pair<String, List<Pair<String, String>>>>>()
+                    val optionUidsToComboUid = mutableMapOf<String, Map<Set<String>, String>>()
+
+                    uniqueCategoryCombos.map { comboUid ->
+                        async {
+                            if (!categoryComboStructures.containsKey(comboUid)) {
                                 val structure = repository.getCategoryComboStructure(comboUid)
-                                Log.d("DataEntryViewModel", "Structure size: ${structure.size}")
                                 categoryComboStructures[comboUid] = structure
-                                
-                                // Fetch all combos for this comboUid
+
                                 val combos = repository.getCategoryOptionCombos(comboUid)
-                                Log.d("DataEntryViewModel", "Found ${combos.size} combos for $comboUid")
-                                
                                 val map = combos.associate { coc ->
                                     val optionUids = coc.second.toSet()
                                     optionUids to coc.first
@@ -98,21 +104,26 @@ class DataEntryViewModel @Inject constructor(
                                 optionUidsToComboUid[comboUid] = map
                             }
                         }
-                        
-                        _state.update { currentState ->
-                            currentState.copy(
-                                dataValues = values,
-                                currentDataValue = values.firstOrNull(),
-                                currentStep = 0,
-                                isLoading = false,
-                                expandedSections = emptySet(),
-                                categoryComboStructures = categoryComboStructures,
-                                optionUidsToComboUid = optionUidsToComboUid
-                            )
-                        }
+                    }.awaitAll()
+
+                    // Get attribute option combo name
+                    val attributeOptionCombos = attributeOptionComboDeferred.await()
+                    val attributeOptionComboName = attributeOptionCombos.find { it.first == attributeOptionCombo }?.second ?: attributeOptionCombo
+
+                    _state.update { currentState ->
+                        currentState.copy(
+                            dataValues = values,
+                            currentDataValue = values.firstOrNull(),
+                            currentStep = 0,
+                            isLoading = false,
+                            expandedSections = emptySet(),
+                            categoryComboStructures = categoryComboStructures,
+                            optionUidsToComboUid = optionUidsToComboUid,
+                            attributeOptionComboName = attributeOptionComboName
+                        )
                     }
+                }
             } catch (e: Exception) {
-                Log.e("DataEntryViewModel", "Error loading data values", e)
                 _state.update { currentState ->
                     currentState.copy(
                         error = "Failed to load data values: ${e.message}",
@@ -292,5 +303,9 @@ class DataEntryViewModel @Inject constructor(
 
     suspend fun getAttributeOptionCombos(datasetId: String): List<Pair<String, String>> {
         return repository.getAttributeOptionCombos(datasetId)
+    }
+
+    fun setNavigating(isNavigating: Boolean) {
+        _state.update { it.copy(isNavigating = isNavigating) }
     }
 }

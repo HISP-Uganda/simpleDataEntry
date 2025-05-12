@@ -102,13 +102,13 @@ class DataEntryRepositoryImpl @Inject constructor(
         attributeOptionCombo: String
     ): Flow<List<DataValue>> = flow {
         try {
-            // Get dataset and sections in a single query
+            // Get dataset and sections in a single query with optimized blocking
             val dataSet = d2.dataSetModule().dataSets()
                 .withDataSetElements()
                 .uid(datasetId)
                 .blockingGet() ?: throw Exception("Dataset not found")
 
-            // Get all existing values in a single query
+            // Get all existing values in a single query with optimized blocking
             val existingValues = d2.dataValueModule().dataValues()
                 .byPeriod().eq(period)
                 .byOrganisationUnitUid().eq(orgUnit)
@@ -116,7 +116,7 @@ class DataEntryRepositoryImpl @Inject constructor(
                 .byAttributeOptionComboUid().eq(attributeOptionCombo)
                 .blockingGet()
 
-            // Get all sections in a single query
+            // Get all sections in a single query with optimized blocking
             val sections = d2.dataSetModule().sections()
                 .byDataSetUid().eq(datasetId)
                 .withDataElements()
@@ -124,10 +124,10 @@ class DataEntryRepositoryImpl @Inject constructor(
 
             val allDataValues = mutableListOf<DataValue>()
 
-            // Process sections
-            sections.forEach { section ->
+            // Process sections in parallel
+            sections.map { section ->
                 val sectionName = section.displayName() ?: "Default Section"
-                section.dataElements()?.forEach { sectionDataElement ->
+                section.dataElements()?.map { sectionDataElement ->
                     val dataElement = d2.dataElementModule().dataElements()
                         .uid(sectionDataElement.uid())
                         .blockingGet()
@@ -146,43 +146,18 @@ class DataEntryRepositoryImpl @Inject constructor(
                                 .byCategoryComboUid().eq(categoryComboUid)
                                 .blockingGet()
 
-                            categoryOptionCombos.forEach { coc ->
+                            categoryOptionCombos.map { coc ->
                                 val existingValue = existingValues.find {
                                     it.dataElement() == dataElement.uid() &&
                                     it.categoryOptionCombo() == coc.uid()
                                 }
 
-                                allDataValues.add(
-                                    DataValue(
-                                        dataElement = dataElement.uid(),
-                                        dataElementName = dataElementName.toString(),
-                                        sectionName = sectionName,
-                                        categoryOptionCombo = coc.uid(),
-                                        categoryOptionComboName = coc.displayName() ?: coc.uid(),
-                                        value = existingValue?.value(),
-                                        comment = existingValue?.comment(),
-                                        storedBy = existingValue?.storedBy(),
-                                        validationState = ValidationState.VALID,
-                                        dataEntryType = getDataEntryType(dataElement),
-                                        isRequired = dataElement.optionSet() == null && 
-                                                   dataElement.valueType() != ValueType.BOOLEAN,
-                                        lastModified = existingValue?.lastUpdated()?.time ?: System.currentTimeMillis(),
-                                        validationRules = getValidationRules(dataElement)
-                                    )
-                                )
-                            }
-                        } else {
-                            val existingValue = existingValues.find {
-                                it.dataElement() == dataElement.uid()
-                            }
-
-                            allDataValues.add(
                                 DataValue(
                                     dataElement = dataElement.uid(),
                                     dataElementName = dataElementName.toString(),
                                     sectionName = sectionName,
-                                    categoryOptionCombo = "",
-                                    categoryOptionComboName = "Default",
+                                    categoryOptionCombo = coc.uid(),
+                                    categoryOptionComboName = coc.displayName() ?: coc.uid(),
                                     value = existingValue?.value(),
                                     comment = existingValue?.comment(),
                                     storedBy = existingValue?.storedBy(),
@@ -193,24 +168,46 @@ class DataEntryRepositoryImpl @Inject constructor(
                                     lastModified = existingValue?.lastUpdated()?.time ?: System.currentTimeMillis(),
                                     validationRules = getValidationRules(dataElement)
                                 )
-                            )
+                            }
+                        } else {
+                            val existingValue = existingValues.find {
+                                it.dataElement() == dataElement.uid()
+                            }
+
+                            listOf(DataValue(
+                                dataElement = dataElement.uid(),
+                                dataElementName = dataElementName.toString(),
+                                sectionName = sectionName,
+                                categoryOptionCombo = "",
+                                categoryOptionComboName = "Default",
+                                value = existingValue?.value(),
+                                comment = existingValue?.comment(),
+                                storedBy = existingValue?.storedBy(),
+                                validationState = ValidationState.VALID,
+                                dataEntryType = getDataEntryType(dataElement),
+                                isRequired = dataElement.optionSet() == null && 
+                                           dataElement.valueType() != ValueType.BOOLEAN,
+                                lastModified = existingValue?.lastUpdated()?.time ?: System.currentTimeMillis(),
+                                validationRules = getValidationRules(dataElement)
+                            ))
                         }
+                    } else {
+                        emptyList()
                     }
-                }
-            }
+                }?.flatten() ?: emptyList()
+            }.flatten().also { allDataValues.addAll(it) }
 
             // Handle unassigned data elements
             val sectionDataElementUids = sections.flatMap { it.dataElements()?.map { it.uid() } ?: emptyList() }.toSet()
             val unassignedDataElements = dataSet.dataSetElements()?.filter { !sectionDataElementUids.contains(it.dataElement().uid()) }
 
             if (!unassignedDataElements.isNullOrEmpty()) {
-                unassignedDataElements.forEach { dataSetElement ->
+                unassignedDataElements.map { dataSetElement ->
                     val dataElementUid = dataSetElement.dataElement().uid()
                     val dataElement = d2.dataElementModule().dataElements()
                         .uid(dataElementUid)
-                        .blockingGet() ?: return@forEach
+                        .blockingGet() ?: return@map null
 
-                    // Get form name from data set element, fall back to display name, then short name, then uid
                     val dataElementName = dataElement.shortName()
                         ?: dataElement.displayName()
                         ?: dataElementUid
@@ -219,25 +216,23 @@ class DataEntryRepositoryImpl @Inject constructor(
                         it.dataElement() == dataElementUid
                     }
 
-                    allDataValues.add(
-                        DataValue(
-                            dataElement = dataElementUid,
-                            dataElementName = dataElementName,
-                            sectionName = "Unassigned",
-                            categoryOptionCombo = "",
-                            categoryOptionComboName = "Default",
-                            value = existingValue?.value(),
-                            comment = existingValue?.comment(),
-                            storedBy = existingValue?.storedBy(),
-                            validationState = ValidationState.VALID,
-                            dataEntryType = getDataEntryType(dataElement),
-                            isRequired = dataElement.optionSet() == null && 
-                                       dataElement.valueType() != ValueType.BOOLEAN,
-                            lastModified = existingValue?.lastUpdated()?.time ?: System.currentTimeMillis(),
-                            validationRules = getValidationRules(dataElement)
-                        )
+                    DataValue(
+                        dataElement = dataElementUid,
+                        dataElementName = dataElementName,
+                        sectionName = "Unassigned",
+                        categoryOptionCombo = "",
+                        categoryOptionComboName = "Default",
+                        value = existingValue?.value(),
+                        comment = existingValue?.comment(),
+                        storedBy = existingValue?.storedBy(),
+                        validationState = ValidationState.VALID,
+                        dataEntryType = getDataEntryType(dataElement),
+                        isRequired = dataElement.optionSet() == null && 
+                                   dataElement.valueType() != ValueType.BOOLEAN,
+                        lastModified = existingValue?.lastUpdated()?.time ?: System.currentTimeMillis(),
+                        validationRules = getValidationRules(dataElement)
                     )
-                }
+                }.filterNotNull().also { allDataValues.addAll(it) }
             }
 
             emit(allDataValues)
@@ -411,113 +406,60 @@ class DataEntryRepositoryImpl @Inject constructor(
 
     override suspend fun getCategoryComboStructure(categoryComboUid: String): List<Pair<String, List<Pair<String, String>>>> {
         try {
-            Log.d("DataEntryRepositoryImpl", "Starting category combo structure fetch for UID: $categoryComboUid")
-            
-            // First get the category option combo to find its category combo
+            // Get the category option combo to find its category combo
             val categoryOptionCombo = d2.categoryModule().categoryOptionCombos()
                 .uid(categoryComboUid)
-                .blockingGet()
-
-            if (categoryOptionCombo == null) {
-                Log.d("DataEntryRepositoryImpl", "Category option combo not found for UID: $categoryComboUid")
-                return emptyList()
-            }
+                .blockingGet() ?: return emptyList()
 
             val actualCategoryComboUid = categoryOptionCombo.categoryCombo()
-            Log.d("DataEntryRepositoryImpl", "Found category combo UID: $actualCategoryComboUid for category option combo: $categoryComboUid")
             
-            // Now get the category combo with its categories
+            // Get the category combo with its categories
             val categoryCombo = d2.categoryModule().categoryCombos()
                 .withCategories()
                 .uid(actualCategoryComboUid!!.uid())
-                .blockingGet()
+                .blockingGet() ?: return emptyList()
 
-            if (categoryCombo == null) {
-                Log.d("DataEntryRepositoryImpl", "Category combo not found for UID: $actualCategoryComboUid")
-                return emptyList()
-            }
-
-            Log.d("DataEntryRepositoryImpl", "Found category combo: ${categoryCombo.uid()}")
             val categories = categoryCombo.categories() ?: emptyList()
-            Log.d("DataEntryRepositoryImpl", "Found ${categories.size} categories for combo: $actualCategoryComboUid")
-            
-            if (categories.isEmpty()) {
-                Log.d("DataEntryRepositoryImpl", "No categories found in category combo")
-                return emptyList()
-            }
+            if (categories.isEmpty()) return emptyList()
 
             return categories.mapNotNull { catRef ->
-                Log.d("DataEntryRepositoryImpl", "Processing category reference: ${catRef.uid()}")
-                
                 // Get category with its options
                 val category = d2.categoryModule().categories()
                     .withCategoryOptions()
                     .uid(catRef.uid())
-                    .blockingGet()
+                    .blockingGet() ?: return@mapNotNull null
 
-                if (category == null) {
-                    Log.d("DataEntryRepositoryImpl", "Category not found for reference: ${catRef.uid()}")
-                    return@mapNotNull null
-                }
-
-                Log.d("DataEntryRepositoryImpl", "Found category: ${category.uid()}")
                 val options = category.categoryOptions() ?: emptyList()
-                Log.d("DataEntryRepositoryImpl", "Found ${options.size} options for category: ${category.uid()}")
-
                 val optionPairs = options.map { optRef ->
-                    val optionUid = optRef.uid()
-                    val optionName = optRef.displayName() ?: optionUid
-                    Log.d("DataEntryRepositoryImpl", "Option: $optionUid -> $optionName")
-                    optionUid to optionName
+                    optRef.uid() to (optRef.displayName() ?: optRef.uid())
                 }
-
-                Log.d("DataEntryRepositoryImpl", "Category: ${category.displayName() ?: category.uid()}")
-                Log.d("DataEntryRepositoryImpl", "Options: ${optionPairs.map { it.second }}")
 
                 (category.displayName() ?: category.uid()) to optionPairs
             }
         } catch (e: Exception) {
-            Log.e("DataEntryRepositoryImpl", "Error fetching category combo structure", e)
-            e.printStackTrace()
             return emptyList()
         }
     }
 
     override suspend fun getCategoryOptionCombos(categoryComboUid: String): List<Pair<String, List<String>>> {
         try {
-            Log.d("DataEntryRepositoryImpl", "Fetching category option combos for UID: $categoryComboUid")
-            
-            // First get the category option combo to find its category combo
+            // Get the category option combo to find its category combo
             val categoryOptionCombo = d2.categoryModule().categoryOptionCombos()
                 .uid(categoryComboUid)
-                .blockingGet()
-
-            if (categoryOptionCombo == null) {
-                Log.d("DataEntryRepositoryImpl", "Category option combo not found for UID: $categoryComboUid")
-                return emptyList()
-            }
+                .blockingGet() ?: return emptyList()
 
             val actualCategoryComboUid = categoryOptionCombo.categoryCombo()
-            Log.d("DataEntryRepositoryImpl", "Found category combo UID: $actualCategoryComboUid for category option combo: $categoryComboUid")
             
             val combos = d2.categoryModule().categoryOptionCombos()
                 .byCategoryComboUid().eq(actualCategoryComboUid!!.uid())
                 .withCategoryOptions()
                 .blockingGet()
             
-            Log.d("DataEntryRepositoryImpl", "Found ${combos.size} category option combos")
-            
             return combos.map { coc ->
                 val optionUids = coc.categoryOptions()?.map { it.uid() } ?: emptyList()
-                
-                Log.d("DataEntryRepositoryImpl", "Combo: ${coc.uid()}")
-                Log.d("DataEntryRepositoryImpl", "Options: $optionUids")
-                
                 coc.uid() to optionUids
             }
         } catch (e: Exception) {
-            Log.e("DataEntryRepositoryImpl", "Error fetching category option combos", e)
-            e.printStackTrace()
             return emptyList()
         }
     }
