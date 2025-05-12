@@ -11,14 +11,11 @@ data class DataValue(
     val value: String?,
     val comment: String?,
     val storedBy: String?,
-    val validationState: ValidationState = ValidationState.VALID,
-    val dataEntryType: DataEntryType = DataEntryType.TEXT,
-    val isRequired: Boolean = false,
-    val minValue: Double? = null,
-    val maxValue: Double? = null,
-    val lastModified: Long = System.currentTimeMillis(),
-    val valueHistory: List<ValueHistory> = emptyList(),
-    val validationRules: List<ValidationRule> = emptyList()
+    val validationState: ValidationState,
+    val dataEntryType: DataEntryType,
+    val lastModified: Long,
+    val validationRules: List<ValidationRule> = emptyList(),
+    val valueHistory: List<ValueHistory> = emptyList()
 )
 
 data class ValidationRule(

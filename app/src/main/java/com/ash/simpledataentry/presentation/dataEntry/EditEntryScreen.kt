@@ -502,7 +502,7 @@ fun DataValueField(
                         )
                     ),
                     inputTextFieldValue = TextFieldValue(dataValue.value ?: ""),
-                    isRequiredField = dataValue.isRequired,
+                    //isRequiredField = dataValue.isRequired,
                     onValueChanged = { newValue -> 
                         onValueChange(newValue?.text ?: "")
                     },
@@ -529,7 +529,7 @@ fun DataValueField(
                         )
                     ),
                     inputTextFieldValue = TextFieldValue(dataValue.value ?: ""),
-                    isRequiredField = dataValue.isRequired,
+                    //isRequiredField = dataValue.isRequired,
                     onValueChanged = { newValue -> 
                         onValueChange(newValue?.text ?: "")
                     },
@@ -557,7 +557,7 @@ fun DataValueField(
                         )
                     ),
                     inputTextFieldValue = TextFieldValue(dataValue.value ?: ""),
-                    isRequiredField = dataValue.isRequired,
+                    //isRequiredField = dataValue.isRequired,
                     onValueChanged = { newValue -> 
                         onValueChange(newValue?.text ?: "")
                     },
@@ -577,11 +577,22 @@ fun DataElementGridSection(
     onValueChange: (String, DataValue) -> Unit,
     optionUidsToComboUid: Map<Set<String>, String>
 ) {
-    // Determine which is larger
-    val (smallerCat, largerCat) = if (rowCategory.second.size <= colCategory.second.size) {
-        rowCategory to colCategory
-    } else {
-        colCategory to rowCategory
+    // Helper to detect gender categories
+    fun isGenderCategory(category: Pair<String, List<Pair<String, String>>>): Boolean {
+        val genderKeywords = listOf("gender", "sex", "male", "female")
+        val name = category.first.lowercase()
+        val options = category.second.map { it.second.lowercase() }
+        return genderKeywords.any { k ->
+            name.contains(k) || options.any { it.contains(k) }
+        }
+    }
+
+    // Force gender category to be the columns (smallerCat)
+    val (smallerCat, largerCat) = when {
+        isGenderCategory(rowCategory) -> rowCategory to colCategory
+        isGenderCategory(colCategory) -> colCategory to rowCategory
+        rowCategory.second.size <= colCategory.second.size -> rowCategory to colCategory
+        else -> colCategory to rowCategory
     }
 
     var selectedFilter by remember { mutableStateOf<String?>(null) }
@@ -725,4 +736,27 @@ fun DataElementGridSection(
             }
         }
     }
+}
+
+private fun validateDataValue(dataValue: DataValue): ValidationState {
+    // Check validation rules
+    for (rule in dataValue.validationRules) {
+        when (rule.rule) {
+            "number" -> {
+                if (dataValue.value != null && dataValue.value.isNotBlank()) {
+                    if (!dataValue.value.matches(Regex("^-?\\d*\\.?\\d+$"))) {
+                        return ValidationState.ERROR
+                    }
+                }
+            }
+            "coordinates" -> {
+                if (dataValue.value != null && dataValue.value.isNotBlank()) {
+                    if (!dataValue.value.matches(Regex("^-?\\d+\\.\\d+,-?\\d+\\.\\d+$"))) {
+                        return ValidationState.ERROR
+                    }
+                }
+            }
+        }
+    }
+    return ValidationState.VALID
 }

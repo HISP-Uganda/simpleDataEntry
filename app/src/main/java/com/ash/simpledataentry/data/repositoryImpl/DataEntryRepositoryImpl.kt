@@ -42,15 +42,6 @@ class DataEntryRepositoryImpl @Inject constructor(
     private fun getValidationRules(dataElement: DataElement): List<ValidationRule> {
         val rules = mutableListOf<ValidationRule>()
         
-        // Add required validation if needed
-        if (dataElement.optionSet() == null && dataElement.valueType() != ValueType.BOOLEAN) {
-            rules.add(ValidationRule(
-                rule = "required",
-                message = "This field is required",
-                severity = ValidationState.ERROR
-            ))
-        }
-
         // Add value type specific validations
         when (dataElement.valueType()) {
             ValueType.NUMBER,
@@ -64,23 +55,6 @@ class DataEntryRepositoryImpl @Inject constructor(
                     message = "Please enter a valid number",
                     severity = ValidationState.ERROR
                 ))
-//
-//                // Add min/max value validations if they exist
-//                dataElement.minValue?.let { minValue ->
-//                    rules.add(ValidationRule(
-//                        rule = "min",
-//                        message = "Value must be greater than or equal to $minValue",
-//                        severity = ValidationState.ERROR
-//                    ))
-//                }
-//
-//                dataElement.maxValue?.let { maxValue ->
-//                    rules.add(ValidationRule(
-//                        rule = "max",
-//                        message = "Value must be less than or equal to $maxValue",
-//                        severity = ValidationState.ERROR
-//                    ))
-//                }
             }
             ValueType.COORDINATE -> {
                 rules.add(ValidationRule(
@@ -163,8 +137,6 @@ class DataEntryRepositoryImpl @Inject constructor(
                                     storedBy = existingValue?.storedBy(),
                                     validationState = ValidationState.VALID,
                                     dataEntryType = getDataEntryType(dataElement),
-                                    isRequired = dataElement.optionSet() == null && 
-                                               dataElement.valueType() != ValueType.BOOLEAN,
                                     lastModified = existingValue?.lastUpdated()?.time ?: System.currentTimeMillis(),
                                     validationRules = getValidationRules(dataElement)
                                 )
@@ -185,8 +157,6 @@ class DataEntryRepositoryImpl @Inject constructor(
                                 storedBy = existingValue?.storedBy(),
                                 validationState = ValidationState.VALID,
                                 dataEntryType = getDataEntryType(dataElement),
-                                isRequired = dataElement.optionSet() == null && 
-                                           dataElement.valueType() != ValueType.BOOLEAN,
                                 lastModified = existingValue?.lastUpdated()?.time ?: System.currentTimeMillis(),
                                 validationRules = getValidationRules(dataElement)
                             ))
@@ -227,8 +197,6 @@ class DataEntryRepositoryImpl @Inject constructor(
                         storedBy = existingValue?.storedBy(),
                         validationState = ValidationState.VALID,
                         dataEntryType = getDataEntryType(dataElement),
-                        isRequired = dataElement.optionSet() == null && 
-                                   dataElement.valueType() != ValueType.BOOLEAN,
                         lastModified = existingValue?.lastUpdated()?.time ?: System.currentTimeMillis(),
                         validationRules = getValidationRules(dataElement)
                     )
@@ -325,10 +293,6 @@ class DataEntryRepositoryImpl @Inject constructor(
                     storedBy = d2.userModule().user().blockingGet()?.username() ?: "Unknown",
                     validationState = ValidationState.VALID,
                     dataEntryType = getDataEntryType(dataElementObj),
-                    isRequired = dataElementObj.optionSet() == null && 
-                               dataElementObj.valueType() != ValueType.BOOLEAN,
-//                    minValue = dataElementObj.minValue,
-//                    maxValue = dataElementObj.maxValue(),
                     lastModified = System.currentTimeMillis(),
                     valueHistory = valueHistory,
                     validationRules = getValidationRules(dataElementObj)
