@@ -34,6 +34,15 @@ import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
+import org.hisp.dhis.mobile.ui.designsystem.component.ButtonStyle
+import org.hisp.dhis.mobile.ui.designsystem.component.SupportingTextData
+import org.hisp.dhis.mobile.ui.designsystem.component.SupportingTextState
+import org.hisp.dhis.mobile.ui.designsystem.component.InputShellState
+import androidx.compose.ui.text.input.TextFieldValue
+import org.hisp.dhis.mobile.ui.designsystem.component.ColorStyle
+import org.hisp.dhis.mobile.ui.designsystem.component.InputText
+import org.hisp.dhis.mobile.ui.designsystem.component.Button
+import org.hisp.dhis.mobile.ui.designsystem.component.InputNumber
 
 @Composable
 fun EditEntryScreen(
@@ -439,7 +448,6 @@ fun CategoryGroup(
     }
 }
 
-@OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun DataValueField(
     dataValue: DataValue,
@@ -450,109 +458,110 @@ fun DataValueField(
             .fillMaxWidth()
             .padding(vertical = 4.dp)
     ) {
-        Row(
-            modifier = Modifier.fillMaxWidth(),
-            horizontalArrangement = Arrangement.SpaceBetween,
-            verticalAlignment = Alignment.CenterVertically
-        ) {
-            Text(
-                text = dataValue.dataElementName,
-                style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                maxLines = 2,
-                overflow = TextOverflow.Ellipsis
-            )
-            if (dataValue.isRequired) {
-                Text(
-                    text = "*",
-                    color = MaterialTheme.colorScheme.error,
-                    style = MaterialTheme.typography.bodySmall
-                )
-            }
-        }
-
         when (dataValue.dataEntryType) {
-            DataEntryType.NUMBER, 
-            DataEntryType.INTEGER,
-            DataEntryType.POSITIVE_INTEGER,
-            DataEntryType.NEGATIVE_INTEGER -> {
-                OutlinedTextField(
-                    value = dataValue.value ?: "",
-                    onValueChange = onValueChange,
-                    modifier = Modifier.fillMaxWidth(),
-                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
-                    isError = dataValue.validationState == ValidationState.ERROR,
-                    colors = OutlinedTextFieldDefaults.colors(
-                        focusedBorderColor = when (dataValue.validationState) {
-                            ValidationState.ERROR -> MaterialTheme.colorScheme.error
-                            ValidationState.WARNING -> MaterialTheme.colorScheme.error.copy(alpha = 0.6f)
-                            ValidationState.VALID -> MaterialTheme.colorScheme.primary
-                        }
-                    ),
-                    textStyle = MaterialTheme.typography.bodySmall
-                )
-            }
             DataEntryType.YES_NO -> {
                 Row(
                     modifier = Modifier.fillMaxWidth(),
                     horizontalArrangement = Arrangement.spacedBy(4.dp)
                 ) {
                     Button(
-                        onClick = { onValueChange("true") },
-                        colors = ButtonDefaults.buttonColors(
-                            containerColor = if (dataValue.value == "true") 
-                                MaterialTheme.colorScheme.primary 
-                            else 
-                                MaterialTheme.colorScheme.surfaceVariant
-                        ),
+                        text = "Yes",
+                        style = if (dataValue.value == "true") ButtonStyle.FILLED else ButtonStyle.OUTLINED,
+                        colorStyle = ColorStyle.DEFAULT,
                         modifier = Modifier.weight(1f),
-                        contentPadding = PaddingValues(horizontal = 8.dp, vertical = 4.dp)
-                    ) {
-                        Text("Yes", style = MaterialTheme.typography.bodySmall)
-                    }
+                        onClick = { onValueChange("true") }
+                    )
                     Button(
-                        onClick = { onValueChange("false") },
-                        colors = ButtonDefaults.buttonColors(
-                            containerColor = if (dataValue.value == "false") 
-                                MaterialTheme.colorScheme.primary 
-                            else 
-                                MaterialTheme.colorScheme.surfaceVariant
-                        ),
+                        text = "No",
+                        style = if (dataValue.value == "false") ButtonStyle.FILLED else ButtonStyle.OUTLINED,
+                        colorStyle = ColorStyle.DEFAULT,
                         modifier = Modifier.weight(1f),
-                        contentPadding = PaddingValues(horizontal = 8.dp, vertical = 4.dp)
-                    ) {
-                        Text("No", style = MaterialTheme.typography.bodySmall)
-                    }
+                        onClick = { onValueChange("false") }
+                    )
                 }
             }
+            DataEntryType.NUMBER, 
+            DataEntryType.INTEGER,
+            DataEntryType.POSITIVE_INTEGER,
+            DataEntryType.NEGATIVE_INTEGER -> {
+                InputNumber(
+                    title = dataValue.dataElementName,
+                    state = when (dataValue.validationState) {
+                        ValidationState.ERROR -> InputShellState.ERROR
+                        ValidationState.WARNING -> InputShellState.WARNING
+                        ValidationState.VALID -> InputShellState.UNFOCUSED
+                    },
+                    supportingText = listOf(
+                        SupportingTextData(
+                            text = dataValue.validationRules.firstOrNull()?.message ?: "",
+                            state = when (dataValue.validationState) {
+                                ValidationState.ERROR -> SupportingTextState.ERROR
+                                ValidationState.WARNING -> SupportingTextState.WARNING
+                                ValidationState.VALID -> SupportingTextState.DEFAULT
+                            }
+                        )
+                    ),
+                    inputTextFieldValue = TextFieldValue(dataValue.value ?: ""),
+                    isRequiredField = dataValue.isRequired,
+                    onValueChanged = { newValue -> 
+                        onValueChange(newValue?.text ?: "")
+                    },
+                //    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+                    modifier = Modifier.fillMaxWidth()
+                )
+            }
             DataEntryType.PERCENTAGE -> {
-                OutlinedTextField(
-                    value = dataValue.value ?: "",
-                    onValueChange = onValueChange,
-                    modifier = Modifier.fillMaxWidth(),
-                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Decimal),
-                    suffix = { Text("%", style = MaterialTheme.typography.bodySmall) },
-                    textStyle = MaterialTheme.typography.bodySmall
+                InputText(
+                    title = dataValue.dataElementName,
+                    state = when (dataValue.validationState) {
+                        ValidationState.ERROR -> InputShellState.ERROR
+                        ValidationState.WARNING -> InputShellState.WARNING
+                        ValidationState.VALID -> InputShellState.UNFOCUSED
+                    },
+                    supportingText = listOf(
+                        SupportingTextData(
+                            text = dataValue.validationRules.firstOrNull()?.message ?: "",
+                            state = when (dataValue.validationState) {
+                                ValidationState.ERROR -> SupportingTextState.ERROR
+                                ValidationState.WARNING -> SupportingTextState.WARNING
+                                ValidationState.VALID -> SupportingTextState.DEFAULT
+                            }
+                        )
+                    ),
+                    inputTextFieldValue = TextFieldValue(dataValue.value ?: ""),
+                    isRequiredField = dataValue.isRequired,
+                    onValueChanged = { newValue -> 
+                        onValueChange(newValue?.text ?: "")
+                    },
+                //    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Decimal),
+                //    suffix = { Text("%") },
+                    modifier = Modifier.fillMaxWidth()
                 )
             }
             else -> {
-                OutlinedTextField(
-                    value = dataValue.value ?: "",
-                    onValueChange = onValueChange,
-                    modifier = Modifier.fillMaxWidth(),
-                    textStyle = MaterialTheme.typography.bodySmall
-                )
-            }
-        }
-
-        // Show validation messages
-        dataValue.validationRules.forEach { rule ->
-            if (dataValue.validationState == ValidationState.ERROR) {
-                Text(
-                    text = rule.message,
-                    color = MaterialTheme.colorScheme.error,
-                    style = MaterialTheme.typography.bodySmall,
-                    modifier = Modifier.padding(top = 2.dp)
+                InputText(
+                    title = dataValue.dataElementName,
+                    state = when (dataValue.validationState) {
+                        ValidationState.ERROR -> InputShellState.ERROR
+                        ValidationState.WARNING -> InputShellState.WARNING
+                        ValidationState.VALID -> InputShellState.UNFOCUSED
+                    },
+                    supportingText = listOf(
+                        SupportingTextData(
+                            text = dataValue.validationRules.firstOrNull()?.message ?: "",
+                            state = when (dataValue.validationState) {
+                                ValidationState.ERROR -> SupportingTextState.ERROR
+                                ValidationState.WARNING -> SupportingTextState.WARNING
+                                ValidationState.VALID -> SupportingTextState.DEFAULT
+                            }
+                        )
+                    ),
+                    inputTextFieldValue = TextFieldValue(dataValue.value ?: ""),
+                    isRequiredField = dataValue.isRequired,
+                    onValueChanged = { newValue -> 
+                        onValueChange(newValue?.text ?: "")
+                    },
+                    modifier = Modifier.fillMaxWidth()
                 )
             }
         }
