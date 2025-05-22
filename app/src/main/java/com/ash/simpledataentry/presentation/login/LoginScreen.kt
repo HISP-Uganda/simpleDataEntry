@@ -1,6 +1,7 @@
 package com.ash.simpledataentry.presentation.login
 
 import android.util.Log
+import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -36,8 +37,12 @@ import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.navigation.NavController
 import com.ash.simpledataentry.navigation.Screen.DatasetsScreen
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.foundation.layout.imePadding
+import androidx.compose.foundation.relocation.BringIntoViewRequester
+import androidx.compose.foundation.relocation.bringIntoViewRequester
+import androidx.compose.ui.focus.onFocusChanged
 
-@OptIn(ExperimentalMaterial3Api::class)
+@OptIn(ExperimentalMaterial3Api::class, ExperimentalFoundationApi::class)
 @Composable
 fun LoginScreen(
     navController: NavController,
@@ -85,7 +90,29 @@ fun LoginScreen(
 
         val context = LocalContext.current
 
-        Box(modifier = Modifier.fillMaxSize()) {
+        Box(modifier = Modifier.fillMaxSize().imePadding()) {
+            val serverUrlBringIntoViewRequester = remember { BringIntoViewRequester() }
+            val usernameBringIntoViewRequester = remember { BringIntoViewRequester() }
+            val passwordBringIntoViewRequester = remember { BringIntoViewRequester() }
+            var serverUrlFocused by remember { mutableStateOf(false) }
+            var usernameFocused by remember { mutableStateOf(false) }
+            var passwordFocused by remember { mutableStateOf(false) }
+
+            LaunchedEffect(serverUrlFocused) {
+                if (serverUrlFocused) {
+                    serverUrlBringIntoViewRequester.bringIntoView()
+                }
+            }
+            LaunchedEffect(usernameFocused) {
+                if (usernameFocused) {
+                    usernameBringIntoViewRequester.bringIntoView()
+                }
+            }
+            LaunchedEffect(passwordFocused) {
+                if (passwordFocused) {
+                    passwordBringIntoViewRequester.bringIntoView()
+                }
+            }
             Column(
                 modifier = Modifier
                     .fillMaxSize()
@@ -99,7 +126,11 @@ fun LoginScreen(
                     label = { Text("Server URL") },
                     modifier = Modifier
                         .fillMaxWidth()
-                        .padding(bottom = 8.dp),
+                        .padding(bottom = 8.dp)
+                        .bringIntoViewRequester(serverUrlBringIntoViewRequester)
+                        .onFocusChanged { focusState ->
+                            serverUrlFocused = focusState.isFocused
+                        },
                     enabled = !state.isLoading,
                     keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Uri)
                 )
@@ -112,7 +143,11 @@ fun LoginScreen(
                     label = { Text("Username") },
                     modifier = Modifier
                         .fillMaxWidth()
-                        .padding(bottom = 8.dp),
+                        .padding(bottom = 8.dp)
+                        .bringIntoViewRequester(usernameBringIntoViewRequester)
+                        .onFocusChanged { focusState ->
+                            usernameFocused = focusState.isFocused
+                        },
                     enabled = !state.isLoading
                 )
 
@@ -125,13 +160,22 @@ fun LoginScreen(
                     visualTransformation = PasswordVisualTransformation(),
                     modifier = Modifier
                         .fillMaxWidth()
-                        .padding(bottom = 16.dp),
+                        .padding(bottom = 16.dp)
+                        .bringIntoViewRequester(passwordBringIntoViewRequester)
+                        .onFocusChanged { focusState ->
+                            passwordFocused = focusState.isFocused
+                        },
                     enabled = !state.isLoading,
                     keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password)
                 )
-
-                Spacer(modifier = Modifier.height(16.dp))
-
+            }
+                Box(
+                    modifier = Modifier
+                    .align(Alignment.BottomCenter)
+                    .fillMaxWidth()
+                    .imePadding()
+                    .padding(16.dp))
+        {
                 Button(
                     onClick = {
                         viewModel.login(serverUrl, username, password, context)
