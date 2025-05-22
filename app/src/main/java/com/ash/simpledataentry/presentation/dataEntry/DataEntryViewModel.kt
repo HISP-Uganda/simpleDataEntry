@@ -31,8 +31,8 @@ data class DataEntryState(
     val isCompleted: Boolean = false,
     val validationState: ValidationState = ValidationState.VALID,
     val validationMessage: String? = null,
-    val expandedSections: Set<String> = emptySet(),
-    val expandedCategoryGroups: Set<String> = emptySet(),
+    val expandedSection: String? = null,
+    val expandedCategoryGroup: String? = null,
     val categoryComboStructures: Map<String, List<Pair<String, List<Pair<String, String>>>>> = emptyMap(),
     val optionUidsToComboUid: Map<String, Map<Set<String>, String>> = emptyMap(),
     val isNavigating: Boolean = false
@@ -116,7 +116,7 @@ class DataEntryViewModel @Inject constructor(
                             currentDataValue = values.firstOrNull(),
                             currentStep = 0,
                             isLoading = false,
-                            expandedSections = emptySet(),
+                            expandedSection = null,
                             categoryComboStructures = categoryComboStructures,
                             optionUidsToComboUid = optionUidsToComboUid,
                             attributeOptionComboName = attributeOptionComboName
@@ -258,26 +258,16 @@ class DataEntryViewModel @Inject constructor(
 
     fun toggleSection(sectionName: String) {
         _state.update { currentState ->
-            val newExpandedSections = currentState.expandedSections.toMutableSet()
-            if (sectionName in newExpandedSections) {
-                newExpandedSections.remove(sectionName)
-            } else {
-                newExpandedSections.add(sectionName)
-            }
-            currentState.copy(expandedSections = newExpandedSections)
+            val newExpanded = if (currentState.expandedSection == sectionName) null else sectionName
+            currentState.copy(expandedSection = newExpanded)
         }
     }
 
     fun toggleCategoryGroup(sectionName: String, categoryGroup: String) {
         _state.update { currentState ->
             val key = "$sectionName:$categoryGroup"
-            val newExpandedGroups = currentState.expandedCategoryGroups.toMutableSet()
-            if (key in newExpandedGroups) {
-                newExpandedGroups.remove(key)
-            } else {
-                newExpandedGroups.add(key)
-            }
-            currentState.copy(expandedCategoryGroups = newExpandedGroups)
+            val newExpanded = if (currentState.expandedCategoryGroup == key) null else key
+            currentState.copy(expandedCategoryGroup = newExpanded)
         }
     }
 

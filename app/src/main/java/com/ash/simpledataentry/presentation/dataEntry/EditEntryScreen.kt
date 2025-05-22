@@ -116,13 +116,13 @@ fun EditEntryScreen(
                                 
                                 SectionContent(
                                     sectionName = sectionName,
-                                    isExpanded = sectionName in state.expandedSections,
+                                    isExpanded = sectionName == state.expandedSection,
                                     onToggleSection = { viewModel.toggleSection(sectionName) },
                                     structure = structure,
                                     values = values,
-                                    expandedCategoryGroups = state.expandedCategoryGroups,
-                                    onToggleCategoryGroup = { categoryGroup ->
-                                        viewModel.toggleCategoryGroup(sectionName, categoryGroup)
+                                    expandedCategoryGroup = state.expandedCategoryGroup,
+                                    onToggleCategoryGroup = { section, categoryGroup ->
+                                        viewModel.toggleCategoryGroup(section, categoryGroup)
                                     },
                                     onValueChange = { value, dataValue ->
                                         viewModel.updateCurrentValue(value)
@@ -168,8 +168,8 @@ private fun SectionContent(
     onToggleSection: () -> Unit,
     structure: List<Pair<String, List<Pair<String, String>>>>?,
     values: List<DataValue>,
-    expandedCategoryGroups: Set<String>,
-    onToggleCategoryGroup: (String) -> Unit,
+    expandedCategoryGroup: String?,
+    onToggleCategoryGroup: (String, String) -> Unit,
     onValueChange: (String, DataValue) -> Unit,
     optionUidsToComboUid: Map<Set<String>, String>
 ) {
@@ -178,7 +178,7 @@ private fun SectionContent(
             modifier = Modifier
                 .fillMaxWidth()
                 .clickable(onClick = onToggleSection),
-            color = MaterialTheme.colorScheme.primaryContainer,
+            color = Color(0xFF40C2F5),
             shape = MaterialTheme.shapes.medium
         ) {
             Row(
@@ -214,7 +214,7 @@ private fun SectionContent(
                         sectionName = sectionName,
                         categoryGroups = values.groupBy { it.categoryOptionCombo },
                         isExpanded = true,
-                        expandedCategoryGroups = expandedCategoryGroups,
+                        expandedCategoryGroup = expandedCategoryGroup,
                         onToggleSection = {},
                         onToggleCategoryGroup = onToggleCategoryGroup,
                         onValueChange = onValueChange
@@ -230,9 +230,9 @@ fun DataElementSection(
     sectionName: String,
     categoryGroups: Map<String, List<DataValue>>,
     isExpanded: Boolean,
-    expandedCategoryGroups: Set<String>,
+    expandedCategoryGroup: String?,
     onToggleSection: () -> Unit,
-    onToggleCategoryGroup: (String) -> Unit,
+    onToggleCategoryGroup: (String, String) -> Unit,
     onValueChange: (String, DataValue) -> Unit
 ) {
     var selectedCategory by remember { mutableStateOf("") }
@@ -241,7 +241,7 @@ fun DataElementSection(
     Column(
         modifier = Modifier
             .fillMaxWidth()
-            .padding(bottom = 16.dp)
+            .padding(start = 8.dp, top = 8.dp, end = 8.dp, bottom = 16.dp)
     ) {
         if (categoryGroups.size > 1) {
             CategoryFilter(
@@ -258,7 +258,7 @@ fun DataElementSection(
             categoryGroups = categoryGroups,
             selectedCategory = selectedCategory,
             sectionName = sectionName,
-            expandedCategoryGroups = expandedCategoryGroups,
+            expandedCategoryGroup = expandedCategoryGroup,
             onToggleCategoryGroup = onToggleCategoryGroup,
             onValueChange = onValueChange
         )
@@ -279,7 +279,7 @@ private fun CategoryFilter(
         onExpandedChange = onExpandedChange
     ) {
         OutlinedTextField(
-            value = if (selectedCategory.isEmpty()) "All Categories" else selectedCategory,
+            value = if (selectedCategory.isEmpty()) "All Categories" else (categoryGroups[selectedCategory]?.firstOrNull()?.categoryOptionComboName ?: selectedCategory),
             onValueChange = {},
             readOnly = true,
             label = { Text("Filter by Category") },
@@ -315,12 +315,12 @@ private fun CategoryFilter(
                     onExpandedChange(false)
                 }
             )
-            categoryGroups.keys.forEach { category ->
-                val categoryName = categoryGroups[category]?.firstOrNull()?.categoryOptionComboName ?: category
+            categoryGroups.keys.forEach { categoryUid ->
+                val categoryName = categoryGroups[categoryUid]?.firstOrNull()?.categoryOptionComboName ?: categoryUid
                 DropdownMenuItem(
                     text = { Text(categoryName) },
                     onClick = {
-                        onCategorySelected(categoryName)
+                        onCategorySelected(categoryUid)
                         onExpandedChange(false)
                     }
                 )
@@ -334,13 +334,14 @@ private fun CategoryContent(
     categoryGroups: Map<String, List<DataValue>>,
     selectedCategory: String,
     sectionName: String,
-    expandedCategoryGroups: Set<String>,
-    onToggleCategoryGroup: (String) -> Unit,
+    expandedCategoryGroup: String?,
+    onToggleCategoryGroup: (String, String) -> Unit,
     onValueChange: (String, DataValue) -> Unit
 ) {
     if (selectedCategory.isEmpty()) {
         categoryGroups.forEach { (categoryGroup, values) ->
             if (categoryGroup == "default") {
+                // Always open, no title
                 values.forEach { dataValue ->
                     DataValueField(
                         dataValue = dataValue,
@@ -351,17 +352,16 @@ private fun CategoryContent(
                 CategoryGroup(
                     categoryGroup = values.firstOrNull()?.categoryOptionComboName ?: categoryGroup,
                     values = values,
-                    isExpanded = "$sectionName:$categoryGroup" in expandedCategoryGroups,
-                    onToggleExpand = { onToggleCategoryGroup(categoryGroup) },
+                    isExpanded = ("$sectionName:$categoryGroup" == expandedCategoryGroup),
+                    onToggleExpand = { onToggleCategoryGroup(sectionName, categoryGroup) },
                     onValueChange = onValueChange
                 )
                 Spacer(modifier = Modifier.height(8.dp))
             }
         }
     } else {
-        categoryGroups.entries.find { (_, values) -> 
-            values.firstOrNull()?.categoryOptionComboName == selectedCategory 
-        }?.let { (categoryGroup, values) ->
+        categoryGroups[selectedCategory]?.let { values ->
+            val categoryGroup = selectedCategory
             if (categoryGroup == "default") {
                 values.forEach { dataValue ->
                     DataValueField(
@@ -390,6 +390,22 @@ fun CategoryGroup(
     onToggleExpand: () -> Unit,
     onValueChange: (String, DataValue) -> Unit
 ) {
+    if (categoryGroup == "default") {
+        // Always open, no title
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(bottom = 8.dp)
+        ) {
+            values.forEach { dataValue ->
+                DataValueField(
+                    dataValue = dataValue,
+                    onValueChange = { onValueChange(it, dataValue) }
+                )
+            }
+        }
+        return
+    }
     val categoryRotationState by animateFloatAsState(
         targetValue = if (isExpanded) 180f else 0f
     )
@@ -597,6 +613,7 @@ fun DataElementGridSection(
 
     var selectedFilter by remember { mutableStateOf<String?>(null) }
     var expandedFilter by remember { mutableStateOf(false) }
+    val expandedStates = remember { mutableStateMapOf<String, Boolean>() }
 
     Column(
         modifier = Modifier.fillMaxWidth()
@@ -658,7 +675,6 @@ fun DataElementGridSection(
 
         // For each option in the larger category, render an accordion
         largerCat.second.forEach { largeOpt ->
-            val expandedStates = remember { mutableStateMapOf<String, Boolean>() }
             val expanded = expandedStates.getOrPut(largeOpt.first) { false }
             
             // Skip if filter is active and this option doesn't match
