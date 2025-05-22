@@ -159,11 +159,13 @@ fun DatasetInstancesScreen(
                         }
 
                         val periodText = instance.period.toString().replace("Period(id=", "").replace(")", "")
-                        
+                        // Map attributeOptionCombo UID to display name
+                        val attrComboName = state.attributeOptionCombos.find { it.first == instance.attributeOptionCombo }?.second ?: instance.attributeOptionCombo
+                        val showAttrCombo = !attrComboName.equals("default", ignoreCase = true)
                         ListCard(
                             listCardState = rememberListCardState(
                                 title = ListCardTitleModel(
-                                    text = periodText,
+                                    text = if (showAttrCombo) "$periodText $attrComboName" else periodText,
                                     modifier = Modifier.padding(0.dp)
                                 ),
                                 description = ListCardDescriptionModel(

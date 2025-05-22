@@ -6,6 +6,7 @@ import androidx.lifecycle.viewModelScope
 import com.ash.simpledataentry.domain.model.DatasetInstance
 import com.ash.simpledataentry.domain.useCase.GetDatasetInstancesUseCase
 import com.ash.simpledataentry.domain.useCase.SyncDatasetInstancesUseCase
+import com.ash.simpledataentry.domain.repository.DataEntryRepository
 import dagger.hilt.android.lifecycle.HiltViewModel
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -18,13 +19,15 @@ data class DatasetInstancesState(
     val isLoading: Boolean = false,
     val isSyncing: Boolean = false,
     val error: String? = null,
-    val successMessage: String? = null
+    val successMessage: String? = null,
+    val attributeOptionCombos: List<Pair<String, String>> = emptyList()
 )
 
 @HiltViewModel
 class DatasetInstancesViewModel @Inject constructor(
     private val getDatasetInstancesUseCase: GetDatasetInstancesUseCase,
-    private val syncDatasetInstancesUseCase: SyncDatasetInstancesUseCase
+    private val syncDatasetInstancesUseCase: SyncDatasetInstancesUseCase,
+    private val dataEntryRepository: DataEntryRepository
 ) : ViewModel() {
     private var datasetId: String = ""
 
@@ -50,21 +53,24 @@ class DatasetInstancesViewModel @Inject constructor(
             _state.value = _state.value.copy(isLoading = true, error = null)
             try {
                 Log.d("DatasetInstancesVM", "Fetching dataset instances")
+                val attributeOptionCombos = dataEntryRepository.getAttributeOptionCombos(datasetId)
                 val instancesResult = getDatasetInstancesUseCase(datasetId)
                 instancesResult.fold(
                     onSuccess = { instances ->
-                        Log.d("DatasetInstancesVM", "Received ${instances.size} instances")
+                        Log.d("DatasetInstancesVM", "Received "+instances.size+" instances")
                         _state.value = _state.value.copy(
                             instances = instances,
                             isLoading = false,
-                            error = null
+                            error = null,
+                            attributeOptionCombos = attributeOptionCombos
                         )
                     },
                     onFailure = { error ->
                         Log.e("DatasetInstancesVM", "Error loading data", error)
                         _state.value = _state.value.copy(
                             isLoading = false,
-                            error = error.message ?: "Failed to load dataset data"
+                            error = error.message ?: "Failed to load dataset data",
+                            attributeOptionCombos = attributeOptionCombos
                         )
                     }
                 )
