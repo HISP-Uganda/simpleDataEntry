@@ -46,6 +46,7 @@ class DataEntryViewModel @Inject constructor(
     private val _state = MutableStateFlow(DataEntryState())
     val state: StateFlow<DataEntryState> = _state.asStateFlow()
 
+    // Only call loadDataValues on explicit triggers (initial load or parameter change), not on accordion open/close.
     fun loadDataValues(
         datasetId: String,
         datasetName: String,
@@ -56,6 +57,7 @@ class DataEntryViewModel @Inject constructor(
     ) {
         viewModelScope.launch {
             try {
+                Log.d("DataEntryViewModel", "Loading data values for datasetId=$datasetId, period=$period, orgUnitId=$orgUnitId, attributeOptionCombo=$attributeOptionCombo")
                 // Set initial loading state immediately
                 _state.update { currentState ->
                     currentState.copy(
@@ -79,6 +81,7 @@ class DataEntryViewModel @Inject constructor(
                 
                 // Collect data values
                 dataValuesFlow.collect { values ->
+                    Log.d("DataEntryViewModel", "Loaded data values: ${values.size}")
                     // Get unique category combos that are actually used in the data values
                     val uniqueCategoryCombos = values
                         .mapNotNull { it.categoryOptionCombo }
@@ -124,6 +127,7 @@ class DataEntryViewModel @Inject constructor(
                     }
                 }
             } catch (e: Exception) {
+                Log.e("DataEntryViewModel", "Failed to load data values", e)
                 _state.update { currentState ->
                     currentState.copy(
                         error = "Failed to load data values: ${e.message}",
@@ -134,17 +138,54 @@ class DataEntryViewModel @Inject constructor(
         }
     }
 
-    fun updateCurrentValue(value: String) {
-        _state.value.currentDataValue?.let { dataValue ->
+    fun updateCurrentValue(value: String, dataElementUid: String, categoryOptionComboUid: String) {
+        val dataValueToUpdate = _state.value.dataValues.find {
+            it.dataElement == dataElementUid && it.categoryOptionCombo == categoryOptionComboUid
+        }
+        if (dataValueToUpdate != null) {
+            val updatedValueObject = dataValueToUpdate.copy(value = value)
             _state.update { currentState ->
                 currentState.copy(
-                    currentDataValue = dataValue.copy(value = value),
                     dataValues = currentState.dataValues.map {
-                        if (it.dataElement == dataValue.dataElement && 
-                            it.categoryOptionCombo == dataValue.categoryOptionCombo) {
-                            it.copy(value = value)
-                        } else {
-                            it
+                        if (it.dataElement == dataElementUid && it.categoryOptionCombo == categoryOptionComboUid) updatedValueObject else it
+                    },
+                    // Only update currentDataValue if this is the current one
+                    currentDataValue = if (currentState.currentDataValue?.dataElement == dataElementUid && currentState.currentDataValue?.categoryOptionCombo == categoryOptionComboUid) updatedValueObject else currentState.currentDataValue
+                )
+            }
+            // Now persist to repository
+            viewModelScope.launch {
+                val result = useCases.saveDataValue(
+                    datasetId = _state.value.datasetId,
+                    period = _state.value.period,
+                    orgUnit = _state.value.orgUnit,
+                    attributeOptionCombo = _state.value.attributeOptionCombo,
+                    dataElement = dataElementUid,
+                    categoryOptionCombo = categoryOptionComboUid,
+                    value = value,
+                    comment = dataValueToUpdate.comment
+                )
+                result.fold(
+                    onSuccess = { savedValue ->
+                        _state.update { currentState ->
+                            currentState.copy(
+                                dataValues = currentState.dataValues.map {
+                                    if (it.dataElement == dataElementUid && it.categoryOptionCombo == categoryOptionComboUid) savedValue else it
+                                },
+                                currentDataValue = if (currentState.currentDataValue?.dataElement == dataElementUid && currentState.currentDataValue?.categoryOptionCombo == categoryOptionComboUid) savedValue else currentState.currentDataValue
+                            )
+                        }
+                    },
+                    onFailure = { error ->
+                        // Revert optimistic update if save failed
+                        _state.update { currentState ->
+                            currentState.copy(
+                                error = "Failed to save value: ${error.message}",
+                                dataValues = currentState.dataValues.map {
+                                    if (it.dataElement == dataElementUid && it.categoryOptionCombo == categoryOptionComboUid) dataValueToUpdate else it
+                                },
+                                currentDataValue = if (currentState.currentDataValue?.dataElement == dataElementUid && currentState.currentDataValue?.categoryOptionCombo == categoryOptionComboUid) dataValueToUpdate else currentState.currentDataValue
+                            )
                         }
                     }
                 )
@@ -160,61 +201,6 @@ class DataEntryViewModel @Inject constructor(
                         comment = comment
                     )
                 )
-            }
-        }
-    }
-
-    fun saveCurrentValue() {
-        viewModelScope.launch {
-            _state.value.currentDataValue?.let { dataValue ->
-                try {
-                    _state.update { it.copy(isLoading = true) }
-                    
-                    val result = useCases.saveDataValue(
-                        datasetId = _state.value.datasetId,
-                        period = _state.value.period,
-                        orgUnit = _state.value.orgUnit,
-                        attributeOptionCombo = _state.value.attributeOptionCombo,
-                        dataElement = dataValue.dataElement,
-                        categoryOptionCombo = dataValue.categoryOptionCombo,
-                        value = dataValue.value,
-                        comment = dataValue.comment
-                    )
-
-                    result.fold(
-                        onSuccess = { savedValue ->
-                            _state.update { currentState ->
-                                currentState.copy(
-                                    dataValues = currentState.dataValues.map {
-                                        if (it.dataElement == savedValue.dataElement && 
-                                            it.categoryOptionCombo == savedValue.categoryOptionCombo) {
-                                            savedValue
-                                        } else {
-                                            it
-                                        }
-                                    },
-                                    currentDataValue = savedValue,
-                                    isLoading = false
-                                )
-                            }
-                        },
-                        onFailure = { error ->
-                            _state.update { currentState ->
-                                currentState.copy(
-                                    error = "Failed to save value: ${error.message}",
-                                    isLoading = false
-                                )
-                            }
-                        }
-                    )
-                } catch (e: Exception) {
-                    _state.update { currentState ->
-                        currentState.copy(
-                            error = "Failed to save value: ${e.message}",
-                            isLoading = false
-                        )
-                    }
-                }
             }
         }
     }

@@ -98,7 +98,7 @@ fun DatasetInstancesScreen(
         navController = navController,
         actions = {
             IconButton(
-                onClick = { viewModel.syncDatasetInstances() },
+                onClick = { viewModel.manualRefresh() },
                 enabled = !state.isLoading && !state.isSyncing
             ) {
                 Icon(
@@ -110,7 +110,7 @@ fun DatasetInstancesScreen(
         }
     ) {
         Box(modifier = Modifier.fillMaxSize()) {
-            if (state.isLoading) {
+            if (state.isLoading || state.isSyncing) {
                 Box(
                     modifier = Modifier.fillMaxSize(),
                     contentAlignment = Alignment.Center
@@ -126,7 +126,7 @@ fun DatasetInstancesScreen(
                         )
                         Spacer(modifier = Modifier.height(16.dp))
                         Text(
-                            text = "Loading datasets...",
+                            text = if (state.isSyncing) "Syncing..." else "Loading datasets...",
                             style = MaterialTheme.typography.bodyLarge,
                             color = MaterialTheme.colorScheme.onSurface
                         )
@@ -193,20 +193,18 @@ fun DatasetInstancesScreen(
                                 shadow = true
                             ),
                             onCardClick = {
-                                isLoading = true
-                                viewModel.viewModelScope.launch {
-                                    try {
-                                        val encodedDatasetId = URLEncoder.encode(datasetId, "UTF-8")
-                                        val encodedDatasetName = URLEncoder.encode(datasetName, "UTF-8")
-                                        navController.navigate("EditEntry/$encodedDatasetId/${instance.period}/${instance.organisationUnit}/${instance.attributeOptionCombo}/$encodedDatasetName") {
-                                            launchSingleTop = true
-                                            popUpTo("DatasetInstances/{datasetId}/{datasetName}") {
-                                                saveState = true
-                                            }
+                                if (!isLoading) {
+                                    isLoading = true
+                                    // Navigation to EditEntryScreen is lightweight; no reloads triggered here. Dataset instance reload only on manual refresh or datasetId change.
+                                    val encodedDatasetId = URLEncoder.encode(datasetId, "UTF-8")
+                                    val encodedDatasetName = URLEncoder.encode(datasetName, "UTF-8")
+                                    navController.navigate("EditEntry/$encodedDatasetId/${instance.period.id}/${instance.organisationUnit.id}/${instance.attributeOptionCombo}/$encodedDatasetName") {
+                                        launchSingleTop = true
+                                        popUpTo("DatasetInstances/{datasetId}/{datasetName}") {
+                                            saveState = true
                                         }
-                                    } catch (e: Exception) {
-                                        isLoading = false
                                     }
+                                    isLoading = false
                                 }
                             }
                         )

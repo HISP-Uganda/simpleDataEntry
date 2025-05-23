@@ -121,4 +121,8 @@ class DatasetInstancesViewModel @Inject constructor(
             }
         }
     }
+
+    fun manualRefresh() {
+        loadData()
+    }
 }

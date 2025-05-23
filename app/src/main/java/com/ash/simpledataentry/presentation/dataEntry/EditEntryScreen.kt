@@ -16,6 +16,7 @@ import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Clear
 import androidx.compose.material.icons.filled.KeyboardArrowDown
+import androidx.compose.material.icons.filled.Sync
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
@@ -39,10 +40,13 @@ import org.hisp.dhis.mobile.ui.designsystem.component.SupportingTextData
 import org.hisp.dhis.mobile.ui.designsystem.component.SupportingTextState
 import org.hisp.dhis.mobile.ui.designsystem.component.InputShellState
 import androidx.compose.ui.text.input.TextFieldValue
+import androidx.lifecycle.viewmodel.compose.viewModel
 import org.hisp.dhis.mobile.ui.designsystem.component.ColorStyle
 import org.hisp.dhis.mobile.ui.designsystem.component.InputText
 import org.hisp.dhis.mobile.ui.designsystem.component.Button
 import org.hisp.dhis.mobile.ui.designsystem.component.InputNumber
+
+data class Quadruple<A, B, C, D>(val first: A, val second: B, val third: C, val fourth: D)
 
 @Composable
 fun EditEntryScreen(
@@ -51,17 +55,44 @@ fun EditEntryScreen(
 ) {
     val state by viewModel.state.collectAsState()
     var isLoading by remember { mutableStateOf(true) }
-
-    // Show loading state immediately
-    LaunchedEffect(Unit) {
-        // Short delay to ensure smooth transition
+    var lastLoadedParams by remember { mutableStateOf(Quadruple("", "", "", "")) }
+    val currentParams = Quadruple(state.datasetId, state.period, state.orgUnit, state.attributeOptionCombo)
+    LaunchedEffect(currentParams) {
+        if ((state.dataValues.isEmpty() || lastLoadedParams != currentParams) && !isLoading) {
+            viewModel.loadDataValues(
+                datasetId = state.datasetId,
+                datasetName = state.datasetName,
+                period = state.period,
+                orgUnitId = state.orgUnit,
+                attributeOptionCombo = state.attributeOptionCombo,
+                isEditMode = true
+            )
+            lastLoadedParams = currentParams
+        }
         delay(100)
         isLoading = false
     }
-
+    fun manualRefresh() {
+        isLoading = true
+        viewModel.loadDataValues(
+            datasetId = state.datasetId,
+            datasetName = state.datasetName,
+            period = state.period,
+            orgUnitId = state.orgUnit,
+            attributeOptionCombo = state.attributeOptionCombo,
+            isEditMode = true
+        )
+        lastLoadedParams = currentParams
+        isLoading = false
+    }
     BaseScreen(
         title = "${java.net.URLDecoder.decode(state.datasetName, "UTF-8")} - ${state.period.replace("Period(id=", "").replace(")", "")} - ${state.attributeOptionComboName}",
-        navController = navController
+        navController = navController,
+        actions = {
+            IconButton(onClick = { manualRefresh() }) {
+                Icon(Icons.Default.Sync, contentDescription = "Refresh")
+            }
+        }
     ) {
         Box(modifier = Modifier.fillMaxSize()) {
             if (isLoading || state.isLoading) {
@@ -101,19 +132,15 @@ fun EditEntryScreen(
                             modifier = Modifier.align(Alignment.CenterHorizontally)
                         )
                     } else {
-                        // Group data values by their sections and category combinations
                         val groupedValues = state.dataValues.groupBy { it.sectionName }
                         val categoryComboStructures = state.categoryComboStructures
-
                         LazyColumn(
                             verticalArrangement = Arrangement.spacedBy(8.dp)
                         ) {
-                            items(groupedValues.toList()) { (sectionName, values) ->
-                                // For each section, get the first data value's categoryComboUid
+                            items(groupedValues.toList(), key = { it.first }) { (sectionName, values) ->
                                 val firstDataValue = values.firstOrNull()
                                 val comboUid = firstDataValue?.categoryOptionCombo
                                 val structure = comboUid?.let { categoryComboStructures[it] }
-                                
                                 SectionContent(
                                     sectionName = sectionName,
                                     isExpanded = sectionName == state.expandedSection,
@@ -125,8 +152,7 @@ fun EditEntryScreen(
                                         viewModel.toggleCategoryGroup(section, categoryGroup)
                                     },
                                     onValueChange = { value, dataValue ->
-                                        viewModel.updateCurrentValue(value)
-                                        viewModel.saveCurrentValue()
+                                        viewModel.updateCurrentValue(value, dataValue.dataElement, dataValue.categoryOptionCombo)
                                     },
                                     optionUidsToComboUid = state.optionUidsToComboUid[comboUid] ?: emptyMap()
                                 )
@@ -178,7 +204,7 @@ private fun SectionContent(
             modifier = Modifier
                 .fillMaxWidth()
                 .clickable(onClick = onToggleSection),
-            color = Color(0xFF40C2F5),
+            color = Color(0xFFCFEAFF),
             shape = MaterialTheme.shapes.medium
         ) {
             Row(
@@ -237,7 +263,6 @@ fun DataElementSection(
 ) {
     var selectedCategory by remember { mutableStateOf("") }
     var expandedFilter by remember { mutableStateOf(false) }
-
     Column(
         modifier = Modifier
             .fillMaxWidth()
@@ -253,7 +278,6 @@ fun DataElementSection(
             )
             Spacer(modifier = Modifier.height(8.dp))
         }
-
         CategoryContent(
             categoryGroups = categoryGroups,
             selectedCategory = selectedCategory,
@@ -341,18 +365,19 @@ private fun CategoryContent(
     if (selectedCategory.isEmpty()) {
         categoryGroups.forEach { (categoryGroup, values) ->
             if (categoryGroup == "default") {
-                // Always open, no title
                 values.forEach { dataValue ->
-                    DataValueField(
-                        dataValue = dataValue,
-                        onValueChange = { onValueChange(it, dataValue) }
-                    )
+                    key("${'$'}{dataValue.dataElement}_${'$'}{dataValue.categoryOptionCombo}") {
+                        DataValueField(
+                            dataValue = dataValue,
+                            onValueChange = { value -> onValueChange(value, dataValue) }
+                        )
+                    }
                 }
             } else {
                 CategoryGroup(
                     categoryGroup = values.firstOrNull()?.categoryOptionComboName ?: categoryGroup,
                     values = values,
-                    isExpanded = ("$sectionName:$categoryGroup" == expandedCategoryGroup),
+                    isExpanded = ("${'$'}sectionName:${'$'}categoryGroup" == expandedCategoryGroup),
                     onToggleExpand = { onToggleCategoryGroup(sectionName, categoryGroup) },
                     onValueChange = onValueChange
                 )
@@ -364,10 +389,12 @@ private fun CategoryContent(
             val categoryGroup = selectedCategory
             if (categoryGroup == "default") {
                 values.forEach { dataValue ->
-                    DataValueField(
-                        dataValue = dataValue,
-                        onValueChange = { onValueChange(it, dataValue) }
-                    )
+                    key("${'$'}{dataValue.dataElement}_${'$'}{dataValue.categoryOptionCombo}") {
+                        DataValueField(
+                            dataValue = dataValue,
+                            onValueChange = { value -> onValueChange(value, dataValue) }
+                        )
+                    }
                 }
             } else {
                 CategoryGroup(
@@ -391,17 +418,18 @@ fun CategoryGroup(
     onValueChange: (String, DataValue) -> Unit
 ) {
     if (categoryGroup == "default") {
-        // Always open, no title
         Column(
             modifier = Modifier
                 .fillMaxWidth()
                 .padding(bottom = 8.dp)
         ) {
             values.forEach { dataValue ->
-                DataValueField(
-                    dataValue = dataValue,
-                    onValueChange = { onValueChange(it, dataValue) }
-                )
+                key("${'$'}{dataValue.dataElement}_${'$'}{dataValue.categoryOptionCombo}") {
+                    DataValueField(
+                        dataValue = dataValue,
+                        onValueChange = { value -> onValueChange(value, dataValue) }
+                    )
+                }
             }
         }
         return
@@ -409,7 +437,6 @@ fun CategoryGroup(
     val categoryRotationState by animateFloatAsState(
         targetValue = if (isExpanded) 180f else 0f
     )
-
     Column(
         modifier = Modifier
             .fillMaxWidth()
@@ -446,7 +473,6 @@ fun CategoryGroup(
                 )
             }
         }
-
         AnimatedVisibility(visible = isExpanded) {
             Column(
                 modifier = Modifier
@@ -454,10 +480,12 @@ fun CategoryGroup(
                     .padding(start = 16.dp, top = 8.dp)
             ) {
                 values.forEach { dataValue ->
-                    DataValueField(
-                        dataValue = dataValue,
-                        onValueChange = { onValueChange(it, dataValue) }
-                    )
+                    key("${'$'}{dataValue.dataElement}_${'$'}{dataValue.categoryOptionCombo}") {
+                        DataValueField(
+                            dataValue = dataValue,
+                            onValueChange = { value -> onValueChange(value, dataValue) }
+                        )
+                    }
                 }
             }
         }
@@ -467,8 +495,13 @@ fun CategoryGroup(
 @Composable
 fun DataValueField(
     dataValue: DataValue,
-    onValueChange: (String) -> Unit
+    onValueChange: (String) -> Unit,
+
 ) {
+    Log.d(
+        "DataValueField",
+        "Rendering field for dataElement='${dataValue.dataElement}', categoryOptionCombo='${dataValue.categoryOptionCombo}', value='${dataValue.value}'"
+    )
     Column(
         modifier = Modifier
             .fillMaxWidth()
@@ -518,11 +551,9 @@ fun DataValueField(
                         )
                     ),
                     inputTextFieldValue = TextFieldValue(dataValue.value ?: ""),
-                    //isRequiredField = dataValue.isRequired,
                     onValueChanged = { newValue -> 
                         onValueChange(newValue?.text ?: "")
                     },
-                //    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
                     modifier = Modifier.fillMaxWidth()
                 )
             }
@@ -545,12 +576,9 @@ fun DataValueField(
                         )
                     ),
                     inputTextFieldValue = TextFieldValue(dataValue.value ?: ""),
-                    //isRequiredField = dataValue.isRequired,
                     onValueChanged = { newValue -> 
                         onValueChange(newValue?.text ?: "")
                     },
-                //    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Decimal),
-                //    suffix = { Text("%") },
                     modifier = Modifier.fillMaxWidth()
                 )
             }
@@ -573,7 +601,6 @@ fun DataValueField(
                         )
                     ),
                     inputTextFieldValue = TextFieldValue(dataValue.value ?: ""),
-                    //isRequiredField = dataValue.isRequired,
                     onValueChanged = { newValue -> 
                         onValueChange(newValue?.text ?: "")
                     },
@@ -741,10 +768,12 @@ fun DataElementGridSection(
                                 modifier = Modifier.padding(bottom = 4.dp)
                             )
                             cellDataValues.forEach { dataValue ->
-                                DataValueField(
-                                    dataValue = dataValue,
-                                    onValueChange = { onValueChange(it, dataValue) }
-                                )
+                                key("${'$'}{dataValue.dataElement}_${'$'}{dataValue.categoryOptionCombo}") {
+                                    DataValueField(
+                                        dataValue = dataValue,
+                                        onValueChange = { value -> onValueChange(value, dataValue) }
+                                    )
+                                }
                             }
                         }
                     }
