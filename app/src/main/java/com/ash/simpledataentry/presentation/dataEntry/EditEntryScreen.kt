@@ -17,6 +17,7 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Clear
 import androidx.compose.material.icons.filled.KeyboardArrowDown
 import androidx.compose.material.icons.filled.Sync
+import androidx.compose.material.icons.filled.Save
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
@@ -45,6 +46,10 @@ import org.hisp.dhis.mobile.ui.designsystem.component.ColorStyle
 import org.hisp.dhis.mobile.ui.designsystem.component.InputText
 import org.hisp.dhis.mobile.ui.designsystem.component.Button
 import org.hisp.dhis.mobile.ui.designsystem.component.InputNumber
+import androidx.compose.material3.FloatingActionButton
+import androidx.compose.material3.SnackbarHost
+import androidx.compose.material3.SnackbarHostState
+import kotlinx.coroutines.launch
 
 data class Quadruple<A, B, C, D>(val first: A, val second: B, val third: C, val fourth: D)
 
@@ -57,6 +62,8 @@ fun EditEntryScreen(
     var isLoading by remember { mutableStateOf(true) }
     var lastLoadedParams by remember { mutableStateOf(Quadruple("", "", "", "")) }
     val currentParams = Quadruple(state.datasetId, state.period, state.orgUnit, state.attributeOptionCombo)
+    val snackbarHostState = remember { SnackbarHostState() }
+    val coroutineScope = rememberCoroutineScope()
     LaunchedEffect(currentParams) {
         if ((state.dataValues.isEmpty() || lastLoadedParams != currentParams) && !isLoading) {
             viewModel.loadDataValues(
@@ -84,6 +91,16 @@ fun EditEntryScreen(
         )
         lastLoadedParams = currentParams
         isLoading = false
+    }
+    // Show Snackbar on save result
+    LaunchedEffect(state.saveResult) {
+        state.saveResult?.let {
+            if (it.isSuccess) {
+                snackbarHostState.showSnackbar("All data saved successfully.")
+            } else {
+                snackbarHostState.showSnackbar("Failed to save some fields.")
+            }
+        }
     }
     BaseScreen(
         title = "${java.net.URLDecoder.decode(state.datasetName, "UTF-8")} - ${state.period.replace("Period(id=", "").replace(")", "")} - ${state.attributeOptionComboName}",
@@ -181,6 +198,27 @@ fun EditEntryScreen(
                             modifier = Modifier.padding(top = 8.dp)
                         )
                     }
+                }
+                // FAB and Snackbar
+                Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.BottomEnd) {
+                    FloatingActionButton(
+                        onClick = { viewModel.saveAllDataValues() },
+                        //enabled = !state.saveInProgress,
+                        containerColor = MaterialTheme.colorScheme.primary,
+                        contentColor = MaterialTheme.colorScheme.onPrimary,
+                        modifier = Modifier.padding(24.dp)
+                    ) {
+                        if (state.saveInProgress) {
+                            CircularProgressIndicator(
+                                color = MaterialTheme.colorScheme.onPrimary,
+                                modifier = Modifier.size(24.dp),
+                                strokeWidth = 2.dp
+                            )
+                        } else {
+                            Icon(Icons.Default.Save, contentDescription = "Save")
+                        }
+                    }
+                    SnackbarHost(hostState = snackbarHostState, modifier = Modifier.align(Alignment.BottomCenter))
                 }
             }
         }

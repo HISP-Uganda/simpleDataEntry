@@ -35,7 +35,9 @@ data class DataEntryState(
     val expandedCategoryGroup: String? = null,
     val categoryComboStructures: Map<String, List<Pair<String, List<Pair<String, String>>>>> = emptyMap(),
     val optionUidsToComboUid: Map<String, Map<Set<String>, String>> = emptyMap(),
-    val isNavigating: Boolean = false
+    val isNavigating: Boolean = false,
+    val saveInProgress: Boolean = false,
+    val saveResult: Result<Unit>? = null
 )
 
 @HiltViewModel
@@ -153,43 +155,7 @@ class DataEntryViewModel @Inject constructor(
                     currentDataValue = if (currentState.currentDataValue?.dataElement == dataElementUid && currentState.currentDataValue?.categoryOptionCombo == categoryOptionComboUid) updatedValueObject else currentState.currentDataValue
                 )
             }
-            // Now persist to repository
-            viewModelScope.launch {
-                val result = useCases.saveDataValue(
-                    datasetId = _state.value.datasetId,
-                    period = _state.value.period,
-                    orgUnit = _state.value.orgUnit,
-                    attributeOptionCombo = _state.value.attributeOptionCombo,
-                    dataElement = dataElementUid,
-                    categoryOptionCombo = categoryOptionComboUid,
-                    value = value,
-                    comment = dataValueToUpdate.comment
-                )
-                result.fold(
-                    onSuccess = { savedValue ->
-                        _state.update { currentState ->
-                            currentState.copy(
-                                dataValues = currentState.dataValues.map {
-                                    if (it.dataElement == dataElementUid && it.categoryOptionCombo == categoryOptionComboUid) savedValue else it
-                                },
-                                currentDataValue = if (currentState.currentDataValue?.dataElement == dataElementUid && currentState.currentDataValue?.categoryOptionCombo == categoryOptionComboUid) savedValue else currentState.currentDataValue
-                            )
-                        }
-                    },
-                    onFailure = { error ->
-                        // Revert optimistic update if save failed
-                        _state.update { currentState ->
-                            currentState.copy(
-                                error = "Failed to save value: ${error.message}",
-                                dataValues = currentState.dataValues.map {
-                                    if (it.dataElement == dataElementUid && it.categoryOptionCombo == categoryOptionComboUid) dataValueToUpdate else it
-                                },
-                                currentDataValue = if (currentState.currentDataValue?.dataElement == dataElementUid && currentState.currentDataValue?.categoryOptionCombo == categoryOptionComboUid) dataValueToUpdate else currentState.currentDataValue
-                            )
-                        }
-                    }
-                )
-            }
+            // No backend save here; only in-memory update
         }
     }
 
@@ -283,5 +249,32 @@ class DataEntryViewModel @Inject constructor(
 
     fun setNavigating(isNavigating: Boolean) {
         _state.update { it.copy(isNavigating = isNavigating) }
+    }
+
+    fun saveAllDataValues() {
+        viewModelScope.launch {
+            _state.update { it.copy(saveInProgress = true, saveResult = null) }
+            val stateSnapshot = _state.value
+            val failed = mutableListOf<Pair<String, String>>()
+            for (dataValue in stateSnapshot.dataValues) {
+                val result = useCases.saveDataValue(
+                    datasetId = stateSnapshot.datasetId,
+                    period = stateSnapshot.period,
+                    orgUnit = stateSnapshot.orgUnit,
+                    attributeOptionCombo = stateSnapshot.attributeOptionCombo,
+                    dataElement = dataValue.dataElement,
+                    categoryOptionCombo = dataValue.categoryOptionCombo,
+                    value = dataValue.value,
+                    comment = dataValue.comment
+                )
+                if (result.isFailure) {
+                    failed.add(dataValue.dataElement to dataValue.categoryOptionCombo)
+                }
+            }
+            _state.update { it.copy(
+                saveInProgress = false,
+                saveResult = if (failed.isEmpty()) Result.success(Unit) else Result.failure(Exception("Failed to save some fields"))
+            ) }
+        }
     }
 }
