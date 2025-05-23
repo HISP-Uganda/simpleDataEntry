@@ -56,37 +56,42 @@ data class Quadruple<A, B, C, D>(val first: A, val second: B, val third: C, val 
 @Composable
 fun EditEntryScreen(
     viewModel: DataEntryViewModel = hiltViewModel(),
-    navController: NavController
+    navController: NavController,
+    datasetId: String,
+    datasetName: String,
+    period: String,
+    orgUnit: String,
+    attributeOptionCombo: String
 ) {
     val state by viewModel.state.collectAsState()
     var isLoading by remember { mutableStateOf(true) }
     var lastLoadedParams by remember { mutableStateOf(Quadruple("", "", "", "")) }
-    val currentParams = Quadruple(state.datasetId, state.period, state.orgUnit, state.attributeOptionCombo)
+    val currentParams = Quadruple(datasetId, period, orgUnit, attributeOptionCombo)
     val snackbarHostState = remember { SnackbarHostState() }
     val coroutineScope = rememberCoroutineScope()
     LaunchedEffect(currentParams) {
-        if ((state.dataValues.isEmpty() || lastLoadedParams != currentParams) && !isLoading) {
+        if (state.dataValues.isEmpty() || lastLoadedParams != currentParams) {
+            isLoading = true
             viewModel.loadDataValues(
-                datasetId = state.datasetId,
-                datasetName = state.datasetName,
-                period = state.period,
-                orgUnitId = state.orgUnit,
-                attributeOptionCombo = state.attributeOptionCombo,
+                datasetId = datasetId,
+                datasetName = datasetName,
+                period = period,
+                orgUnitId = orgUnit,
+                attributeOptionCombo = attributeOptionCombo,
                 isEditMode = true
             )
             lastLoadedParams = currentParams
+            isLoading = false
         }
-        delay(100)
-        isLoading = false
     }
     fun manualRefresh() {
         isLoading = true
         viewModel.loadDataValues(
-            datasetId = state.datasetId,
-            datasetName = state.datasetName,
-            period = state.period,
-            orgUnitId = state.orgUnit,
-            attributeOptionCombo = state.attributeOptionCombo,
+            datasetId = datasetId,
+            datasetName = datasetName,
+            period = period,
+            orgUnitId = orgUnit,
+            attributeOptionCombo = attributeOptionCombo,
             isEditMode = true
         )
         lastLoadedParams = currentParams
@@ -102,8 +107,10 @@ fun EditEntryScreen(
             }
         }
     }
+    // Resolve attribute option combo display name for the title
+    val attrComboName = state.attributeOptionCombos.find { it.first == attributeOptionCombo }?.second ?: attributeOptionCombo
     BaseScreen(
-        title = "${java.net.URLDecoder.decode(state.datasetName, "UTF-8")} - ${state.period.replace("Period(id=", "").replace(")", "")} - ${state.attributeOptionComboName}",
+        title = "${java.net.URLDecoder.decode(datasetName, "UTF-8")} - ${period.replace("Period(id=", "").replace(")", "")} - $attrComboName",
         navController = navController,
         actions = {
             IconButton(onClick = { manualRefresh() }) {

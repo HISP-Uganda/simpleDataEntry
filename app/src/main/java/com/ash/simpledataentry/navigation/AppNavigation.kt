@@ -1,11 +1,8 @@
 package com.ash.simpledataentry.navigation
 
-import android.R.attr.onClick
 import androidx.compose.runtime.Composable
-import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.ui.Modifier
 import androidx.hilt.navigation.compose.hiltViewModel
-import androidx.lifecycle.viewmodel.compose.viewModel
 import androidx.navigation.NavHostController
 import androidx.navigation.NavType
 import androidx.navigation.compose.NavHost
@@ -114,10 +111,14 @@ fun AppNavigation(
             val attributeOptionCombo = backStackEntry.arguments?.getString("attributeOptionCombo") ?: ""
             val datasetName = backStackEntry.arguments?.getString("datasetName") ?: ""
             val viewModel: DataEntryViewModel = hiltViewModel()
-            viewModel.loadDataValues(datasetId, datasetName, period, orgUnit, attributeOptionCombo, isEditMode = true)
             EditEntryScreen(
                 viewModel = viewModel,
-                navController = navController
+                navController = navController,
+                datasetId = datasetId,
+                datasetName = datasetName,
+                period = period,
+                orgUnit = orgUnit,
+                attributeOptionCombo = attributeOptionCombo
             )
         }
     }

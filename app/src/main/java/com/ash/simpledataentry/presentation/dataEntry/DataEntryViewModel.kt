@@ -37,7 +37,8 @@ data class DataEntryState(
     val optionUidsToComboUid: Map<String, Map<Set<String>, String>> = emptyMap(),
     val isNavigating: Boolean = false,
     val saveInProgress: Boolean = false,
-    val saveResult: Result<Unit>? = null
+    val saveResult: Result<Unit>? = null,
+    val attributeOptionCombos: List<Pair<String, String>> = emptyList()
 )
 
 @HiltViewModel
@@ -47,6 +48,9 @@ class DataEntryViewModel @Inject constructor(
 ) : ViewModel() {
     private val _state = MutableStateFlow(DataEntryState())
     val state: StateFlow<DataEntryState> = _state.asStateFlow()
+
+    // Track unsaved edits: key = Pair<dataElement, categoryOptionCombo>, value = DataValue
+    private val dirtyDataValues = mutableMapOf<Pair<String, String>, DataValue>()
 
     // Only call loadDataValues on explicit triggers (initial load or parameter change), not on accordion open/close.
     fun loadDataValues(
@@ -60,7 +64,6 @@ class DataEntryViewModel @Inject constructor(
         viewModelScope.launch {
             try {
                 Log.d("DataEntryViewModel", "Loading data values for datasetId=$datasetId, period=$period, orgUnitId=$orgUnitId, attributeOptionCombo=$attributeOptionCombo")
-                // Set initial loading state immediately
                 _state.update { currentState ->
                     currentState.copy(
                         isLoading = true,
@@ -74,24 +77,19 @@ class DataEntryViewModel @Inject constructor(
                     )
                 }
 
-                // Load data in parallel
                 val attributeOptionComboDeferred = async {
                     repository.getAttributeOptionCombos(datasetId)
                 }
 
                 val dataValuesFlow = repository.getDataValues(datasetId, period, orgUnitId, attributeOptionCombo)
-                
-                // Collect data values
                 dataValuesFlow.collect { values ->
                     Log.d("DataEntryViewModel", "Loaded data values: ${values.size}")
-                    // Get unique category combos that are actually used in the data values
                     val uniqueCategoryCombos = values
                         .mapNotNull { it.categoryOptionCombo }
                         .filter { it.isNotBlank() }
                         .distinct()
                         .toSet()
 
-                    // Fetch category combo structures and mappings in parallel
                     val categoryComboStructures = mutableMapOf<String, List<Pair<String, List<Pair<String, String>>>>>()
                     val optionUidsToComboUid = mutableMapOf<String, Map<Set<String>, String>>()
 
@@ -111,20 +109,26 @@ class DataEntryViewModel @Inject constructor(
                         }
                     }.awaitAll()
 
-                    // Get attribute option combo name
                     val attributeOptionCombos = attributeOptionComboDeferred.await()
                     val attributeOptionComboName = attributeOptionCombos.find { it.first == attributeOptionCombo }?.second ?: attributeOptionCombo
 
+                    // Merge fetched data with unsaved edits
+                    val mergedValues = values.map { fetched ->
+                        val key = fetched.dataElement to fetched.categoryOptionCombo
+                        dirtyDataValues[key] ?: fetched
+                    }
+
                     _state.update { currentState ->
                         currentState.copy(
-                            dataValues = values,
-                            currentDataValue = values.firstOrNull(),
+                            dataValues = mergedValues,
+                            currentDataValue = mergedValues.firstOrNull(),
                             currentStep = 0,
                             isLoading = false,
                             expandedSection = null,
                             categoryComboStructures = categoryComboStructures,
                             optionUidsToComboUid = optionUidsToComboUid,
-                            attributeOptionComboName = attributeOptionComboName
+                            attributeOptionComboName = attributeOptionComboName,
+                            attributeOptionCombos = attributeOptionCombos
                         )
                     }
                 }
@@ -141,21 +145,22 @@ class DataEntryViewModel @Inject constructor(
     }
 
     fun updateCurrentValue(value: String, dataElementUid: String, categoryOptionComboUid: String) {
+        val key = dataElementUid to categoryOptionComboUid
         val dataValueToUpdate = _state.value.dataValues.find {
             it.dataElement == dataElementUid && it.categoryOptionCombo == categoryOptionComboUid
         }
         if (dataValueToUpdate != null) {
             val updatedValueObject = dataValueToUpdate.copy(value = value)
+            // Update dirty edits
+            dirtyDataValues[key] = updatedValueObject
             _state.update { currentState ->
                 currentState.copy(
                     dataValues = currentState.dataValues.map {
                         if (it.dataElement == dataElementUid && it.categoryOptionCombo == categoryOptionComboUid) updatedValueObject else it
                     },
-                    // Only update currentDataValue if this is the current one
                     currentDataValue = if (currentState.currentDataValue?.dataElement == dataElementUid && currentState.currentDataValue?.categoryOptionCombo == categoryOptionComboUid) updatedValueObject else currentState.currentDataValue
                 )
             }
-            // No backend save here; only in-memory update
         }
     }
 
@@ -269,6 +274,9 @@ class DataEntryViewModel @Inject constructor(
                 )
                 if (result.isFailure) {
                     failed.add(dataValue.dataElement to dataValue.categoryOptionCombo)
+                } else {
+                    // Clear dirty edit on successful save
+                    dirtyDataValues.remove(dataValue.dataElement to dataValue.categoryOptionCombo)
                 }
             }
             _state.update { it.copy(
