@@ -60,7 +60,7 @@ A simple, robust Android app for entering, validating, and managing DHIS2 data v
 
 ## Screenshots
 
-> _[Add screenshots or GIFs here to showcase the app UI and workflows.]_
+> 
 
 ---
 
@@ -107,7 +107,11 @@ This project follows a **modern Android architecture** using the **MVVM (Model-V
 
 ## Usage
 
-> _[Basic usage instructions for end-users. How to log in, select datasets, enter data, etc.]_
+> Login with your DHIS2 credentials.
+> Select the dataset for which you want to enter data.
+> Select an existing entry you may want to edit or add to.
+> Press the plus at the bottom right corner if your creating a new entry.
+> Navigate through the accordions and perform entry into the fields for which data is available.
 
 ---
 
@@ -131,21 +135,22 @@ This project follows a **modern Android architecture** using the **MVVM (Model-V
 ## Testing
 
 - **Unit Tests**: Located in `app/src/test/java/com/ash/simpledataentry/`.
-  - Example: `ExampleUnitTest.kt` (basic JUnit test).
+  - 
 - **Instrumentation Tests**: Located in `app/src/androidTest/java/com/ash/simpledataentry/`.
-  - Example: `ExampleInstrumentedTest.kt` (basic context test).
+  - 
 
 ---
 
 ## Changelog
 
-> _[Document major changes and releases here, or link to a separate CHANGELOG.md file.]_
+> 
 
 ---
 
 ## Known Issues & Limitations
 
-> Data entry feature is still a work in progress 
+> Data entry feature is still a work in progress, values are not persiting upon entry 
+> Data entries UX needs more polish
 
 ---
 
@@ -153,13 +158,33 @@ This project follows a **modern Android architecture** using the **MVVM (Model-V
 
 - [Open an issue](https://github.com/your-org/simpleDataEntry/issues) for bug reports or feature requests.
 - [DHIS2 Community](https://community.dhis2.org/) for general DHIS2 questions.
-- 
+- [HISP Uganda Software Development Team](info@hispuganda.org) for specific inquiries.
 
 ---
 
 ## License
 
-> _[Specify your license here, e.g., Apache 2.0, MIT, etc.]_
+This project is licensed under the MIT License.
+
+Copyright (c) 2025 HISP Uganda
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
 
 ---
 
@@ -168,4 +193,4 @@ This project follows a **modern Android architecture** using the **MVVM (Model-V
 - [DHIS2 Android SDK](https://github.com/dhis2/dhis2-android-sdk)
 - [Jetpack Compose](https://developer.android.com/jetpack/compose)
 - [DHIS2 Community](https://community.dhis2.org/)
-- _[Add any other libraries, contributors, or inspirations here.]_
+- [HISP Uganda](https://hispuganda.org)
