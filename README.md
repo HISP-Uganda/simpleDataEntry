@@ -107,11 +107,11 @@ This project follows a **modern Android architecture** using the **MVVM (Model-V
 
 ## Usage
 
-> Login with your DHIS2 credentials.
-> Select the dataset for which you want to enter data.
-> Select an existing entry you may want to edit or add to.
-> Press the plus at the bottom right corner if your creating a new entry.
-> Navigate through the accordions and perform entry into the fields for which data is available.
+1. Login with your DHIS2 credentials.
+2. Select the dataset for which you want to enter data.
+3. Select an existing entry you may want to edit or add to.
+4. Press the plus at the bottom right corner if your creating a new entry.
+5. Navigate through the accordions and perform entry into the fields for which data is available.
 
 ---
 
@@ -134,11 +134,6 @@ This project follows a **modern Android architecture** using the **MVVM (Model-V
 
 ## Testing
 
-- **Unit Tests**: Located in `app/src/test/java/com/ash/simpledataentry/`.
-  - 
-- **Instrumentation Tests**: Located in `app/src/androidTest/java/com/ash/simpledataentry/`.
-  - 
-
 ---
 
 ## Changelog
@@ -149,8 +144,8 @@ This project follows a **modern Android architecture** using the **MVVM (Model-V
 
 ## Known Issues & Limitations
 
-> Data entry feature is still a work in progress, values are not persiting upon entry 
-> Data entries UX needs more polish
+1. Data entry feature is still a work in progress, values are not persiting upon entry 
+2. Data entries UX needs more polish
 
 ---
 
@@ -158,7 +153,7 @@ This project follows a **modern Android architecture** using the **MVVM (Model-V
 
 - [Open an issue](https://github.com/your-org/simpleDataEntry/issues) for bug reports or feature requests.
 - [DHIS2 Community](https://community.dhis2.org/) for general DHIS2 questions.
-- [HISP Uganda Software Development Team](info@hispuganda.org) for specific inquiries.
+- HISP Uganda Software Development Team - email info@hispuganda.org for specific inquiries.
 
 ---
 
