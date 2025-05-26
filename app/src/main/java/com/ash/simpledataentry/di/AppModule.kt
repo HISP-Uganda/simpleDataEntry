@@ -1,11 +1,15 @@
 package com.ash.simpledataentry.di
 
+import android.content.Context
+import androidx.room.Room
 import com.ash.simpledataentry.data.SessionManager
 import com.ash.simpledataentry.data.repositoryImpl.AuthRepositoryImpl
 import com.ash.simpledataentry.data.repositoryImpl.DataEntryRepositoryImpl
 import com.ash.simpledataentry.data.repositoryImpl.DatasetInstancesRepositoryImpl
 import com.ash.simpledataentry.data.repositoryImpl.DatasetsRepositoryImpl
 import com.ash.simpledataentry.data.repositoryImpl.SystemRepositoryImpl
+import com.ash.simpledataentry.data.local.AppDatabase
+import com.ash.simpledataentry.data.local.DataValueDraftDao
 import com.ash.simpledataentry.domain.repository.AuthRepository
 import com.ash.simpledataentry.domain.repository.DataEntryRepository
 import com.ash.simpledataentry.domain.repository.DatasetInstancesRepository
@@ -24,6 +28,7 @@ import com.ash.simpledataentry.domain.useCase.ValidateValueUseCase
 import dagger.Module
 import dagger.Provides
 import dagger.hilt.InstallIn
+import dagger.hilt.android.qualifiers.ApplicationContext
 import dagger.hilt.components.SingletonComponent
 import javax.inject.Singleton
 
@@ -161,6 +166,23 @@ object AppModule {
             validateValue = validateValueUseCase
         )
     }
+
+    @Provides
+    @Singleton
+    fun provideAppDatabase(@ApplicationContext context: Context): AppDatabase {
+        return Room.databaseBuilder(
+            context.applicationContext,
+            AppDatabase::class.java,
+            "simple_data_entry_db"
+        ).build()
+    }
+
+    @Provides
+    fun provideDataValueDraftDao(db: AppDatabase): DataValueDraftDao = db.dataValueDraftDao()
+
+
+
+
 
 
 }

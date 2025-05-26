@@ -8,11 +8,15 @@ import androidx.lifecycle.viewModelScope
 import com.ash.simpledataentry.domain.model.*
 import com.ash.simpledataentry.domain.repository.DataEntryRepository
 import com.ash.simpledataentry.domain.useCase.DataEntryUseCases
+import com.ash.simpledataentry.data.local.DataValueDraftDao
+import com.ash.simpledataentry.data.local.DataValueDraftEntity
 import dagger.hilt.android.lifecycle.HiltViewModel
 import kotlinx.coroutines.flow.*
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
 import javax.inject.Inject
 
 data class DataEntryState(
@@ -44,7 +48,8 @@ data class DataEntryState(
 @HiltViewModel
 class DataEntryViewModel @Inject constructor(
     private val repository: DataEntryRepository,
-    private val useCases: DataEntryUseCases
+    private val useCases: DataEntryUseCases,
+    private val draftDao: DataValueDraftDao
 ) : ViewModel() {
     private val _state = MutableStateFlow(DataEntryState())
     val state: StateFlow<DataEntryState> = _state.asStateFlow()
@@ -63,7 +68,6 @@ class DataEntryViewModel @Inject constructor(
     ) {
         viewModelScope.launch {
             try {
-                Log.d("DataEntryViewModel", "Loading data values for datasetId=$datasetId, period=$period, orgUnitId=$orgUnitId, attributeOptionCombo=$attributeOptionCombo")
                 _state.update { currentState ->
                     currentState.copy(
                         isLoading = true,
@@ -77,13 +81,18 @@ class DataEntryViewModel @Inject constructor(
                     )
                 }
 
+                // Load drafts from Room for this instance
+                val drafts = withContext(Dispatchers.IO) {
+                    draftDao.getDraftsForInstance(datasetId, period, orgUnitId, attributeOptionCombo)
+                }
+                val draftMap = drafts.associateBy { it.dataElement to it.categoryOptionCombo }
+
                 val attributeOptionComboDeferred = async {
                     repository.getAttributeOptionCombos(datasetId)
                 }
 
                 val dataValuesFlow = repository.getDataValues(datasetId, period, orgUnitId, attributeOptionCombo)
                 dataValuesFlow.collect { values ->
-                    Log.d("DataEntryViewModel", "Loaded data values: ${values.size}")
                     val uniqueCategoryCombos = values
                         .mapNotNull { it.categoryOptionCombo }
                         .filter { it.isNotBlank() }
@@ -112,10 +121,24 @@ class DataEntryViewModel @Inject constructor(
                     val attributeOptionCombos = attributeOptionComboDeferred.await()
                     val attributeOptionComboName = attributeOptionCombos.find { it.first == attributeOptionCombo }?.second ?: attributeOptionCombo
 
-                    // Merge fetched data with unsaved edits
+                    // Merge fetched data with drafts (drafts take precedence)
                     val mergedValues = values.map { fetched ->
                         val key = fetched.dataElement to fetched.categoryOptionCombo
-                        dirtyDataValues[key] ?: fetched
+                        draftMap[key]?.let { draft ->
+                            fetched.copy(
+                                value = draft.value,
+                                comment = draft.comment,
+                                lastModified = draft.lastModified
+                            )
+                        } ?: fetched
+                    }
+
+                    // Also update dirtyDataValues for in-memory quick access
+                    dirtyDataValues.clear()
+                    draftMap.forEach { (key, draft) ->
+                        mergedValues.find { it.dataElement == key.first && it.categoryOptionCombo == key.second }?.let { merged ->
+                            dirtyDataValues[key] = merged
+                        }
                     }
 
                     _state.update { currentState ->
@@ -151,7 +174,6 @@ class DataEntryViewModel @Inject constructor(
         }
         if (dataValueToUpdate != null) {
             val updatedValueObject = dataValueToUpdate.copy(value = value)
-            // Update dirty edits
             dirtyDataValues[key] = updatedValueObject
             _state.update { currentState ->
                 currentState.copy(
@@ -159,6 +181,22 @@ class DataEntryViewModel @Inject constructor(
                         if (it.dataElement == dataElementUid && it.categoryOptionCombo == categoryOptionComboUid) updatedValueObject else it
                     },
                     currentDataValue = if (currentState.currentDataValue?.dataElement == dataElementUid && currentState.currentDataValue?.categoryOptionCombo == categoryOptionComboUid) updatedValueObject else currentState.currentDataValue
+                )
+            }
+            // Persist draft to Room
+            viewModelScope.launch(Dispatchers.IO) {
+                draftDao.upsertDraft(
+                    DataValueDraftEntity(
+                        datasetId = _state.value.datasetId,
+                        period = _state.value.period,
+                        orgUnit = _state.value.orgUnit,
+                        attributeOptionCombo = _state.value.attributeOptionCombo,
+                        dataElement = dataElementUid,
+                        categoryOptionCombo = categoryOptionComboUid,
+                        value = value,
+                        comment = updatedValueObject.comment,
+                        lastModified = System.currentTimeMillis()
+                    )
                 )
             }
         }
@@ -277,6 +315,15 @@ class DataEntryViewModel @Inject constructor(
                 } else {
                     // Clear dirty edit on successful save
                     dirtyDataValues.remove(dataValue.dataElement to dataValue.categoryOptionCombo)
+                    // Remove draft from Room
+                    withContext(Dispatchers.IO) {
+                        draftDao.deleteDraftsForInstance(
+                            stateSnapshot.datasetId,
+                            stateSnapshot.period,
+                            stateSnapshot.orgUnit,
+                            stateSnapshot.attributeOptionCombo
+                        )
+                    }
                 }
             }
             _state.update { it.copy(
