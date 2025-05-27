@@ -63,4 +63,8 @@ class LoginViewModel @Inject constructor(
     fun hideSplash() {
         _state.value = _state.value.copy(showSplash = false)
     }
+
+    fun clearError() {
+        _state.value = _state.value.copy(error = null)
+    }
 }

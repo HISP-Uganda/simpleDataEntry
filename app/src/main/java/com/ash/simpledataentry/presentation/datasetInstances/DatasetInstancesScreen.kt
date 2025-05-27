@@ -59,6 +59,8 @@ import java.text.SimpleDateFormat
 import java.util.*
 import kotlinx.coroutines.launch
 import android.util.Log
+import androidx.compose.foundation.background
+import kotlinx.coroutines.delay
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -110,6 +112,32 @@ fun DatasetInstancesScreen(
         }
     ) {
         Box(modifier = Modifier.fillMaxSize()) {
+            // Splash overlay
+            if (state.showSplash) {
+                Box(
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .background(MaterialTheme.colorScheme.background.copy(alpha = 0.85f)),
+                    contentAlignment = Alignment.Center
+                ) {
+                    Column(
+                        horizontalAlignment = Alignment.CenterHorizontally,
+                        verticalArrangement = Arrangement.Center
+                    ) {
+                        CircularProgressIndicator(
+                            modifier = Modifier.size(48.dp),
+                            strokeWidth = 4.dp,
+                            color = MaterialTheme.colorScheme.primary
+                        )
+                        Spacer(modifier = Modifier.height(16.dp))
+                        Text(
+                            text = "Loading form...",
+                            style = MaterialTheme.typography.bodyLarge,
+                            color = MaterialTheme.colorScheme.onBackground
+                        )
+                    }
+                }
+            }
             if (state.isLoading || state.isSyncing) {
                 Box(
                     modifier = Modifier.fillMaxSize(),
@@ -140,11 +168,9 @@ fun DatasetInstancesScreen(
                 ) {
                     items(state.instances) { instance ->
                         var isLoading by remember { mutableStateOf(false) }
-                        
                         val formattedDate = try {
                             instance.lastUpdated?.let { dateStr ->
                                 if (dateStr is String) {
-                                    // Parse the date string
                                     val inputFormat = SimpleDateFormat("EEE MMM dd HH:mm:ss zzz yyyy", Locale.ENGLISH)
                                     val outputFormat = SimpleDateFormat("dd/MM/yyyy", Locale.ENGLISH)
                                     val date = inputFormat.parse(dateStr)
@@ -157,9 +183,7 @@ fun DatasetInstancesScreen(
                             Log.e("DatasetInstancesScreen", "Error parsing date: ${e.message}")
                             "N/A"
                         }
-
                         val periodText = instance.period.toString().replace("Period(id=", "").replace(")", "")
-                        // Map attributeOptionCombo UID to display name
                         val attrComboName = state.attributeOptionCombos.find { it.first == instance.attributeOptionCombo }?.second ?: instance.attributeOptionCombo
                         val showAttrCombo = !attrComboName.equals("default", ignoreCase = true)
                         ListCard(
@@ -193,19 +217,29 @@ fun DatasetInstancesScreen(
                                 shadow = true
                             ),
                             onCardClick = {
-                                if (!isLoading) {
+                                if (!isLoading && !state.showSplash) {
                                     isLoading = true
-                                    // Navigation to EditEntryScreen is lightweight; no reloads triggered here. Dataset instance reload only on manual refresh or datasetId change.
+                                    viewModel.setShowSplash(true)
+                                    // Simulate loading splash, then navigate
                                     val encodedDatasetId = URLEncoder.encode(datasetId, "UTF-8")
                                     val encodedDatasetName = URLEncoder.encode(datasetName, "UTF-8")
-                                    navController.navigate("EditEntry/$encodedDatasetId/${instance.period.id}/${instance.organisationUnit.id}/${instance.attributeOptionCombo}/$encodedDatasetName") {
-                                        launchSingleTop = true
-                                        popUpTo("DatasetInstances/{datasetId}/{datasetName}") {
-                                            saveState = true
+                                    val navControllerCopy = navController
+                                    val instanceCopy = instance
+                                    val viewModelCopy = viewModel
+                                    val showSplashCopy = state.showSplash
+                                    // Launch in Compose scope
+
+                                         // 700ms splash
+                                        navControllerCopy.navigate("EditEntry/$encodedDatasetId/${instanceCopy.period.id}/${instanceCopy.organisationUnit.id}/${instanceCopy.attributeOptionCombo}/$encodedDatasetName") {
+                                            launchSingleTop = true
+                                            popUpTo("DatasetInstances/{datasetId}/{datasetName}") {
+                                                saveState = true
+                                            }
                                         }
+                                        viewModelCopy.setShowSplash(false)
+                                        isLoading = false
                                     }
-                                    isLoading = false
-                                }
+
                             }
                         )
                     }

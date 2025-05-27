@@ -20,7 +20,8 @@ data class DatasetInstancesState(
     val isSyncing: Boolean = false,
     val error: String? = null,
     val successMessage: String? = null,
-    val attributeOptionCombos: List<Pair<String, String>> = emptyList()
+    val attributeOptionCombos: List<Pair<String, String>> = emptyList(),
+    val showSplash: Boolean = false
 )
 
 @HiltViewModel
@@ -124,5 +125,9 @@ class DatasetInstancesViewModel @Inject constructor(
 
     fun manualRefresh() {
         loadData()
+    }
+
+    fun setShowSplash(show: Boolean) {
+        _state.value = _state.value.copy(showSplash = show)
     }
 }

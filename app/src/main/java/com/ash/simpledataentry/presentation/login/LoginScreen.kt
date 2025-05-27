@@ -41,6 +41,10 @@ import androidx.compose.foundation.layout.imePadding
 import androidx.compose.foundation.relocation.BringIntoViewRequester
 import androidx.compose.foundation.relocation.bringIntoViewRequester
 import androidx.compose.ui.focus.onFocusChanged
+import androidx.compose.material3.SnackbarHost
+import androidx.compose.material3.SnackbarHostState
+import androidx.compose.runtime.rememberCoroutineScope
+import kotlinx.coroutines.launch
 
 @OptIn(ExperimentalMaterial3Api::class, ExperimentalFoundationApi::class)
 @Composable
@@ -49,11 +53,22 @@ fun LoginScreen(
     viewModel: LoginViewModel = hiltViewModel()
 ) {
     val state by viewModel.state.collectAsState()
+    val snackbarHostState = remember { SnackbarHostState() }
+    val coroutineScope = rememberCoroutineScope()
 
     LaunchedEffect(state.isLoggedIn) {
         if (state.isLoggedIn) {
             navController.navigate("datasets") {
                 popUpTo("login") { inclusive = true }
+            }
+        }
+    }
+
+    LaunchedEffect(state.error) {
+        state.error?.let { error ->
+            coroutineScope.launch {
+                snackbarHostState.showSnackbar(error)
+                viewModel.clearError()
             }
         }
     }
@@ -191,15 +206,12 @@ fun LoginScreen(
             }
 
             // Show error message as a Snackbar
-            state.error?.let { error ->
-                Snackbar(
-                    modifier = Modifier
-                        .align(Alignment.BottomCenter)
-                        .padding(16.dp)
-                ) {
-                    Text(error)
-                }
-            }
+            SnackbarHost(
+                hostState = snackbarHostState,
+                modifier = Modifier
+                    .align(Alignment.BottomCenter)
+                    .padding(16.dp)
+            )
         }
     }
 }
