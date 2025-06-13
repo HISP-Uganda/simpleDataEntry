@@ -1,5 +1,7 @@
 package com.ash.simpledataentry.presentation.datasetInstances
 
+import android.app.Application
+import android.content.Context
 import android.util.Log
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
@@ -7,6 +9,7 @@ import com.ash.simpledataentry.domain.model.DatasetInstance
 import com.ash.simpledataentry.domain.useCase.GetDatasetInstancesUseCase
 import com.ash.simpledataentry.domain.useCase.SyncDatasetInstancesUseCase
 import com.ash.simpledataentry.domain.repository.DataEntryRepository
+import com.ash.simpledataentry.util.NetworkUtils
 import dagger.hilt.android.lifecycle.HiltViewModel
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -28,7 +31,8 @@ data class DatasetInstancesState(
 class DatasetInstancesViewModel @Inject constructor(
     private val getDatasetInstancesUseCase: GetDatasetInstancesUseCase,
     private val syncDatasetInstancesUseCase: SyncDatasetInstancesUseCase,
-    private val dataEntryRepository: DataEntryRepository
+    private val dataEntryRepository: DataEntryRepository,
+    private val app: Application
 ) : ViewModel() {
     private var datasetId: String = ""
 
@@ -95,6 +99,16 @@ class DatasetInstancesViewModel @Inject constructor(
         viewModelScope.launch {
             _state.value = _state.value.copy(isSyncing = true, error = null)
             try {
+                if (!NetworkUtils.isNetworkAvailable(app.applicationContext)) {
+                    _state.value = _state.value.copy(
+                        isSyncing = false,
+                        error = "No network connection. Sync will be attempted when online."
+                    )
+                    return@launch
+                }
+                // 1. Push all local data (drafts/unsynced) to server
+                dataEntryRepository.pushAllLocalData()
+                // 2. Pull updates from server and harmonize
                 val result = syncDatasetInstancesUseCase()
                 result.fold(
                     onSuccess = {

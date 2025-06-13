@@ -19,4 +19,7 @@ interface DataValueDraftDao {
 
     @Delete
     suspend fun deleteDraft(draft: DataValueDraftEntity)
+
+    @Query("SELECT * FROM data_value_drafts")
+    suspend fun getAllDrafts(): List<DataValueDraftEntity>
 } 

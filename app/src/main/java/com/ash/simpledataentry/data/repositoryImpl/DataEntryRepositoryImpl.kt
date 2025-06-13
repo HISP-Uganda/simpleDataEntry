@@ -13,10 +13,14 @@ import org.hisp.dhis.android.core.dataelement.DataElement
 import org.hisp.dhis.android.core.common.ValueType
 import javax.inject.Inject
 import android.util.Log
+import com.ash.simpledataentry.data.local.DataValueDraftDao
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
 
 @ViewModelScoped
 class DataEntryRepositoryImpl @Inject constructor(
-    private val sessionManager: SessionManager
+    private val sessionManager: SessionManager,
+    private val draftDao: DataValueDraftDao
 ) : DataEntryRepository {
 
     private val d2 get() = sessionManager.getD2()!!
@@ -425,6 +429,47 @@ class DataEntryRepositoryImpl @Inject constructor(
             }
         } catch (e: Exception) {
             return emptyList()
+        }
+    }
+
+    override suspend fun pushAllLocalData() {
+        try {
+            val drafts = draftDao.getAllDrafts()
+            for (draft in drafts) {
+                try {
+                    val result = saveDataValue(
+                        datasetId = draft.datasetId,
+                        period = draft.period,
+                        orgUnit = draft.orgUnit,
+                        attributeOptionCombo = draft.attributeOptionCombo,
+                        dataElement = draft.dataElement,
+                        categoryOptionCombo = draft.categoryOptionCombo,
+                        value = draft.value,
+                        comment = draft.comment
+                    )
+                    if (result.isSuccess) {
+                        draftDao.deleteDraft(draft)
+                    }
+                } catch (e: Exception) {
+                    Log.e("DataEntryRepositoryImpl", "Exception uploading draft: ${draft.dataElement}", e)
+                }
+            }
+            // Upload all local data values
+            d2.dataValueModule().dataValues().upload()
+            // Download/sync all data values from server
+            d2.dataValueModule().dataValues().get()
+        } catch (e: Exception) {
+            Log.e("DataEntryRepositoryImpl", "Error pushing local drafts", e)
+        }
+    }
+
+    // Add this function to handle sync for the current entry form
+    override suspend fun syncCurrentEntryForm() {
+        withContext(Dispatchers.IO) {
+            // Upload all local data values
+            d2.dataValueModule().dataValues().blockingUpload()
+            // Download all aggregated data values
+            d2.aggregatedModule().data().blockingDownload()
         }
     }
 }

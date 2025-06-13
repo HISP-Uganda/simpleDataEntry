@@ -93,6 +93,9 @@ class DatasetInstancesRepositoryImpl @Inject constructor(
         Log.d(TAG, "Starting dataset instances sync")
         withContext(Dispatchers.IO) {
             try {
+                // Upload local changes to dataset instances
+               // d2.dataSetModule().dataSetInstances().blockingUpload()
+                // Download latest dataset instances from server
                 d2.dataSetModule().dataSetInstances().blockingGet()
                 Log.d(TAG, "Sync completed successfully")
             } catch (e: Exception) {

@@ -124,9 +124,10 @@ object AppModule {
     @Provides
     @Singleton
     fun provideDataEntryRepository(
-        sessionManager: SessionManager
+        sessionManager: SessionManager,
+        draftDao: DataValueDraftDao
     ): DataEntryRepository {
-        return DataEntryRepositoryImpl(sessionManager)
+        return DataEntryRepositoryImpl(sessionManager, draftDao)
     }
 
     @Provides

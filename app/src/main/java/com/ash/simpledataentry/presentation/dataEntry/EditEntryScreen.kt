@@ -16,7 +16,6 @@ import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Clear
 import androidx.compose.material.icons.filled.KeyboardArrowDown
-import androidx.compose.material.icons.filled.Sync
 import androidx.compose.material.icons.filled.Save
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
@@ -50,6 +49,11 @@ import androidx.compose.material3.FloatingActionButton
 import androidx.compose.material3.SnackbarHost
 import androidx.compose.material3.SnackbarHostState
 import kotlinx.coroutines.launch
+import androidx.activity.compose.BackHandler
+import androidx.compose.material.icons.automirrored.filled.ArrowBack
+import androidx.compose.material.icons.filled.ArrowBack
+import androidx.compose.material.icons.filled.Sync
+import androidx.compose.ui.platform.LocalContext
 
 data class Quadruple<A, B, C, D>(val first: A, val second: B, val third: C, val fourth: D)
 
@@ -69,6 +73,72 @@ fun EditEntryScreen(
     val currentParams = Quadruple(datasetId, period, orgUnit, attributeOptionCombo)
     val snackbarHostState = remember { SnackbarHostState() }
     val coroutineScope = rememberCoroutineScope()
+    val showSaveDialog = remember { mutableStateOf(false) }
+    val pendingNavAction = remember { mutableStateOf<(() -> Unit)?>(null) }
+    val context = LocalContext.current
+
+    // Detect unsaved changes: compare ViewModel dirtyDataValues or drafts
+    val hasUnsavedChanges = remember(state.dataValues) {
+        // If any dataValue has a value different from its original (e.g., not null and not equal to the last saved value)
+        state.dataValues.any { it.value != null && it.value != it.comment && it.value != "" } // Simplified; ideally compare to original loaded values
+    }
+
+    // Intercept back press: block if saving or save was pressed
+    BackHandler(enabled = hasUnsavedChanges && !state.saveInProgress && !viewModel.wasSavePressed()) {
+        showSaveDialog.value = true
+        pendingNavAction.value = { navController.popBackStack() }
+    }
+
+    // Intercept navigation via top bar back button: block if saving
+    val baseScreenNavIcon: @Composable (() -> Unit) = {
+        IconButton(onClick = {
+            if (state.saveInProgress || viewModel.wasSavePressed()) {
+                // Block navigation while saving
+                return@IconButton
+            }
+            if (hasUnsavedChanges) {
+                showSaveDialog.value = true
+                pendingNavAction.value = { navController.popBackStack() }
+            } else {
+                navController.popBackStack()
+            }
+        }) {
+            Icon(
+                imageVector = Icons.Default.ArrowBack,
+                contentDescription = "Back"
+            )
+        }
+    }
+
+    // Save confirmation dialog: only show if not saving and save not pressed
+    if (showSaveDialog.value && !state.saveInProgress && !viewModel.wasSavePressed()) {
+        AlertDialog(
+            onDismissRequest = { showSaveDialog.value = false },
+            title = { Text("Unsaved Changes") },
+            text = { Text("You have unsaved changes. Save before leaving?") },
+            confirmButton = {
+                TextButton(onClick = {
+                    showSaveDialog.value = false
+                    viewModel.saveAllDataValues(context)
+                    pendingNavAction.value?.invoke()
+                }) { Text("Save") }
+            },
+            dismissButton = {
+                Row {
+                    TextButton(onClick = {
+                        showSaveDialog.value = false
+                        // Discard: clear drafts/dirty values, then navigate
+                        viewModel.clearDraftsForCurrentInstance()
+                        pendingNavAction.value?.invoke()
+                    }) { Text("Discard") }
+                    TextButton(onClick = {
+                        showSaveDialog.value = false
+                    }) { Text("Cancel") }
+                }
+            }
+        )
+    }
+
     LaunchedEffect(currentParams) {
         if (state.dataValues.isEmpty() || lastLoadedParams != currentParams) {
             isLoading = true
@@ -103,8 +173,9 @@ fun EditEntryScreen(
             if (it.isSuccess) {
                 snackbarHostState.showSnackbar("All data saved successfully.")
             } else {
-                snackbarHostState.showSnackbar("Failed to save some fields.")
+                snackbarHostState.showSnackbar(it.exceptionOrNull()?.message ?: "Failed to save some fields.")
             }
+            viewModel.resetSaveFeedback()
         }
     }
     // Resolve attribute option combo display name for the title
@@ -112,9 +183,26 @@ fun EditEntryScreen(
     BaseScreen(
         title = "${java.net.URLDecoder.decode(datasetName, "UTF-8")} - ${period.replace("Period(id=", "").replace(")", "")} - $attrComboName",
         navController = navController,
+        navigationIcon = baseScreenNavIcon,
         actions = {
-            IconButton(onClick = { manualRefresh() }) {
-                Icon(Icons.Default.Sync, contentDescription = "Refresh")
+            // Add sync button to top bar
+            IconButton(
+                onClick = {
+                    coroutineScope.launch {
+                        viewModel.syncCurrentEntryForm()
+                    }
+                },
+                enabled = !state.isLoading
+            ) {
+                if (state.isLoading) {
+                    CircularProgressIndicator(modifier = Modifier.size(24.dp), strokeWidth = 2.dp)
+                } else {
+                    Icon(
+                        imageVector = Icons.Default.Sync,
+                        contentDescription = "Sync",
+                        tint = MaterialTheme.colorScheme.onSurface
+                    )
+                }
             }
         }
     ) {
@@ -209,7 +297,7 @@ fun EditEntryScreen(
                 // FAB and Snackbar
                 Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.BottomEnd) {
                     FloatingActionButton(
-                        onClick = { viewModel.saveAllDataValues() },
+                        onClick = { viewModel.saveAllDataValues(context) },
                         //enabled = !state.saveInProgress,
                         containerColor = MaterialTheme.colorScheme.primary,
                         contentColor = MaterialTheme.colorScheme.onPrimary,
@@ -230,6 +318,12 @@ fun EditEntryScreen(
             }
         }
     }
+    // Show Snackbar on sync error
+    LaunchedEffect(state.error) {
+        state.error?.let {
+            snackbarHostState.showSnackbar(it)
+        }
+    }
 }
 
 @Composable
@@ -244,6 +338,8 @@ private fun SectionContent(
     onValueChange: (String, DataValue) -> Unit,
     optionUidsToComboUid: Map<Set<String>, String>
 ) {
+    val filledCount = values.count { !it.value.isNullOrBlank() }
+    val totalCount = values.size
     Column {
         Surface(
             modifier = Modifier
@@ -257,11 +353,19 @@ private fun SectionContent(
                 horizontalArrangement = Arrangement.SpaceBetween,
                 verticalAlignment = Alignment.CenterVertically
             ) {
-                Text(
-                    text = sectionName,
-                    style = MaterialTheme.typography.titleMedium,
-                    fontWeight = FontWeight.Bold
-                )
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Text(
+                        text = sectionName,
+                        style = MaterialTheme.typography.titleMedium,
+                        fontWeight = FontWeight.Bold
+                    )
+                    Spacer(modifier = Modifier.width(8.dp))
+                    Text(
+                        text = "$filledCount/$totalCount",
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = MaterialTheme.colorScheme.primary
+                    )
+                }
                 Icon(
                     imageVector = Icons.Default.KeyboardArrowDown,
                     contentDescription = "Expand/Collapse Section",

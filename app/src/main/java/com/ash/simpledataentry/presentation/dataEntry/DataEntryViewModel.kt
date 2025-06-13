@@ -18,6 +18,7 @@ import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import javax.inject.Inject
+import com.ash.simpledataentry.util.NetworkUtils
 
 data class DataEntryState(
     val datasetId: String = "",
@@ -56,6 +57,8 @@ class DataEntryViewModel @Inject constructor(
 
     // Track unsaved edits: key = Pair<dataElement, categoryOptionCombo>, value = DataValue
     private val dirtyDataValues = mutableMapOf<Pair<String, String>, DataValue>()
+
+    private var savePressed = false
 
     // Only call loadDataValues on explicit triggers (initial load or parameter change), not on accordion open/close.
     fun loadDataValues(
@@ -294,42 +297,123 @@ class DataEntryViewModel @Inject constructor(
         _state.update { it.copy(isNavigating = isNavigating) }
     }
 
-    fun saveAllDataValues() {
+    fun saveAllDataValues(context: android.content.Context? = null) {
         viewModelScope.launch {
             _state.update { it.copy(saveInProgress = true, saveResult = null) }
+            savePressed = true
             val stateSnapshot = _state.value
             val failed = mutableListOf<Pair<String, String>>()
+            var anyOnline = false
+            val isOnline = context?.let { NetworkUtils.isNetworkAvailable(it) } ?: false
             for (dataValue in stateSnapshot.dataValues) {
-                val result = useCases.saveDataValue(
-                    datasetId = stateSnapshot.datasetId,
-                    period = stateSnapshot.period,
-                    orgUnit = stateSnapshot.orgUnit,
-                    attributeOptionCombo = stateSnapshot.attributeOptionCombo,
-                    dataElement = dataValue.dataElement,
-                    categoryOptionCombo = dataValue.categoryOptionCombo,
-                    value = dataValue.value,
-                    comment = dataValue.comment
-                )
-                if (result.isFailure) {
-                    failed.add(dataValue.dataElement to dataValue.categoryOptionCombo)
-                } else {
-                    // Clear dirty edit on successful save
-                    dirtyDataValues.remove(dataValue.dataElement to dataValue.categoryOptionCombo)
-                    // Remove draft from Room
-                    withContext(Dispatchers.IO) {
-                        draftDao.deleteDraftsForInstance(
-                            stateSnapshot.datasetId,
-                            stateSnapshot.period,
-                            stateSnapshot.orgUnit,
-                            stateSnapshot.attributeOptionCombo
+                // Always persist draft locally
+                withContext(Dispatchers.IO) {
+                    draftDao.upsertDraft(
+                        DataValueDraftEntity(
+                            datasetId = stateSnapshot.datasetId,
+                            period = stateSnapshot.period,
+                            orgUnit = stateSnapshot.orgUnit,
+                            attributeOptionCombo = stateSnapshot.attributeOptionCombo,
+                            dataElement = dataValue.dataElement,
+                            categoryOptionCombo = dataValue.categoryOptionCombo,
+                            value = dataValue.value,
+                            comment = dataValue.comment,
+                            lastModified = System.currentTimeMillis()
                         )
+                    )
+                }
+                // If online, try to upload
+                if (isOnline) {
+                    val result = useCases.saveDataValue(
+                        datasetId = stateSnapshot.datasetId,
+                        period = stateSnapshot.period,
+                        orgUnit = stateSnapshot.orgUnit,
+                        attributeOptionCombo = stateSnapshot.attributeOptionCombo,
+                        dataElement = dataValue.dataElement,
+                        categoryOptionCombo = dataValue.categoryOptionCombo,
+                        value = dataValue.value,
+                        comment = dataValue.comment
+                    )
+                    if (result.isFailure) {
+                        failed.add(dataValue.dataElement to dataValue.categoryOptionCombo)
+                    } else {
+                        anyOnline = true
+                        // Clear dirty edit on successful save
+                        dirtyDataValues.remove(dataValue.dataElement to dataValue.categoryOptionCombo)
+                        // Remove draft from Room
+                        withContext(Dispatchers.IO) {
+                            draftDao.deleteDraftsForInstance(
+                                stateSnapshot.datasetId,
+                                stateSnapshot.period,
+                                stateSnapshot.orgUnit,
+                                stateSnapshot.attributeOptionCombo
+                            )
+                        }
                     }
                 }
             }
+            val resultMsg = when {
+                isOnline && failed.isEmpty() -> Result.success(Unit)
+                isOnline && failed.isNotEmpty() -> Result.failure(Exception("Failed to save some fields online"))
+                !isOnline -> Result.failure(Exception("Saved locally. Will sync when online."))
+                else -> Result.failure(Exception("Unknown save state"))
+            }
             _state.update { it.copy(
                 saveInProgress = false,
-                saveResult = if (failed.isEmpty()) Result.success(Unit) else Result.failure(Exception("Failed to save some fields"))
+                saveResult = resultMsg
             ) }
+        }
+    }
+
+    fun resetSaveFeedback() {
+        _state.update { it.copy(saveResult = null, saveInProgress = false) }
+        savePressed = false
+    }
+
+    fun wasSavePressed(): Boolean = savePressed
+
+    fun clearDraftsForCurrentInstance() {
+        val stateSnapshot = _state.value
+        viewModelScope.launch(Dispatchers.IO) {
+            draftDao.deleteDraftsForInstance(
+                stateSnapshot.datasetId,
+                stateSnapshot.period,
+                stateSnapshot.orgUnit,
+                stateSnapshot.attributeOptionCombo
+            )
+            // Clear in-memory dirty values
+            dirtyDataValues.clear()
+            // Optionally, reload data values from backend to reset UI
+            withContext(Dispatchers.Main) {
+                loadDataValues(
+                    datasetId = stateSnapshot.datasetId,
+                    datasetName = stateSnapshot.datasetName,
+                    period = stateSnapshot.period,
+                    orgUnitId = stateSnapshot.orgUnit,
+                    attributeOptionCombo = stateSnapshot.attributeOptionCombo,
+                    isEditMode = true
+                )
+            }
+        }
+    }
+
+    fun syncCurrentEntryForm() {
+        viewModelScope.launch {
+            try {
+                repository.syncCurrentEntryForm()
+                loadDataValues(
+                    datasetId = _state.value.datasetId,
+                    datasetName = _state.value.datasetName,
+                    period = _state.value.period,
+                    orgUnitId = _state.value.orgUnit,
+                    attributeOptionCombo = _state.value.attributeOptionCombo,
+                    isEditMode = _state.value.isEditMode
+                )
+            } catch (e: Exception) {
+                _state.update { currentState ->
+                    currentState.copy(error = "Sync failed: ${e.message}")
+                }
+            }
         }
     }
 }
