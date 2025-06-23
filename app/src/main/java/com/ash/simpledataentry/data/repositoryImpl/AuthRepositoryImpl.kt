@@ -6,6 +6,7 @@ import com.ash.simpledataentry.data.SessionManager
 import com.ash.simpledataentry.domain.model.Dhis2Config
 import com.ash.simpledataentry.domain.repository.AuthRepository
 import com.ash.simpledataentry.domain.repository.SystemRepository
+import com.ash.simpledataentry.data.local.AppDatabase
 import javax.inject.Inject
 import javax.inject.Singleton
 
@@ -15,13 +16,11 @@ class AuthRepositoryImpl @Inject constructor(
 
 ) : AuthRepository {
 
-    override suspend fun login(serverUrl: String, username: String, password: String, context: Context): Boolean {
-        Log.d("AuthRepository", "Attempting login for $username")
+    override suspend fun login(serverUrl: String, username: String, password: String, context: Context, db: AppDatabase): Boolean {
         return try {
-            sessionManager.login(context, Dhis2Config(serverUrl, username, password))
+            sessionManager.login(context, Dhis2Config(serverUrl, username, password), db)
             true
         } catch (e: Exception) {
-            Log.e("AuthRepository", "Login failed for $username", e)
             false
         }
     }

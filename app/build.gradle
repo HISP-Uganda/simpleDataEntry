@@ -112,4 +112,8 @@ dependencies {
     ksp("androidx.room:room-compiler:2.7.1")
     testImplementation "androidx.room:room-testing:2.7.1"
 
+
+    implementation("io.nerdythings:okhttp-profiler:1.1.1")
+
+
 } 

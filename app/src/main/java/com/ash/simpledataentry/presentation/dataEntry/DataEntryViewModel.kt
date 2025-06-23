@@ -1,24 +1,25 @@
 package com.ash.simpledataentry.presentation.dataEntry
 
+import android.app.Application
 import android.os.Build
 import android.util.Log
 import androidx.annotation.RequiresApi
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
+import com.ash.simpledataentry.data.local.DataValueDraftDao
+import com.ash.simpledataentry.data.local.DataValueDraftEntity
 import com.ash.simpledataentry.domain.model.*
 import com.ash.simpledataentry.domain.repository.DataEntryRepository
 import com.ash.simpledataentry.domain.useCase.DataEntryUseCases
-import com.ash.simpledataentry.data.local.DataValueDraftDao
-import com.ash.simpledataentry.data.local.DataValueDraftEntity
+import com.ash.simpledataentry.util.NetworkUtils
 import dagger.hilt.android.lifecycle.HiltViewModel
-import kotlinx.coroutines.flow.*
-import kotlinx.coroutines.launch
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
-import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.flow.*
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import javax.inject.Inject
-import com.ash.simpledataentry.util.NetworkUtils
 
 data class DataEntryState(
     val datasetId: String = "",
@@ -43,11 +44,14 @@ data class DataEntryState(
     val isNavigating: Boolean = false,
     val saveInProgress: Boolean = false,
     val saveResult: Result<Unit>? = null,
-    val attributeOptionCombos: List<Pair<String, String>> = emptyList()
+    val attributeOptionCombos: List<Pair<String, String>> = emptyList(),
+    val expandedGridRows: Map<String, Set<String>> = emptyMap(),
+    val isExpandedSections: Map<String, Boolean> = emptyMap()
 )
 
 @HiltViewModel
 class DataEntryViewModel @Inject constructor(
+    private val application: Application,
     private val repository: DataEntryRepository,
     private val useCases: DataEntryUseCases,
     private val draftDao: DataValueDraftDao
@@ -60,7 +64,6 @@ class DataEntryViewModel @Inject constructor(
 
     private var savePressed = false
 
-    // Only call loadDataValues on explicit triggers (initial load or parameter change), not on accordion open/close.
     fun loadDataValues(
         datasetId: String,
         datasetName: String,
@@ -84,7 +87,6 @@ class DataEntryViewModel @Inject constructor(
                     )
                 }
 
-                // Load drafts from Room for this instance
                 val drafts = withContext(Dispatchers.IO) {
                     draftDao.getDraftsForInstance(datasetId, period, orgUnitId, attributeOptionCombo)
                 }
@@ -124,7 +126,6 @@ class DataEntryViewModel @Inject constructor(
                     val attributeOptionCombos = attributeOptionComboDeferred.await()
                     val attributeOptionComboName = attributeOptionCombos.find { it.first == attributeOptionCombo }?.second ?: attributeOptionCombo
 
-                    // Merge fetched data with drafts (drafts take precedence)
                     val mergedValues = values.map { fetched ->
                         val key = fetched.dataElement to fetched.categoryOptionCombo
                         draftMap[key]?.let { draft ->
@@ -136,7 +137,6 @@ class DataEntryViewModel @Inject constructor(
                         } ?: fetched
                     }
 
-                    // Also update dirtyDataValues for in-memory quick access
                     dirtyDataValues.clear()
                     draftMap.forEach { (key, draft) ->
                         mergedValues.find { it.dataElement == key.first && it.categoryOptionCombo == key.second }?.let { merged ->
@@ -186,25 +186,169 @@ class DataEntryViewModel @Inject constructor(
                     currentDataValue = if (currentState.currentDataValue?.dataElement == dataElementUid && currentState.currentDataValue?.categoryOptionCombo == categoryOptionComboUid) updatedValueObject else currentState.currentDataValue
                 )
             }
-            // Persist draft to Room
             viewModelScope.launch(Dispatchers.IO) {
-                draftDao.upsertDraft(
-                    DataValueDraftEntity(
+                if (value.isNotBlank()) {
+                    draftDao.upsertDraft(
+                        DataValueDraftEntity(
+                            datasetId = _state.value.datasetId,
+                            period = _state.value.period,
+                            orgUnit = _state.value.orgUnit,
+                            attributeOptionCombo = _state.value.attributeOptionCombo,
+                            dataElement = dataElementUid,
+                            categoryOptionCombo = categoryOptionComboUid,
+                            value = value,
+                            comment = updatedValueObject.comment,
+                            lastModified = System.currentTimeMillis()
+                        )
+                    )
+                } else {
+                    draftDao.deleteDraft(
                         datasetId = _state.value.datasetId,
                         period = _state.value.period,
                         orgUnit = _state.value.orgUnit,
                         attributeOptionCombo = _state.value.attributeOptionCombo,
                         dataElement = dataElementUid,
-                        categoryOptionCombo = categoryOptionComboUid,
-                        value = value,
-                        comment = updatedValueObject.comment,
-                        lastModified = System.currentTimeMillis()
+                        categoryOptionCombo = categoryOptionComboUid
                     )
-                )
+                }
             }
         }
     }
 
+    fun saveAllDataValues(context: android.content.Context? = null) {
+        viewModelScope.launch {
+            _state.update { it.copy(saveInProgress = true, saveResult = null) }
+            savePressed = true
+            val stateSnapshot = _state.value
+
+            try {
+                val draftsToSave = dirtyDataValues.values.map { dataValue ->
+                    DataValueDraftEntity(
+                        datasetId = stateSnapshot.datasetId,
+                        period = stateSnapshot.period,
+                        orgUnit = stateSnapshot.orgUnit,
+                        attributeOptionCombo = stateSnapshot.attributeOptionCombo,
+                        dataElement = dataValue.dataElement,
+                        categoryOptionCombo = dataValue.categoryOptionCombo,
+                        value = dataValue.value,
+                        comment = dataValue.comment,
+                        lastModified = System.currentTimeMillis()
+                    )
+                }
+
+                withContext(Dispatchers.IO) {
+                    draftDao.upsertAll(draftsToSave)
+                }
+
+                dirtyDataValues.clear()
+
+                _state.update { it.copy(
+                    saveInProgress = false,
+                    saveResult = Result.success(Unit)
+                ) }
+
+            } catch (e: Exception) {
+                _state.update { it.copy(
+                    saveInProgress = false,
+                    saveResult = Result.failure(e)
+                ) }
+            }
+        }
+    }
+
+    fun syncCurrentEntryForm() {
+        viewModelScope.launch {
+            _state.update { it.copy(isLoading = true, error = null) }
+            val stateSnapshot = _state.value
+            val isOnline = NetworkUtils.isNetworkAvailable(application)
+            if (!isOnline) {
+                _state.update { it.copy(isLoading = false, error = "Cannot sync while offline.") }
+                return@launch
+            }
+
+            try {
+                // 1. Load all drafts for the current instance
+                val drafts = withContext(Dispatchers.IO) {
+                    draftDao.getDraftsForInstance(
+                        stateSnapshot.datasetId,
+                        stateSnapshot.period,
+                        stateSnapshot.orgUnit,
+                        stateSnapshot.attributeOptionCombo
+                    )
+                }
+                Log.d("DataEntryViewModel", "Loaded ${'$'}{drafts.size} drafts for sync")
+
+                // 2. For each draft, stage value in SDK
+                val results = drafts.map { draft ->
+                    async(Dispatchers.IO) {
+                        useCases.saveDataValue(
+                            datasetId = draft.datasetId,
+                            period = draft.period,
+                            orgUnit = draft.orgUnit,
+                            attributeOptionCombo = draft.attributeOptionCombo,
+                            dataElement = draft.dataElement,
+                            categoryOptionCombo = draft.categoryOptionCombo,
+                            value = draft.value,
+                            comment = draft.comment
+                        )
+                    }
+                }.awaitAll()
+                val failed = results.filter { it.isFailure }
+                if (failed.isNotEmpty()) {
+                    Log.e("DataEntryViewModel", "Failed to stage ${'$'}{failed.size} drafts: ${'$'}{failed.map { it.exceptionOrNull()?.message }}")
+                    _state.update { it.copy(isLoading = false, error = "Failed to stage some values for upload.") }
+                    return@launch
+                }
+                Log.d("DataEntryViewModel", "All drafts staged in SDK")
+
+                // 3. Trigger upload
+                try {
+                    val uploadResult = withContext(Dispatchers.IO) {
+                        repository.syncCurrentEntryForm()
+                    }
+                    Log.d("DataEntryViewModel", "Data values uploaded successfully: $uploadResult")
+                    // Only delete drafts if uploadResult is not null/empty
+                    if (uploadResult != null && uploadResult.toString().isNotBlank()) {
+                        withContext(Dispatchers.IO) {
+                            draftDao.deleteDraftsForInstance(
+                                stateSnapshot.datasetId,
+                                stateSnapshot.period,
+                                stateSnapshot.orgUnit,
+                                stateSnapshot.attributeOptionCombo
+                            )
+                        }
+                        Log.d("DataEntryViewModel", "Drafts deleted after successful upload")
+                    } else {
+                        Log.e("DataEntryViewModel", "Upload failed or returned empty result: $uploadResult")
+                        _state.update { it.copy(isLoading = false, error = "Upload failed or returned empty result.") }
+                        return@launch
+                    }
+                } catch (e: Exception) {
+                    Log.e("DataEntryViewModel", "Upload failed: ${'$'}{e.message}", e)
+                    _state.update { it.copy(isLoading = false, error = "Upload failed: ${'$'}{e.message}") }
+                    return@launch
+                }
+
+                // 4. Reload data values to refresh UI
+                loadDataValues(
+                    datasetId = _state.value.datasetId,
+                    datasetName = _state.value.datasetName,
+                    period = _state.value.period,
+                    orgUnitId = _state.value.orgUnit,
+                    attributeOptionCombo = _state.value.attributeOptionCombo,
+                    isEditMode = _state.value.isEditMode
+                )
+
+                _state.update { it.copy(isLoading = false, error = null) }
+            } catch (e: Exception) {
+                Log.e("DataEntryViewModel", "Sync failed: ${'$'}{e.message}", e)
+                _state.update { currentState ->
+                    currentState.copy(error = "Sync failed: ${'$'}{e.message}", isLoading = false)
+                }
+            }
+        }
+    }
+    
     fun updateComment(comment: String) {
         _state.value.currentDataValue?.let { currentValue ->
             _state.update { currentState ->
@@ -256,8 +400,12 @@ class DataEntryViewModel @Inject constructor(
 
     fun toggleSection(sectionName: String) {
         _state.update { currentState ->
-            val newExpanded = if (currentState.expandedSection == sectionName) null else sectionName
-            currentState.copy(expandedSection = newExpanded)
+            val current = currentState.isExpandedSections[sectionName] ?: false
+            currentState.copy(
+                isExpandedSections = currentState.isExpandedSections.toMutableMap().apply {
+                    this[sectionName] = !current
+                }
+            )
         }
     }
 
@@ -296,75 +444,7 @@ class DataEntryViewModel @Inject constructor(
     fun setNavigating(isNavigating: Boolean) {
         _state.update { it.copy(isNavigating = isNavigating) }
     }
-
-    fun saveAllDataValues(context: android.content.Context? = null) {
-        viewModelScope.launch {
-            _state.update { it.copy(saveInProgress = true, saveResult = null) }
-            savePressed = true
-            val stateSnapshot = _state.value
-            val failed = mutableListOf<Pair<String, String>>()
-            var anyOnline = false
-            val isOnline = context?.let { NetworkUtils.isNetworkAvailable(it) } ?: false
-            for (dataValue in stateSnapshot.dataValues) {
-                // Always persist draft locally
-                withContext(Dispatchers.IO) {
-                    draftDao.upsertDraft(
-                        DataValueDraftEntity(
-                            datasetId = stateSnapshot.datasetId,
-                            period = stateSnapshot.period,
-                            orgUnit = stateSnapshot.orgUnit,
-                            attributeOptionCombo = stateSnapshot.attributeOptionCombo,
-                            dataElement = dataValue.dataElement,
-                            categoryOptionCombo = dataValue.categoryOptionCombo,
-                            value = dataValue.value,
-                            comment = dataValue.comment,
-                            lastModified = System.currentTimeMillis()
-                        )
-                    )
-                }
-                // If online, try to upload
-                if (isOnline) {
-                    val result = useCases.saveDataValue(
-                        datasetId = stateSnapshot.datasetId,
-                        period = stateSnapshot.period,
-                        orgUnit = stateSnapshot.orgUnit,
-                        attributeOptionCombo = stateSnapshot.attributeOptionCombo,
-                        dataElement = dataValue.dataElement,
-                        categoryOptionCombo = dataValue.categoryOptionCombo,
-                        value = dataValue.value,
-                        comment = dataValue.comment
-                    )
-                    if (result.isFailure) {
-                        failed.add(dataValue.dataElement to dataValue.categoryOptionCombo)
-                    } else {
-                        anyOnline = true
-                        // Clear dirty edit on successful save
-                        dirtyDataValues.remove(dataValue.dataElement to dataValue.categoryOptionCombo)
-                        // Remove draft from Room
-                        withContext(Dispatchers.IO) {
-                            draftDao.deleteDraftsForInstance(
-                                stateSnapshot.datasetId,
-                                stateSnapshot.period,
-                                stateSnapshot.orgUnit,
-                                stateSnapshot.attributeOptionCombo
-                            )
-                        }
-                    }
-                }
-            }
-            val resultMsg = when {
-                isOnline && failed.isEmpty() -> Result.success(Unit)
-                isOnline && failed.isNotEmpty() -> Result.failure(Exception("Failed to save some fields online"))
-                !isOnline -> Result.failure(Exception("Saved locally. Will sync when online."))
-                else -> Result.failure(Exception("Unknown save state"))
-            }
-            _state.update { it.copy(
-                saveInProgress = false,
-                saveResult = resultMsg
-            ) }
-        }
-    }
-
+    
     fun resetSaveFeedback() {
         _state.update { it.copy(saveResult = null, saveInProgress = false) }
         savePressed = false
@@ -381,9 +461,7 @@ class DataEntryViewModel @Inject constructor(
                 stateSnapshot.orgUnit,
                 stateSnapshot.attributeOptionCombo
             )
-            // Clear in-memory dirty values
             dirtyDataValues.clear()
-            // Optionally, reload data values from backend to reset UI
             withContext(Dispatchers.Main) {
                 loadDataValues(
                     datasetId = stateSnapshot.datasetId,
@@ -397,23 +475,19 @@ class DataEntryViewModel @Inject constructor(
         }
     }
 
-    fun syncCurrentEntryForm() {
-        viewModelScope.launch {
-            try {
-                repository.syncCurrentEntryForm()
-                loadDataValues(
-                    datasetId = _state.value.datasetId,
-                    datasetName = _state.value.datasetName,
-                    period = _state.value.period,
-                    orgUnitId = _state.value.orgUnit,
-                    attributeOptionCombo = _state.value.attributeOptionCombo,
-                    isEditMode = _state.value.isEditMode
-                )
-            } catch (e: Exception) {
-                _state.update { currentState ->
-                    currentState.copy(error = "Sync failed: ${e.message}")
+    fun toggleGridRow(sectionName: String, rowKey: String) {
+        _state.update { currentState ->
+            val currentSet = currentState.expandedGridRows[sectionName] ?: emptySet()
+            val newSet = if (currentSet.contains(rowKey)) currentSet - rowKey else currentSet + rowKey
+            currentState.copy(
+                expandedGridRows = currentState.expandedGridRows.toMutableMap().apply {
+                    put(sectionName, newSet)
                 }
-            }
+            )
         }
+    }
+
+    fun isGridRowExpanded(sectionName: String, rowKey: String): Boolean {
+        return _state.value.expandedGridRows[sectionName]?.contains(rowKey) == true
     }
 }

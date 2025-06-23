@@ -12,6 +12,9 @@ import javax.inject.Inject
 import javax.inject.Singleton
 import androidx.core.content.edit
 import org.koin.core.context.stopKoin
+import com.ash.simpledataentry.data.local.AppDatabase
+import okhttp3.OkHttpClient
+import okhttp3.Interceptor
 
 @Singleton
 class SessionManager @Inject constructor() {
@@ -25,15 +28,24 @@ class SessionManager @Inject constructor() {
         }
         if (d2 == null) {
             try {
+                // Add OkHttp logging interceptor
+                val loggingInterceptor = Interceptor { chain ->
+                    val request = chain.request()
+                    Log.d("OkHttp", "Request: ${request.method} ${request.url}")
+                    val response = chain.proceed(request)
+                    Log.d("OkHttp", "Response: ${response.code} ${response.message}")
+                    response
+                }
                 val config = D2Configuration.builder()
                     .context(context)
                     .appName("Simple Data Entry")
                     .appVersion("1.0")
                     .readTimeoutInSeconds(30)
                     .writeTimeoutInSeconds(30)
+                    .interceptors(listOf(loggingInterceptor))
                     .build()
                 d2 = D2Manager.blockingInstantiateD2(config)
-                Log.d("SessionManager", "D2 initialized successfully")
+                Log.d("SessionManager", "D2 initialized successfully with OkHttp logging")
             } catch (e: Exception) {
                 Log.e("SessionManager", "D2 initialization failed", e)
                 throw e
@@ -41,7 +53,7 @@ class SessionManager @Inject constructor() {
         }
     }
 
-    suspend fun login(context: Context, dhis2Config: Dhis2Config) = withContext(Dispatchers.IO) {
+    suspend fun login(context: Context, dhis2Config: Dhis2Config, db: AppDatabase) = withContext(Dispatchers.IO) {
         val prefs = context.getSharedPreferences("session_prefs", Context.MODE_PRIVATE)
         val lastUser = prefs.getString("username", null)
         val lastServer = prefs.getString("serverUrl", null)
@@ -74,6 +86,7 @@ class SessionManager @Inject constructor() {
 
             downloadMetadata()
             downloadAggregateData()
+            hydrateRoomFromSdk(context, db)
 
             Log.i("SessionManager", "Login successful for ${dhis2Config.username}")
         } catch (e: Exception) {
@@ -124,6 +137,61 @@ class SessionManager @Inject constructor() {
 
     }
 
-
+    suspend fun hydrateRoomFromSdk(context: Context, db: AppDatabase) = withContext(Dispatchers.IO) {
+        val d2Instance = d2 ?: return@withContext
+        // Hydrate datasets
+        val datasets = d2Instance.dataSetModule().dataSets().blockingGet().map {
+            com.ash.simpledataentry.data.local.DatasetEntity(
+                id = it.uid(),
+                name = it.displayName() ?: it.name() ?: "Unnamed Dataset",
+                description = it.description() ?: "",
+                periodType = it.periodType()?.name ?: "Monthly"
+            )
+        }
+        db.datasetDao().clearAll()
+        db.datasetDao().insertAll(datasets)
+        // Hydrate data elements
+        val dataElements = d2Instance.dataElementModule().dataElements().blockingGet().map {
+            com.ash.simpledataentry.data.local.DataElementEntity(
+                id = it.uid(),
+                name = it.displayName() ?: it.name() ?: "Unnamed DataElement",
+                valueType = it.valueType()?.name ?: "TEXT",
+                categoryComboId = it.categoryComboUid(),
+                description = it.description()
+            )
+        }
+        db.dataElementDao().clearAll()
+        db.dataElementDao().insertAll(dataElements)
+        // Hydrate category combos
+        val categoryCombos = d2Instance.categoryModule().categoryCombos().blockingGet().map {
+            com.ash.simpledataentry.data.local.CategoryComboEntity(
+                id = it.uid(),
+                name = it.displayName() ?: it.name() ?: "Unnamed CategoryCombo"
+            )
+        }
+        db.categoryComboDao().clearAll()
+        db.categoryComboDao().insertAll(categoryCombos)
+        // Hydrate category option combos
+        val categoryOptionCombos = d2Instance.categoryModule().categoryOptionCombos().blockingGet().map {
+            com.ash.simpledataentry.data.local.CategoryOptionComboEntity(
+                id = it.uid(),
+                name = it.displayName() ?: it.uid(),
+                categoryComboId = it.categoryCombo()?.uid() ?: "",
+                optionUids = it.categoryOptions()?.joinToString(",") { opt -> opt.uid() } ?: ""
+            )
+        }
+        db.categoryOptionComboDao().clearAll()
+        db.categoryOptionComboDao().insertAll(categoryOptionCombos)
+        // Hydrate organisation units
+        val orgUnits = d2Instance.organisationUnitModule().organisationUnits().blockingGet().map {
+            com.ash.simpledataentry.data.local.OrganisationUnitEntity(
+                id = it.uid(),
+                name = it.displayName() ?: it.name() ?: "Unnamed OrgUnit",
+                parentId = it.parent()?.uid()
+            )
+        }
+        db.organisationUnitDao().clearAll()
+        db.organisationUnitDao().insertAll(orgUnits)
+    }
 
 }

@@ -4,6 +4,7 @@ import android.content.Context
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.ash.simpledataentry.domain.useCase.LoginUseCase
+import com.ash.simpledataentry.data.local.AppDatabase
 import dagger.hilt.android.lifecycle.HiltViewModel
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -26,7 +27,7 @@ class LoginViewModel @Inject constructor(
     private val _state = MutableStateFlow(LoginState())
     val state: StateFlow<LoginState> = _state.asStateFlow()
 
-    fun login(serverUrl: String, username: String, password: String, context: Context) {
+    fun login(serverUrl: String, username: String, password: String, context: Context, db: AppDatabase) {
         viewModelScope.launch {
             try {
                 // Show splash screen immediately
@@ -36,7 +37,7 @@ class LoginViewModel @Inject constructor(
                     showSplash = true
                 )
 
-                val loginResult = loginUseCase(serverUrl, username, password, context)
+                val loginResult = loginUseCase(username, password, serverUrl, context, db)
                 if (loginResult) {
                     _state.value = _state.value.copy(
                         isLoading = false,

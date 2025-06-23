@@ -10,6 +10,11 @@ import com.ash.simpledataentry.data.repositoryImpl.DatasetsRepositoryImpl
 import com.ash.simpledataentry.data.repositoryImpl.SystemRepositoryImpl
 import com.ash.simpledataentry.data.local.AppDatabase
 import com.ash.simpledataentry.data.local.DataValueDraftDao
+import com.ash.simpledataentry.data.local.DataElementDao
+import com.ash.simpledataentry.data.local.CategoryComboDao
+import com.ash.simpledataentry.data.local.CategoryOptionComboDao
+import com.ash.simpledataentry.data.local.DatasetDao
+import com.ash.simpledataentry.data.local.OrganisationUnitDao
 import com.ash.simpledataentry.domain.repository.AuthRepository
 import com.ash.simpledataentry.domain.repository.DataEntryRepository
 import com.ash.simpledataentry.domain.repository.DatasetInstancesRepository
@@ -31,10 +36,20 @@ import dagger.hilt.InstallIn
 import dagger.hilt.android.qualifiers.ApplicationContext
 import dagger.hilt.components.SingletonComponent
 import javax.inject.Singleton
+import androidx.room.migration.Migration
+import androidx.sqlite.db.SupportSQLiteDatabase
+import com.ash.simpledataentry.data.local.DataValueDao
 
 @Module
 @InstallIn(SingletonComponent::class)
 object AppModule {
+
+    val MIGRATION_1_2 = object : Migration(1, 2) {
+        override fun migrate(database: SupportSQLiteDatabase) {
+            database.execSQL("ALTER TABLE datasets ADD COLUMN description TEXT NOT NULL DEFAULT ''")
+            database.execSQL("ALTER TABLE data_elements ADD COLUMN description TEXT")
+        }
+    }
 
     @Provides
     @Singleton
@@ -67,8 +82,12 @@ object AppModule {
 
     @Provides
     @Singleton
-    fun provideDatasetsRepository(sessionManager: SessionManager): DatasetsRepository {
-        return DatasetsRepositoryImpl(sessionManager)
+    fun provideDatasetsRepository(
+        sessionManager: SessionManager,
+        datasetDao: DatasetDao,
+        @ApplicationContext context: Context
+    ): DatasetsRepository {
+        return DatasetsRepositoryImpl(sessionManager, datasetDao, context)
     }
 
     /**
@@ -125,9 +144,24 @@ object AppModule {
     @Singleton
     fun provideDataEntryRepository(
         sessionManager: SessionManager,
-        draftDao: DataValueDraftDao
+        draftDao: DataValueDraftDao,
+        dataElementDao: DataElementDao,
+        categoryComboDao: CategoryComboDao,
+        categoryOptionComboDao: CategoryOptionComboDao,
+        organisationUnitDao: OrganisationUnitDao,
+        dataValueDao: DataValueDao,
+        @ApplicationContext context: Context
     ): DataEntryRepository {
-        return DataEntryRepositoryImpl(sessionManager, draftDao)
+        return DataEntryRepositoryImpl(
+            sessionManager,
+            draftDao,
+            dataElementDao,
+            categoryComboDao,
+            categoryOptionComboDao,
+            organisationUnitDao,
+            context,
+            dataValueDao
+        )
     }
 
     @Provides
@@ -175,15 +209,30 @@ object AppModule {
             context.applicationContext,
             AppDatabase::class.java,
             "simple_data_entry_db"
-        ).build()
+        )
+        .addMigrations(MIGRATION_1_2)
+        .build()
     }
 
     @Provides
     fun provideDataValueDraftDao(db: AppDatabase): DataValueDraftDao = db.dataValueDraftDao()
 
+    @Provides
+    fun provideDatasetDao(db: AppDatabase): DatasetDao = db.datasetDao()
 
+    @Provides
+    fun provideDataElementDao(db: AppDatabase): DataElementDao = db.dataElementDao()
 
+    @Provides
+    fun provideCategoryComboDao(db: AppDatabase): CategoryComboDao = db.categoryComboDao()
 
+    @Provides
+    fun provideCategoryOptionComboDao(db: AppDatabase): CategoryOptionComboDao = db.categoryOptionComboDao()
 
+    @Provides
+    fun provideOrganisationUnitDao(db: AppDatabase): OrganisationUnitDao = db.organisationUnitDao()
+
+    @Provides
+    fun provideDataValueDao(db: AppDatabase): DataValueDao = db.dataValueDao()
 
 }

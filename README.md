@@ -1,6 +1,6 @@
 # Simple Data Entry App for DHIS2
 
-A modern Android application for streamlined data entry into DHIS2, designed for field users and data managers. Built with Jetpack Compose and the DHIS2 Android SDK.
+A modern Android application for streamlined data entry into DHIS2, designed for field users and data managers. Built with Jetpack Compose, Room, and the DHIS2 Android SDK.
 
 ---
 
@@ -9,6 +9,7 @@ A modern Android application for streamlined data entry into DHIS2, designed for
 - [Features](#features)
 - [Screenshots](#screenshots)
 - [Architecture](#architecture)
+- [Offline-First & Caching](#offline-first--caching)
 - [Getting Started](#getting-started)
 - [Configuration](#configuration)
 - [Usage](#usage)
@@ -24,12 +25,17 @@ A modern Android application for streamlined data entry into DHIS2, designed for
 
 ## About
 
-A simple, robust Android app for entering, validating, and managing DHIS2 data values in the field or at the facility. Designed for ease of use, offline support, and seamless integration with DHIS2 instances specifically for a data entrant at a facility.
+A simple, robust Android app for entering, validating, and managing DHIS2 data values in the field or at the facility. Designed for ease of use, **true offline support**, and seamless integration with DHIS2 instances specifically for a data entrant at a facility.
 
 ---
 
 ## Features
 
+- **Offline-First Architecture:**
+  - All metadata (datasets, data elements, category combos, option combos, org units) and data drafts are cached in a local Room database.
+  - The app always loads from Room first for instant, robust offline use.
+  - After login/sync, the app hydrates its Room cache from the DHIS2 SDK.
+  - The app only fetches from the DHIS2 SDK/server if Room is empty and the device is online.
 - **Datasets Listing:**
   - View available datasets for the logged-in user and organization unit.
 - **Data Entries Listing:**
@@ -42,15 +48,13 @@ A simple, robust Android app for entering, validating, and managing DHIS2 data v
   - Accordion UI for easy navigation between sections and category groups.
   - Data fields support text, numbers, integers, percentages, dates, coordinates, and yes/no (boolean) types.
 - **Immediate Value Persistence:**
-  - Each field saves immediately on change, with optimistic UI updates and error handling.
+  - Each field saves immediately as a local draft, with optimistic UI updates and error handling.
 - **Validation:**
   - Built-in validation for value types (number, integer, percentage, etc.) and required fields.
-- **Offline Support:**
-  - Works with local DHIS2 data and syncs when connectivity is available (leveraging DHIS2 Android SDK).
-- **Manual Refresh:**
+- **Manual Refresh & Sync:**
   - Users can manually refresh dataset instances and data values to ensure up-to-date information.
 - **Performance Optimizations:**
-  - Efficient Compose state management and keying to minimize UI lag and unnecessary reloads.
+  - Efficient Compose state management and Room caching for instant UI and minimal lag.
 - **Error Handling:**
   - User-friendly error messages for failed saves, validation errors, and sync issues.
 - **DHIS2 Integration:**
@@ -66,13 +70,29 @@ A simple, robust Android app for entering, validating, and managing DHIS2 data v
 
 ## Architecture
 
-This project follows a **modern Android architecture** using the **MVVM (Model-View-ViewModel)** pattern, **Jetpack Compose** for UI, and **Hilt** for dependency injection.
+This project follows a **modern Android architecture** using the **MVVM (Model-View-ViewModel)** pattern, **Jetpack Compose** for UI, **Room** for local caching, and **Hilt** for dependency injection.
 
 - **Presentation Layer**: Composables and ViewModels (e.g., `DataEntryViewModel`, `LoginViewModel`, etc.) in `app/src/main/java/com/ash/simpledataentry/presentation/`.
 - **Domain Layer**: Use cases and models in `app/src/main/java/com/ash/simpledataentry/domain/`.
-- **Data Layer**: Repositories and data sources in `app/src/main/java/com/ash/simpledataentry/data/`.
+- **Data Layer**: Repositories, Room DAOs/entities, and data sources in `app/src/main/java/com/ash/simpledataentry/data/`.
 - **Dependency Injection**: Configured via Hilt in `di/AppModule.kt`.
 - **App Initialization**: The `SimpleDataEntry` class (subclass of `Application`) initializes the DHIS2 SDK and other app-wide dependencies.
+
+---
+
+## Offline-First & Caching
+
+- **Room Entities & DAOs:**
+  - The app defines Room entities and DAOs for all key metadata: Datasets, Data Elements, Category Combos, Category Option Combos, Organisation Units, and Data Value Drafts.
+- **Hydration from DHIS2 SDK:**
+  - After login or sync, the app fetches all metadata from the DHIS2 SDK and persists it to Room.
+- **Primary Data Source:**
+  - All screens and repositories load from Room first for instant, offline access.
+  - If Room is empty and the device is online, the app fetches from the DHIS2 SDK/server, updates Room, and then loads from Room.
+- **Drafts:**
+  - All data entry drafts are saved in Room and merged with metadata for offline editing and review.
+- **Robust Offline Flow:**
+  - Users can log in, sync, and then use the app in the field with no connectivity. All metadata and drafts are available, and the UI loads instantly.
 
 ---
 
@@ -107,11 +127,13 @@ This project follows a **modern Android architecture** using the **MVVM (Model-V
 
 ## Usage
 
-1. Login with your DHIS2 credentials.
-2. Select the dataset for which you want to enter data.
-3. Select an existing entry you may want to edit or add to.
-4. Press the plus at the bottom right corner if your creating a new entry.
+1. Login with your DHIS2 credentials (ensure you are online for the first login/sync).
+2. The app will download and cache all required metadata and data drafts locally.
+3. Select the dataset for which you want to enter data.
+4. Select an existing entry you may want to edit or add to, or press the plus at the bottom right corner to create a new entry.
 5. Navigate through the accordions and perform entry into the fields for which data is available.
+6. You can now go offline and continue to use the app, enter data, and save drafts. All screens will load instantly from local cache.
+7. When back online, sync to push drafts and fetch any new metadata or data.
 
 ---
 
@@ -122,7 +144,7 @@ This project follows a **modern Android architecture** using the **MVVM (Model-V
   - `app/src/main/java/com/ash/simpledataentry/` — Main package.
     - `presentation/` — UI screens and ViewModels.
     - `domain/` — Business logic, models, and use cases.
-    - `data/` — Data sources and repository implementations.
+    - `data/` — Data sources, Room DAOs/entities, and repository implementations.
     - `di/` — Dependency injection setup.
     - `ui/theme/` — Compose theme definitions.
   - `app/build.gradle.kts` — App-level Gradle build file.
@@ -134,6 +156,12 @@ This project follows a **modern Android architecture** using the **MVVM (Model-V
 
 ## Testing
 
+- Test the offline-first flow by:
+  1. Logging in and syncing while online.
+  2. Going offline (disable WiFi/data).
+  3. Navigating all screens and entering data. All screens should load instantly, and drafts should be saved locally.
+  4. Going back online and syncing to push drafts and fetch updates.
+
 ---
 
 ## Changelog
@@ -144,8 +172,8 @@ This project follows a **modern Android architecture** using the **MVVM (Model-V
 
 ## Known Issues & Limitations
 
-1. Data entry feature is still a work in progress, values are not persiting upon entry 
-2. Data entries UX needs more polish
+1. Data entries UX needs more polish
+2. Some advanced DHIS2 features (e.g., tracker, events) are not yet supported
 
 ---
 
@@ -187,5 +215,6 @@ SOFTWARE.
 
 - [DHIS2 Android SDK](https://github.com/dhis2/dhis2-android-sdk)
 - [Jetpack Compose](https://developer.android.com/jetpack/compose)
+- [Room Persistence Library](https://developer.android.com/jetpack/androidx/releases/room)
 - [DHIS2 Community](https://community.dhis2.org/)
 - [HISP Uganda](https://hispuganda.org)

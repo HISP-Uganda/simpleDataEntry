@@ -1,0 +1,74 @@
+<context>
+# Overview  
+This document outlines the requirements for improving the Simple Data Entry Android application. The primary goal is to enhance the app's core data entry functionality to be more robust, reliable, and user-friendly, particularly concerning offline usage and data synchronization. The proposed changes are based on user feedback, analysis of the existing codebase, and alignment with the best practices established by the official DHIS2 Android SDK and the DHIS2 Android Capture App.
+
+# Core Features  
+Goal 1: Achieve True Offline-First Data Persistence: Ensure that all data entered by the user is saved locally immediately and reliably, regardless of network connectivity.
+Goal 2: Implement Explicit and Clear Data Synchronization: Move from an implicit, per-field save model to an explicit, user-triggered synchronization model that provides clear feedback on the status of the upload.
+Goal 3: Introduce a Formal "Complete" Workflow: Allow users to formally mark a data entry instance as "complete," providing a clear end-state for their work.
+Goal 4: Solidify UI State Management: Ensure the UI, especially the accordion layout, is stable and does not lose user-entered data or its state during interaction or navigation.
+
+
+# User Experience  
+As a data entrant, I want my data to be saved instantly to my device as I type, so that I don't lose my work if the app closes or I lose my connection.
+As a data entrant, I want to be able to fill out an entire form while offline and then upload all my data at once when I have an internet connection, so I can work efficiently in areas with poor connectivity.
+As a data entrant, I want to see a clear "Complete" button for my data entry form, so I can finalize my work and know that it is finished.
+As a data entrant, I want the app to show me a loading indicator when my data is uploading and a clear success or failure message, so I am confident about the status of my data.
+As a data entrant, I want the form sections (accordions) to stay open or closed as I left them and not lose the data I've entered when I scroll or switch between them.
+
+</context>
+
+
+
+<PRD>
+Functional Requirements
+FR-01: Local Data Persistence (Draft Mode)
+1.1. Immediate Local Save: Any change to a data value field (e.g., text input, selection from a dropdown) must be immediately saved to the local Room database.
+* Technical Note: This should leverage the existing DataValueDraftDao and upsertDraft function. The DataEntryViewModel's updateCurrentValue function should be the single source of truth for this action.
+
+1.2. Offline Edits: All data entry and editing functionalities must be fully operational without an internet connection.
+
+1.3. Data Hydration from Drafts: When opening a data entry screen, the application must first check for and load any existing drafts from the local database for that specific instance (dataset, period, org unit, etc.). These local drafts take precedence over any data fetched from the server.
+
+FR-02: User-Triggered Data Upload & Synchronization
+2.1. Sync Button: The "Save" Floating Action Button (FAB) in the EditEntryScreen will now function as a "Save & Sync" button.
+
+2.2. Sync Logic: When the user presses the sync button:
+* The app must first check for network connectivity.
+* If Online: The app will attempt to upload all saved local data for the current dataset instance to the DHIS2 server.
+* Technical Note: This should use the d2.dataValueModule().dataValues().blockingUpload() method from the DHIS2 SDK.
+* If Offline: The app will display a message (e.g., Snackbar) informing the user, "You are offline. Data is saved locally and will be synced later." The data remains in the local draft state.
+
+2.3. Sync Feedback: The UI must provide clear visual feedback during the sync process:
+* The sync button should display a loading indicator (e.g., CircularProgressIndicator) while the upload is in progress.
+* Upon completion, a Snackbar will show a "Sync successful" or "Sync failed" message. In case of failure, the message should provide a brief, user-friendly reason if possible.
+
+2.4. Unsaved Changes Dialog: If the user attempts to navigate away from the EditEntryScreen with unsaved changes (i.e., data in local drafts that hasn't been successfully synced), a confirmation dialog must appear with the options: "Save & Leave," "Discard," and "Cancel."
+
+FR-03: Mark as Complete Workflow
+3.1. "Complete" Button: A "Complete" button shall be added to the EditEntryScreen (e.g., in the top app bar or near the sync button).
+
+3.2. Completion Dialog: Tapping the "Complete" button will first trigger the "Save & Sync" action (FR-02) to ensure all local data is uploaded. If the sync is successful, a confirmation dialog will appear, asking, "Are you sure you want to mark this entry as complete? You will not be able to edit it after completion."
+
+3.3. Set Instance State: Upon user confirmation, the app will set the state of the DataSetInstance to COMPLETE.
+* Technical Note: This involves calling the appropriate DHIS2 SDK method to update the completion status of the dataSetInstance. The d2.dataSetModule().dataSetCompleteness().set() method should be used.
+
+3.4. UI State Update: Once completed, the entry should be visually marked as complete (e.g., with a badge or icon) on the DatasetInstancesScreen, and the "Complete" and "Save & Sync" buttons on the EditEntryScreen should become disabled.
+
+FR-04: Robust UI State for Accordions
+4.1. Stable Keys: The LazyColumn in EditEntryScreen must use stable and unique keys for its items (e.g., key = { it.first } for the section name) to prevent unnecessary recompositions and state loss.
+
+4.2. State Hoisting: The expanded/collapsed state of each accordion section and category group must be managed within the DataEntryViewModel. The expandedSection and expandedCategoryGroup state variables are correctly placed, but their usage must be verified to ensure stability.
+
+4.3. Data Integrity: Data entered into a field within one accordion section must not affect the state or data of another section. The data grouping logic (state.dataValues.groupBy { it.sectionName }) should be maintained to ensure this separation.
+
+5. Non-Functional Requirements
+NFR-01 (Performance): The UI must remain responsive during data entry, with no noticeable lag when typing or interacting with form elements.
+NFR-02 (Reliability): The app must handle network interruptions gracefully. If a sync fails mid-process, no data should be lost, and the app should be able to retry the sync later.
+NFR-03 (Usability): All error messages and user feedback must be clear, concise, and easy for non-technical users to understand.
+6. Success Metrics
+Reduction in user-reported issues related to data loss.
+Successful data entry and completion of forms in fully offline scenarios during testing.
+Positive user feedback regarding the clarity and reliability of the data saving and synchronization process.
+</PRD>
+

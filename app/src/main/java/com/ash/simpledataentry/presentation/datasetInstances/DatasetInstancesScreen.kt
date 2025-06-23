@@ -2,51 +2,31 @@ package com.ash.simpledataentry.presentation.datasetInstances
 
 import android.annotation.SuppressLint
 import android.text.format.DateFormat
-import androidx.compose.foundation.layout.Arrangement
-import androidx.compose.foundation.layout.Box
-import androidx.compose.foundation.layout.Column
-import androidx.compose.foundation.layout.PaddingValues
-import androidx.compose.foundation.layout.Row
-import androidx.compose.foundation.layout.Spacer
-import androidx.compose.foundation.layout.fillMaxSize
-import androidx.compose.foundation.layout.fillMaxWidth
-import androidx.compose.foundation.layout.height
-import androidx.compose.foundation.layout.padding
-import androidx.compose.foundation.layout.size
-import androidx.compose.foundation.layout.width
+import android.util.Log
+import androidx.compose.foundation.background
+import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.Sync
-import androidx.compose.material3.Button
-import androidx.compose.material3.CircularProgressIndicator
-import androidx.compose.material3.ExperimentalMaterial3Api
-import androidx.compose.material3.FloatingActionButton
-import androidx.compose.material3.Icon
-import androidx.compose.material3.IconButton
-import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.Snackbar
-import androidx.compose.material3.SnackbarDuration
-import androidx.compose.material3.SnackbarHost
-import androidx.compose.material3.SnackbarHostState
-import androidx.compose.material3.Text
-import androidx.compose.runtime.Composable
-import androidx.compose.runtime.LaunchedEffect
-import androidx.compose.runtime.collectAsState
-import androidx.compose.runtime.getValue
-import androidx.compose.runtime.mutableStateOf
-import androidx.compose.runtime.remember
-import androidx.compose.runtime.setValue
+import androidx.compose.material3.*
+import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
 import androidx.hilt.navigation.compose.hiltViewModel
-import androidx.lifecycle.viewModelScope
 import androidx.navigation.NavController
+import com.ash.simpledataentry.domain.model.DatasetInstance
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.delay
+import java.net.URLEncoder
+import java.text.SimpleDateFormat
+import java.util.*
 import com.ash.simpledataentry.domain.model.DatasetInstanceState
 import com.ash.simpledataentry.presentation.core.BaseScreen
+import org.hisp.dhis.android.core.dataset.DataSetInstance
 import org.hisp.dhis.mobile.ui.designsystem.component.AdditionalInfoItem
 import org.hisp.dhis.mobile.ui.designsystem.component.ListCard
 import org.hisp.dhis.mobile.ui.designsystem.component.ListCardDescriptionModel
@@ -55,13 +35,6 @@ import org.hisp.dhis.mobile.ui.designsystem.component.state.rememberAdditionalIn
 import org.hisp.dhis.mobile.ui.designsystem.component.state.rememberListCardState
 import org.hisp.dhis.mobile.ui.designsystem.theme.DHIS2Theme
 import org.hisp.dhis.mobile.ui.designsystem.theme.TextColor
-import java.net.URLEncoder
-import java.text.SimpleDateFormat
-import java.util.*
-import kotlinx.coroutines.launch
-import android.util.Log
-import androidx.compose.foundation.background
-import kotlinx.coroutines.delay
 
 @SuppressLint("SuspiciousIndentation")
 @OptIn(ExperimentalMaterial3Api::class)
@@ -114,32 +87,6 @@ fun DatasetInstancesScreen(
         }
     ) {
         Box(modifier = Modifier.fillMaxSize()) {
-            // Splash overlay
-            if (state.showSplash) {
-                Box(
-                    modifier = Modifier
-                        .fillMaxSize()
-                        .background(MaterialTheme.colorScheme.background.copy(alpha = 0.85f)),
-                    contentAlignment = Alignment.Center
-                ) {
-                    Column(
-                        horizontalAlignment = Alignment.CenterHorizontally,
-                        verticalArrangement = Arrangement.Center
-                    ) {
-                        CircularProgressIndicator(
-                            modifier = Modifier.size(48.dp),
-                            strokeWidth = 4.dp,
-                            color = MaterialTheme.colorScheme.primary
-                        )
-                        Spacer(modifier = Modifier.height(16.dp))
-                        Text(
-                            text = "Loading form...",
-                            style = MaterialTheme.typography.bodyLarge,
-                            color = MaterialTheme.colorScheme.onBackground
-                        )
-                    }
-                }
-            }
             if (state.isLoading || state.isSyncing) {
                 Box(
                     modifier = Modifier.fillMaxSize(),
@@ -168,7 +115,10 @@ fun DatasetInstancesScreen(
                     contentPadding = PaddingValues(16.dp),
                     verticalArrangement = Arrangement.spacedBy(8.dp)
                 ) {
-                    items(state.instances) { instance ->
+                    val sortedInstances = state.instances.sortedByDescending { instance ->
+                        parseDhis2PeriodToDate(instance.period.id)?.time ?: 0L
+                    }
+                    items(sortedInstances) { instance ->
                         var isLoading by remember { mutableStateOf(false) }
                         val formattedDate = try {
                             instance.lastUpdated?.let { dateStr ->
@@ -182,7 +132,7 @@ fun DatasetInstancesScreen(
                                 }
                             } ?: "N/A"
                         } catch (e: Exception) {
-                            Log.e("DatasetInstancesScreen", "Error parsing date: ${e.message}")
+                            Log.e("DatasetInstancesScreen", "Error parsing date: ", e)
                             "N/A"
                         }
                         val periodText = instance.period.toString().replace("Period(id=", "").replace(")", "")
@@ -219,29 +169,16 @@ fun DatasetInstancesScreen(
                                 shadow = true
                             ),
                             onCardClick = {
-                                if (!isLoading && !state.showSplash) {
-                                    isLoading = true
-                                    viewModel.setShowSplash(true)
-                                    // Simulate loading splash, then navigate
+                                if (!isLoading) {
                                     val encodedDatasetId = URLEncoder.encode(datasetId, "UTF-8")
                                     val encodedDatasetName = URLEncoder.encode(datasetName, "UTF-8")
-                                    val navControllerCopy = navController
-                                    val instanceCopy = instance
-                                    val viewModelCopy = viewModel
-                                    val showSplashCopy = state.showSplash
-                                    // Launch in Compose scope
-
-                                         // 700ms splash
-                                        navControllerCopy.navigate("EditEntry/$encodedDatasetId/${instanceCopy.period.id}/${instanceCopy.organisationUnit.id}/${instanceCopy.attributeOptionCombo}/$encodedDatasetName") {
-                                            launchSingleTop = true
-                                            popUpTo("DatasetInstances/{datasetId}/{datasetName}") {
-                                                saveState = true
-                                            }
+                                    navController.navigate("EditEntry/$encodedDatasetId/${instance.period.id}/${instance.organisationUnit.id}/${instance.attributeOptionCombo}/$encodedDatasetName") {
+                                        launchSingleTop = true
+                                        popUpTo("DatasetInstances/{datasetId}/{datasetName}") {
+                                            saveState = true
                                         }
-                                        viewModelCopy.setShowSplash(false)
-                                        isLoading = false
                                     }
-
+                                }
                             }
                         )
                     }
@@ -278,7 +215,6 @@ fun DatasetInstancesScreen(
     }
 }
 
-
 @Composable
 private fun LoadingIndicator() {
     Box(
@@ -289,5 +225,62 @@ private fun LoadingIndicator() {
             modifier = Modifier.size(24.dp),
             strokeWidth = 2.dp
         )
+    }
+}
+
+fun parseDhis2PeriodToDate(periodId: String): Date? {
+    return try {
+        when {
+            // Yearly: 2023
+            Regex("^\\d{4}$").matches(periodId) -> {
+                SimpleDateFormat("yyyy", Locale.ENGLISH).parse(periodId)
+            }
+            // Monthly: 202306
+            Regex("^\\d{6}$").matches(periodId) -> {
+                SimpleDateFormat("yyyyMM", Locale.ENGLISH).parse(periodId)
+            }
+            // Daily: 2023-06-01
+            Regex("^\\d{4}-\\d{2}-\\d{2}$").matches(periodId) -> {
+                SimpleDateFormat("yyyy-MM-dd", Locale.ENGLISH).parse(periodId)
+            }
+            // Weekly: 2023W23
+            Regex("^\\d{4}W\\d{1,2}$").matches(periodId) -> {
+                val year = periodId.substring(0, 4).toInt()
+                val week = periodId.substring(5).toInt()
+                val cal = Calendar.getInstance(Locale.ENGLISH)
+                cal.clear()
+                cal.set(Calendar.YEAR, year)
+                cal.set(Calendar.WEEK_OF_YEAR, week)
+                cal.set(Calendar.DAY_OF_WEEK, Calendar.MONDAY)
+                cal.time
+            }
+            // Quarterly: 2023Q2
+            Regex("^\\d{4}Q[1-4]$").matches(periodId) -> {
+                val year = periodId.substring(0, 4).toInt()
+                val quarter = periodId.substring(5).toInt()
+                val month = (quarter - 1) * 3
+                val cal = Calendar.getInstance(Locale.ENGLISH)
+                cal.clear()
+                cal.set(Calendar.YEAR, year)
+                cal.set(Calendar.MONTH, month)
+                cal.set(Calendar.DAY_OF_MONTH, 1)
+                cal.time
+            }
+            // Six-monthly: 2023S1 or 2023S2
+            Regex("^\\d{4}S[1-2]$").matches(periodId) -> {
+                val year = periodId.substring(0, 4).toInt()
+                val semester = periodId.substring(5).toInt()
+                val month = if (semester == 1) 0 else 6
+                val cal = Calendar.getInstance(Locale.ENGLISH)
+                cal.clear()
+                cal.set(Calendar.YEAR, year)
+                cal.set(Calendar.MONTH, month)
+                cal.set(Calendar.DAY_OF_MONTH, 1)
+                cal.time
+            }
+            else -> null
+        }
+    } catch (e: Exception) {
+        null
     }
 }

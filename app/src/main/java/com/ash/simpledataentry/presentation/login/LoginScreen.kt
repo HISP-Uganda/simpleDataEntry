@@ -45,6 +45,13 @@ import androidx.compose.material3.SnackbarHost
 import androidx.compose.material3.SnackbarHostState
 import androidx.compose.runtime.rememberCoroutineScope
 import kotlinx.coroutines.launch
+import com.ash.simpledataentry.data.local.AppDatabase
+import androidx.room.Room
+import dagger.hilt.android.lifecycle.HiltViewModel
+import dagger.hilt.android.qualifiers.ApplicationContext
+import dagger.hilt.android.AndroidEntryPoint
+import javax.inject.Inject
+
 
 @OptIn(ExperimentalMaterial3Api::class, ExperimentalFoundationApi::class)
 @Composable
@@ -193,7 +200,15 @@ fun LoginScreen(
         {
                 Button(
                     onClick = {
-                        viewModel.login(serverUrl, username, password, context)
+                        val db = Room.databaseBuilder(
+                            context,
+                            AppDatabase::class.java,
+                            "simple_data_entry_db"
+                        )
+                        // TODO: Replace fallbackToDestructiveMigration() with a real migration before production release!
+                        .fallbackToDestructiveMigration()
+                        .build()
+                        viewModel.login(serverUrl, username, password, context, db)
                     },
                     enabled = !state.isLoading &&
                             serverUrl.isNotBlank() &&
