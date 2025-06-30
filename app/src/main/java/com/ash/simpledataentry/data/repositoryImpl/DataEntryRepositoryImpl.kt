@@ -192,9 +192,14 @@ class DataEntryRepositoryImpl @Inject constructor(
                 if (allCombos.isEmpty()) {
                     // No combos, just default
                     val valueObj = sdkDataValues[deUid to ""]
+                    Log.d("DataEntryRepositoryImpl", "DataElement: " + dataElement?.uid() + ", formName=" + dataElement?.formName() + ", shortName=" + dataElement?.shortName() + ", displayName=" + dataElement?.displayName())
+                    val dataElementName = dataElement?.formName()
+                        ?: dataElement?.shortName()
+                        ?: dataElement?.displayName()
+                        ?: deUid
                     listOf(DataValue(
                         dataElement = deUid,
-                        dataElementName = dataElement?.displayName() ?: deUid,
+                        dataElementName = dataElementName,
                         sectionName = sectionName,
                         categoryOptionCombo = "",
                         categoryOptionComboName = "Default",
@@ -209,9 +214,14 @@ class DataEntryRepositoryImpl @Inject constructor(
                 } else {
                     allCombos.map { coc ->
                         val valueObj = sdkDataValues[deUid to coc.uid()]
+                        Log.d("DataEntryRepositoryImpl", "DataElement: " + dataElement?.uid() + ", formName=" + dataElement?.formName() + ", shortName=" + dataElement?.shortName() + ", displayName=" + dataElement?.displayName())
+                        val dataElementName = dataElement?.formName()
+                            ?: dataElement?.shortName()
+                            ?: dataElement?.displayName()
+                            ?: deUid
                         DataValue(
                             dataElement = deUid,
-                            dataElementName = dataElement?.displayName() ?: deUid,
+                            dataElementName = dataElementName,
                             sectionName = sectionName,
                             categoryOptionCombo = coc.uid(),
                             categoryOptionComboName = coc.displayName() ?: coc.uid(),
@@ -294,7 +304,8 @@ class DataEntryRepositoryImpl @Inject constructor(
                 .blockingGet() ?: throw Exception("Dataset not found")
 
             // Get form name from data set element, fall back to display name, then short name, then uid
-            val dataElementName = dataElementObj.shortName()
+            val dataElementName = dataElementObj.formName()
+                ?:dataElementObj.shortName()
                 ?: dataElementObj.displayName()
                 ?: dataElement
 

@@ -2,6 +2,7 @@
 
 package com.ash.simpledataentry.presentation.dataEntry
 
+import android.annotation.SuppressLint
 import android.util.Log
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.core.animateFloatAsState
@@ -44,12 +45,15 @@ import org.hisp.dhis.mobile.ui.designsystem.component.SupportingTextState
 import com.ash.simpledataentry.domain.model.*
 import com.ash.simpledataentry.presentation.core.BaseScreen
 import androidx.activity.compose.BackHandler
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.ArrowBack
 import androidx.compose.material.icons.filled.Sync
 import androidx.compose.ui.platform.LocalContext
 import kotlin.Pair
 import androidx.compose.runtime.Composable
+import com.google.common.collect.Lists.cartesianProduct
 
 data class Quadruple<A, B, C, D>(val first: A, val second: B, val third: C, val fourth: D)
 
@@ -71,6 +75,11 @@ fun EditEntryScreen(
     val showSaveDialog = remember { mutableStateOf(false) }
     val pendingNavAction = remember { mutableStateOf<(() -> Unit)?>(null) }
     val context = LocalContext.current
+
+    // Define onValueChange ONCE here, at the top
+    val onValueChange: (String, DataValue) -> Unit = { value, dataValue ->
+        viewModel.updateCurrentValue(value, dataValue.dataElement, dataValue.categoryOptionCombo)
+    }
 
     // Detect unsaved changes: compare ViewModel dirtyDataValues or drafts
     val hasUnsavedChanges = remember(state.dataValues) {
@@ -132,6 +141,18 @@ fun EditEntryScreen(
                 }
             }
         )
+    }
+
+    // --- Accordion expansion state for nested accordions ---
+    val expandedAccordions = remember { mutableStateOf<Map<List<String>, String?>>(emptyMap()) }
+
+    // In EditEntryScreen, define the toggle handler ONCE:
+    val onAccordionToggle: (List<String>, String) -> Unit = { parentPath, optionUid ->
+        expandedAccordions.value = buildMap {
+            putAll(expandedAccordions.value)
+            val current = expandedAccordions.value[parentPath]
+            put(parentPath, if (current == optionUid) null else optionUid)
+        }
     }
 
     LaunchedEffect(currentParams) {
@@ -241,18 +262,14 @@ fun EditEntryScreen(
                             verticalArrangement = Arrangement.spacedBy(8.dp)
                         ) {
                             items(groupedValues.toList(), key = { it.first }) { (sectionName, values) ->
-                                val firstDataValue = values.firstOrNull()
-                                val comboUid = firstDataValue?.categoryOptionCombo
-                                val structure = comboUid?.let { categoryComboStructures[it] }
-                                val isSectionExpanded = state.isExpandedSections[sectionName] == true
-                                // Count fields with a value
+                                val sectionIsExpanded = state.isExpandedSections[sectionName] == true
                                 val filledCount = values.count { !it.value.isNullOrBlank() }
                                 val totalCount = values.size
+                                // Section header
                                 Surface(
                                     modifier = Modifier
                                         .fillMaxWidth()
                                         .clickable {
-                                            // Only one section open at a time
                                             state.isExpandedSections.keys.forEach { key ->
                                                 if (key != sectionName && state.isExpandedSections[key] == true) {
                                                     viewModel.toggleSection(key)
@@ -284,25 +301,38 @@ fun EditEntryScreen(
                                         Icon(
                                             imageVector = Icons.Default.KeyboardArrowDown,
                                             contentDescription = "Expand/Collapse Section",
-                                            modifier = Modifier.rotate(if (isSectionExpanded) 180f else 0f)
+                                            modifier = Modifier.rotate(if (sectionIsExpanded) 180f else 0f)
                                         )
                                     }
                                 }
-                                AnimatedVisibility(visible = isSectionExpanded) {
-                                    SectionContent(
-                                        sectionName = sectionName,
-                                        structure = structure,
-                                        values = values,
-                                        expandedCategoryGroup = state.expandedCategoryGroup,
-                                        onToggleCategoryGroup = { section, categoryGroup ->
-                                            viewModel.toggleCategoryGroup(section, categoryGroup)
-                                        },
-                                        onValueChange = { value, dataValue ->
-                                            viewModel.updateCurrentValue(value, dataValue.dataElement, dataValue.categoryOptionCombo)
-                                        },
-                                        optionUidsToComboUid = state.optionUidsToComboUid[comboUid] ?: emptyMap(),
-                                        viewModel = viewModel
-                                    )
+                                AnimatedVisibility(visible = sectionIsExpanded) {
+                                    Column(modifier = Modifier.fillMaxWidth()) {
+                                        // --- STEP 2: Group by category combo structure ---
+                                        val structureGroups = values.groupBy { dataValue ->
+                                            val structure = categoryComboStructures[dataValue.categoryOptionCombo]
+                                            structure?.joinToString(", ") { cat ->
+                                                val options = cat.second.joinToString("/") { it.second }
+                                                "${cat.first}: $options"
+                                            } ?: "Default"
+                                        }
+                                        android.util.Log.d("EditEntryScreen", "Section '$sectionName' has ${structureGroups.size} structure groups: ${structureGroups.keys}")
+                                        structureGroups.forEach { (structureString, groupValues) ->
+                                            val structure = groupValues.firstOrNull()?.let { categoryComboStructures[it.categoryOptionCombo] } ?: emptyList()
+                                            val categoryOptionComboUid = groupValues.firstOrNull()?.categoryOptionCombo
+                                            val optionUidsToComboUidForGroup = state.optionUidsToComboUid[categoryOptionComboUid] ?: emptyMap()
+                                            CategoryAccordionRecursive(
+                                                categories = structure,
+                                                values = groupValues,
+                                                onValueChange = onValueChange,
+                                                optionUidsToComboUid = optionUidsToComboUidForGroup,
+                                                viewModel = viewModel,
+                                                parentPath = emptyList(),
+                                                expandedAccordions = expandedAccordions.value,
+                                                onToggle = onAccordionToggle
+                                            )
+                                            Spacer(modifier = Modifier.height(12.dp))
+                                        }
+                                    }
                                 }
                             }
                         }
@@ -371,156 +401,97 @@ private fun SectionContent(
     onToggleCategoryGroup: (String, String) -> Unit,
     onValueChange: (String, DataValue) -> Unit,
     optionUidsToComboUid: Map<Set<String>, String>,
-    viewModel: DataEntryViewModel
+    viewModel: DataEntryViewModel,
+    renderedKeys: MutableSet<String>? = null,
+    expandedAccordions: Map<List<String>, String?>,
+    onToggle: (List<String>, String) -> Unit
 ) {
+    android.util.Log.d(
+        "SectionContent",
+        "sectionName=$sectionName, structure=${structure?.map { it.first }}, values=${values.map { it.dataElement + ":" + it.categoryOptionCombo }}"
+    )
     val state by viewModel.state.collectAsState()
     val categoryComboStructures = state.categoryComboStructures
-    val optionUidsToComboUidMap = state.optionUidsToComboUid
     val dataElements = values.map { it.dataElement to it.dataElementName }.distinct()
-            val categoryList = structure ?: emptyList()
-    // Debug logs
-    android.util.Log.d("SectionContent", "sectionName=$sectionName, categoryList.size=${categoryList.size}")
-            when (categoryList.size) {
-        0 -> { // No categories: just list data elements
+
+    // --- New grouping logic per RENDERING_RULES.md ---
+    val structureKeyFor = { dataValue: DataValue ->
+        val structure = categoryComboStructures[dataValue.categoryOptionCombo]
+        structure?.joinToString("|") { cat ->
+            cat.first + ":" + cat.second.joinToString(",") { it.first }
+        } ?: "__DEFAULT__"
+    }
+    val groups = values.groupBy(structureKeyFor)
+    val allSameStructure = groups.size == 1
+    val isAllDefault = groups.keys.singleOrNull() == "__DEFAULT__"
+
+    if (allSameStructure) {
+        val groupValues = values
+        val structure = groupValues.firstOrNull()?.let { categoryComboStructures[it.categoryOptionCombo] } ?: emptyList()
+        if (structure.isEmpty()) {
+            // Flat list for default (zero category)
             Column(modifier = Modifier.fillMaxWidth()) {
                 dataElements.forEach { (dataElement, dataElementName) ->
-                    val dataValue = values.find { it.dataElement == dataElement }
+                    val dataValue = groupValues.find { it.dataElement == dataElement }
+                    val key = dataValue?.dataElement + "_" + dataValue?.categoryOptionCombo
+                    renderedKeys?.add(key)
                     DataElementRow(
                         dataElementName = dataElementName,
                         fields = listOf(dataValue),
                         onValueChange = onValueChange
                     )
-                            }
-                    }
                 }
-        1 -> { // One category: accordion per option, rows are data elements
-                    val catName = categoryList[0].first
-                    val options = categoryList[0].second
-            android.util.Log.d("SectionContent", "[1-cat] $catName options: ${options.map { it.second }}")
-            android.util.Log.d("SectionContent", "[1-cat] optionUidsToComboUid keys: ${optionUidsToComboUid.keys}")
-            options.forEach { (optUid, optName) ->
-                val cocUid = optionUidsToComboUid.entries.find { it.key == setOf(optUid) }?.value
-                val expandedKey = "$sectionName:$optName"
-                CategoryAccordion(
-                    header = optName,
-                    expanded = expandedCategoryGroup == expandedKey,
-                    onToggleExpand = {
-                        // Only one open at a time: set expandedCategoryGroup to this, or null if already open
-                        if (expandedCategoryGroup == expandedKey) {
-                            onToggleCategoryGroup(sectionName, "") // close all
-                        } else {
-                            onToggleCategoryGroup(sectionName, optName)
-                        }
-                    }
-                ) {
-                    Column(modifier = Modifier.fillMaxWidth()) {
-                        dataElements.forEach { (dataElement, dataElementName) ->
-                            val dataValue = values.find { it.dataElement == dataElement && it.categoryOptionCombo == cocUid }
-                            DataElementRow(
-                                dataElementName = dataElementName,
-                                fields = listOf(dataValue),
-                                onValueChange = onValueChange
-                            )
-                        }
-                    }
-                }
+            }
+        } else {
+            // Use the new recursive accordion logic for all non-empty category structures
+            CategoryAccordionRecursive(
+                categories = structure,
+                values = groupValues,
+                onValueChange = onValueChange,
+                optionUidsToComboUid = optionUidsToComboUid,
+                viewModel = viewModel,
+                parentPath = emptyList(),
+                expandedAccordions = expandedAccordions,
+                onToggle = onToggle
+            )
+        }
+    }
+    // If mixed category combos, handle per rule 5
+    // 1. Render all default (zero category) elements as a flat list
+    val defaultValues = groups["__DEFAULT__"] ?: emptyList()
+    if (defaultValues.isNotEmpty()) {
+        Column(modifier = Modifier.fillMaxWidth()) {
+            dataElements.forEach { (dataElement, dataElementName) ->
+                val dataValue = defaultValues.find { it.dataElement == dataElement }
+                val key = dataValue?.dataElement + "_" + dataValue?.categoryOptionCombo
+                renderedKeys?.add(key)
+                DataElementRow(
+                    dataElementName = dataElementName,
+                    fields = listOf(dataValue),
+                    onValueChange = onValueChange
+                )
             }
         }
-        2 -> { // Two categories: outer accordion for the category with more than two options (or non-gender if both have two)
-            val (catA, catB) = categoryList
-                    val genderKeywords = listOf("sex", "gender")
-            val isCatAGender = genderKeywords.any { catA.first.lowercase().contains(it) }
-            val isCatBGender = genderKeywords.any { catB.first.lowercase().contains(it) }
-            val catAOptions = catA.second
-            val catBOptions = catB.second
-            android.util.Log.d("SectionContent", "[2-cat] catA: ${catA.first} options: ${catAOptions.map { it.second }}")
-            android.util.Log.d("SectionContent", "[2-cat] catB: ${catB.first} options: ${catBOptions.map { it.second }}")
-            android.util.Log.d("SectionContent", "[2-cat] optionUidsToComboUid keys: ${optionUidsToComboUid.keys}")
-            // Decide which is outer (accordion) and which is columns
-            val (outerCat, innerCat, outerIsGender) = when {
-                catAOptions.size > 2 -> Triple(catA, catB, isCatAGender)
-                catBOptions.size > 2 -> Triple(catB, catA, isCatBGender)
-                isCatAGender -> Triple(catB, catA, false)
-                isCatBGender -> Triple(catA, catB, false)
-                else -> Triple(catA, catB, false)
-            }
-            val outerCatName = outerCat.first
-            val outerOptions = outerCat.second
-            val innerCatName = innerCat.first
-            val innerOptions = innerCat.second
-            Column(modifier = Modifier.fillMaxWidth()) {
-                outerOptions.forEach { (outerOptUid, outerOptName) ->
-                    val expandedKey = "$sectionName:$outerOptName"
-                    android.util.Log.d("SectionContent", "[2-cat] OUTER: $outerCatName: $outerOptName (UID: $outerOptUid)")
-                    CategoryAccordion(
-                        header = outerOptName,
-                        expanded = expandedCategoryGroup == expandedKey,
-                        onToggleExpand = {
-                            if (expandedCategoryGroup == expandedKey) {
-                                onToggleCategoryGroup(sectionName, "")
-                            } else {
-                                onToggleCategoryGroup(sectionName, outerOptName)
-                    }
-                        }
-                    ) {
-                        Column(modifier = Modifier.fillMaxWidth()) {
-                            Row(modifier = Modifier.fillMaxWidth()) {
-                                Spacer(modifier = Modifier.width(120.dp))
-                                innerOptions.forEach { (_, innerOptName) ->
-                                    Text(
-                                        text = innerOptName,
-                                        modifier = Modifier.width(100.dp),
-                                        style = MaterialTheme.typography.bodyMedium,
-                                        fontWeight = FontWeight.Medium
-                                    )
-                                }
-                            }
-                            dataElements.forEach { (dataElement, dataElementName) ->
-                                Row(modifier = Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
-                                    Text(
-                                        text = dataElementName,
-                                        modifier = Modifier.width(120.dp),
-                                        style = MaterialTheme.typography.bodyMedium
-                                    )
-                                    innerOptions.forEach { (innerOptUid, innerOptName) ->
-                                        val keySet = setOf(outerOptUid, innerOptUid)
-                                        val cocUid = optionUidsToComboUid.entries.find { it.key == keySet }?.value
-                                        android.util.Log.d("SectionContent", "[2-cat] Pair: ($outerOptName/$outerOptUid, $innerOptName/$innerOptUid) -> setOf($outerOptUid, $innerOptUid), cocUid=$cocUid")
-                                        val dataValue = values.find {
-                                            it.dataElement == dataElement && it.categoryOptionCombo == cocUid
-                                        }
-                                        android.util.Log.d("SectionContent", "[2-cat] DataValue for dataElement=$dataElement, cocUid=$cocUid: ${if (dataValue != null) "FOUND" else "NOT FOUND"}")
-                                Box(modifier = Modifier.weight(1f).padding(4.dp)) {
-                                            if (dataValue != null) {
-                                    DataValueField(
-                                                    dataValue = dataValue,
-                                                    onValueChange = { value -> onValueChange(value, dataValue) }
-                                                )
-                                            }
-                                        }
-                                    }
-                                }
-                            }
-                        }
-                    }
-                    Spacer(modifier = Modifier.height(8.dp))
-                }
-            }
-        }
-        else -> { // >2 categories: fallback to grouped list
-            Column(modifier = Modifier.fillMaxWidth()) {
-                dataElements.forEach { (dataElement, dataElementName) ->
-                    val dataValues = values.filter { it.dataElement == dataElement }
-                    DataElementRow(
-                        dataElementName = dataElementName,
-                        fields = dataValues,
-                        onValueChange = onValueChange
-                                    )
-                                }
-                            }
-                        }
-                    }
-                }
+        Divider(modifier = Modifier.padding(vertical = 8.dp))
+    }
+    // 2. For each non-default group, render using the correct rule
+    groups.filterKeys { it != "__DEFAULT__" }.forEach { (groupKey, groupValues) ->
+        val structure = groupValues.firstOrNull()?.let { categoryComboStructures[it.categoryOptionCombo] } ?: emptyList()
+        val categoryOptionComboUid = groupValues.firstOrNull()?.categoryOptionCombo
+        val optionUidsToComboUidForGroup = state.optionUidsToComboUid[categoryOptionComboUid] ?: emptyMap()
+        CategoryAccordionRecursive(
+            categories = structure,
+            values = groupValues,
+            onValueChange = onValueChange,
+            optionUidsToComboUid = optionUidsToComboUidForGroup,
+            viewModel = viewModel,
+            parentPath = emptyList(),
+            expandedAccordions = expandedAccordions,
+            onToggle = onToggle
+        )
+        Divider(modifier = Modifier.padding(vertical = 8.dp))
+    }
+}
 
 @Composable
 private fun DataElementRow(
@@ -531,7 +502,7 @@ private fun DataElementRow(
     Column(modifier = Modifier.fillMaxWidth().padding(vertical = 4.dp)) {
         Text(text = dataElementName, style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.Bold)
         fields.filterNotNull().forEach { dataValue ->
-                        DataValueField(
+            DataValueField(
                 dataValue = dataValue,
                 onValueChange = { value -> onValueChange(value, dataValue) }
             )
@@ -1182,4 +1153,335 @@ private fun validateDataValue(dataValue: DataValue): ValidationState {
         }
     }
     return ValidationState.VALID
+}
+
+// --- Helper composable to render a group of data elements by category combo ---
+@Composable
+private fun renderCategoryComboGroup(
+    sectionName: String,
+    structure: List<Pair<String, List<Pair<String, String>>>>,
+    values: List<DataValue>,
+    expandedCategoryGroup: String?,
+    onToggleCategoryGroup: (String, String) -> Unit,
+    onValueChange: (String, DataValue) -> Unit,
+    optionUidsToComboUid: Map<Set<String>, String>,
+    viewModel: DataEntryViewModel
+) {
+    when (structure.size) {
+        0 -> {
+            // Flat list (should not happen here, handled above)
+            values.forEach { dataValue ->
+                DataElementRow(
+                    dataElementName = dataValue.dataElementName,
+                    fields = listOf(dataValue),
+                    onValueChange = onValueChange
+                )
+            }
+        }
+        1 -> {
+            val options = structure[0].second
+            if (options.size == 2) {
+                // Side-by-side fields (Rule 2)
+                Row(modifier = Modifier.fillMaxWidth()) {
+                    options.forEach { (optUid, optName) ->
+                        val cocUid = optionUidsToComboUid.entries.find { it.key == setOf(optUid) }?.value
+                        val fields = values.filter { it.categoryOptionCombo == cocUid }
+                        Column(modifier = Modifier.weight(1f)) {
+                            Text(optName, fontWeight = FontWeight.Medium)
+                            fields.forEach { dataValue ->
+                                DataValueField(
+                                    dataValue = dataValue,
+                                    onValueChange = { value -> onValueChange(value, dataValue) }
+                                )
+                            }
+                        }
+                    }
+                }
+            } else {
+                // Accordion with list inside (Rule 2)
+                CategoryAccordion(
+                    header = structure[0].first,
+                    expanded = expandedCategoryGroup == "$sectionName:${structure[0].first}",
+                    onToggleExpand = {
+                        if (expandedCategoryGroup == "$sectionName:${structure[0].first}")
+                            onToggleCategoryGroup(sectionName, "")
+                        else
+                            onToggleCategoryGroup(sectionName, structure[0].first)
+                    }
+                ) {
+                    values.forEach { dataValue ->
+                        DataElementRow(
+                            dataElementName = dataValue.dataElementName,
+                            fields = listOf(dataValue),
+                            onValueChange = onValueChange
+                        )
+                    }
+                }
+            }
+        }
+        2 -> {
+            val catA = structure[0]
+            val catB = structure[1]
+            val aOptions = catA.second
+            val bOptions = catB.second
+            // --- Begin new logic for two categories (see RENDERING_RULES.md) ---
+            // Always make sex/gender category the columns in grid
+            val (rowCat, colCat) = when {
+                isSexCategory(catA) -> catB to catA
+                isSexCategory(catB) -> catA to catB
+                else -> catA to catB
+            }
+            if (rowCat.second.size == 2 && colCat.second.size == 2) {
+                // Both have 2 options: render as grid
+                Column(modifier = Modifier.padding(start = 32.dp, bottom = 2.dp)) {
+                    // Header row
+                    Row {
+                        Spacer(modifier = Modifier.width(100.dp)) // For row header
+                        colCat.second.forEach { (_, colName) ->
+                            Text(
+                                text = colName,
+                                modifier = Modifier.width(100.dp),
+                                style = MaterialTheme.typography.bodyMedium,
+                                fontWeight = FontWeight.Bold
+                            )
+                        }
+                    }
+                    // Data rows
+                    rowCat.second.forEach { (rowUid, rowName) ->
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Text(
+                                text = rowName,
+                                modifier = Modifier.width(100.dp),
+                                style = MaterialTheme.typography.bodyMedium
+                            )
+                            colCat.second.forEach { (colUid, _) ->
+                                val dataValuesForCell = values.filter { dv ->
+                                    val comboStructure = viewModel.state.value.categoryComboStructures[dv.categoryOptionCombo]
+                                    comboStructure?.any { cat ->
+                                        cat.first == rowCat.first && cat.second.any { it.first == rowUid }
+                                    } == true &&
+                                    comboStructure.any { cat ->
+                                        cat.first == colCat.first && cat.second.any { it.first == colUid }
+                                    }
+                                }
+                                Column(modifier = Modifier.width(100.dp).padding(4.dp)) {
+                                    dataValuesForCell.forEach { dataValue ->
+                                        Text(
+                                            text = dataValue.dataElementName,
+                                            style = MaterialTheme.typography.bodyMedium,
+                                            modifier = Modifier.padding(start = 8.dp, bottom = 2.dp)
+                                        )
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            } else if (colCat.second.size == 2) {
+                // For each option in the header category, render an accordion header
+                rowCat.second.forEach { (headerUid, headerName) ->
+                    Surface(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(start = 24.dp, end = 8.dp, bottom = 4.dp),
+                        color = MaterialTheme.colorScheme.secondaryContainer,
+                        shape = MaterialTheme.shapes.small
+                    ) {
+                        Row(
+                            modifier = Modifier.padding(12.dp),
+                            horizontalArrangement = Arrangement.SpaceBetween,
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Text(
+                                text = headerName,
+                                style = MaterialTheme.typography.titleSmall,
+                                fontWeight = FontWeight.Medium
+                            )
+                        }
+                    }
+                    // Side by side columns for contentCat options, only render elements matching both header and column
+                    Row(modifier = Modifier.padding(start = 40.dp, bottom = 2.dp)) {
+                        colCat.second.forEach { (optUid, optName) ->
+                            Column(modifier = Modifier.weight(1f)) {
+                                Text(
+                                    text = optName,
+                                    style = MaterialTheme.typography.bodyMedium,
+                                    fontWeight = FontWeight.Bold,
+                                    modifier = Modifier.padding(bottom = 2.dp)
+                                )
+                                values.filter { dv ->
+                                    val comboStructure = viewModel.state.value.categoryComboStructures[dv.categoryOptionCombo]
+                                    comboStructure?.any { cat ->
+                                        cat.first == rowCat.first && cat.second.any { it.first == headerUid }
+                                    } == true &&
+                                    comboStructure.any { cat ->
+                                        cat.first == colCat.first && cat.second.any { it.first == optUid }
+                                    }
+                                }.forEach { dataValue ->
+                                    Text(
+                                        text = dataValue.dataElementName,
+                                        style = MaterialTheme.typography.bodyMedium,
+                                        modifier = Modifier.padding(start = 8.dp, bottom = 2.dp)
+                                    )
+                                }
+                            }
+                        }
+                    }
+                }
+            } else {
+                // Fallback: vertical list
+                values.forEach { dataValue ->
+                    Text(
+                        text = dataValue.dataElementName,
+                        style = MaterialTheme.typography.bodyMedium,
+                        modifier = Modifier.padding(start = 32.dp, bottom = 2.dp)
+                    )
+                }
+            }
+            // --- End new logic for two categories ---
+            Spacer(modifier = Modifier.height(12.dp))
+        }
+        else -> {
+            // Fallback: render each element by its own combo (Rule 5)
+            values.forEach { dataValue ->
+                val elementStructure = viewModel.state.value.categoryComboStructures[dataValue.categoryOptionCombo] ?: emptyList()
+                if (elementStructure.isEmpty()) {
+                    DataElementRow(
+                        dataElementName = dataValue.dataElementName,
+                        fields = listOf(dataValue),
+                        onValueChange = onValueChange
+                    )
+                } else if (elementStructure.size == 1 && elementStructure[0].second.size == 2) {
+                    Row(modifier = Modifier.fillMaxWidth()) {
+                        elementStructure[0].second.forEach { (optUid, optName) ->
+                            val cocUid = optionUidsToComboUid.entries.find { it.key == setOf(optUid) }?.value
+                            val fields = listOf(dataValue).filter { it.categoryOptionCombo == cocUid }
+                            Column(modifier = Modifier.weight(1f)) {
+                                Text(optName, fontWeight = FontWeight.Medium)
+                                fields.forEach { dv ->
+                                    DataValueField(
+                                        dataValue = dv,
+                                        onValueChange = { value -> onValueChange(value, dv) }
+                                    )
+                                }
+                            }
+                        }
+                    }
+                } else {
+                    CategoryAccordion(
+                        header = elementStructure[0].first,
+                        expanded = expandedCategoryGroup == "$sectionName:${elementStructure[0].first}",
+                        onToggleExpand = {
+                            if (expandedCategoryGroup == "$sectionName:${elementStructure[0].first}")
+                                onToggleCategoryGroup(sectionName, "")
+                            else
+                                onToggleCategoryGroup(sectionName, elementStructure[0].first)
+                        }
+                    ) {
+                        DataElementRow(
+                            dataElementName = dataValue.dataElementName,
+                            fields = listOf(dataValue),
+                            onValueChange = onValueChange
+                        )
+                    }
+                }
+            }
+        }
+    }
+}
+
+// Helper to detect sex/gender category
+fun isSexCategory(cat: Pair<String, List<Pair<String, String>>>): Boolean {
+    val name = cat.first.lowercase()
+    val options = cat.second.map { it.second.lowercase() }
+    return name.contains("sex") || name.contains("gender") ||
+        options.any { it == "male" || it == "female" }
+}
+
+/**
+ * Recursively renders nested accordions for N categories, except:
+ * - If only one category with exactly two options (especially sex/gender), render side by side.
+ * - If no categories, render flat list.
+ * - Always collapse single-option categories.
+ * - Never render sex/gender as an accordion header.
+ */
+@Composable
+fun CategoryAccordionRecursive(
+    categories: List<Pair<String, List<Pair<String, String>>>>,
+    values: List<DataValue>,
+    onValueChange: (String, DataValue) -> Unit,
+    optionUidsToComboUid: Map<Set<String>, String>,
+    viewModel: DataEntryViewModel,
+    parentPath: List<String> = emptyList(),
+    expandedAccordions: Map<List<String>, String?>,
+    onToggle: (List<String>, String) -> Unit,
+) {
+    if (categories.isEmpty()) {
+        values.forEach { dataValue ->
+            DataElementRow(
+                dataElementName = dataValue.dataElementName,
+                fields = listOf(dataValue),
+                onValueChange = onValueChange
+            )
+        }
+        return
+    }
+    val currentCategory = categories.first()
+    val restCategories = categories.drop(1)
+    if (restCategories.isEmpty()) {
+        // LAST CATEGORY: Render as a row of entry fields, filtering by full path
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(vertical = 8.dp),
+            horizontalArrangement = Arrangement.spacedBy(12.dp)
+        ) {
+            currentCategory.second.forEach { (optionUid, optionName) ->
+                val fullPath = parentPath + optionUid
+                val comboUid = optionUidsToComboUid[fullPath.toSet()]
+                val filteredValues = values.filter { it.categoryOptionCombo == comboUid }
+                Column(modifier = Modifier.weight(1f)) {
+                    Text(
+                        text = optionName,
+                        style = MaterialTheme.typography.labelLarge,
+                        fontWeight = FontWeight.SemiBold,
+                        modifier = Modifier.padding(bottom = 4.dp)
+                    )
+                    filteredValues.forEach { dataValue ->
+                        DataElementRow(
+                            dataElementName = dataValue.dataElementName,
+                            fields = listOf(dataValue),
+                            onValueChange = onValueChange
+                        )
+                    }
+                }
+            }
+        }
+        return
+    }
+    // For all other categories, render as accordions, filtering by current path
+    currentCategory.second.forEach { (optionUid, optionName) ->
+        val expanded = expandedAccordions[parentPath] == optionUid
+        Box(modifier = Modifier.padding(bottom = 8.dp)) {
+            CategoryAccordion(
+                header = optionName,
+                expanded = expanded,
+                onToggleExpand = { onToggle(parentPath, optionUid) }
+            ) {
+                val newPath = parentPath + optionUid
+                val comboUid = optionUidsToComboUid[newPath.toSet()]
+                val filteredValues = if (comboUid != null) values.filter { it.categoryOptionCombo == comboUid } else values
+                CategoryAccordionRecursive(
+                    categories = restCategories,
+                    values = filteredValues,
+                    onValueChange = onValueChange,
+                    optionUidsToComboUid = optionUidsToComboUid,
+                    viewModel = viewModel,
+                    parentPath = newPath,
+                    expandedAccordions = expandedAccordions,
+                    onToggle = onToggle
+                )
+            }
+        }
+    }
 }

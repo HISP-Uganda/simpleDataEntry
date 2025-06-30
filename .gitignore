@@ -1,41 +1,131 @@
-*.iml
-.gradle
-/local.properties
-/.idea/caches
-/.idea/libraries
-/.idea/modules.xml
-/.idea/workspace.xml
-/.idea/navEditor.xml
-/.idea/assetWizardSettings.xml
+# Android/Java/Gradle
+.gradle/
+.idea/
 .DS_Store
-/build
-/captures
-.externalNativeBuild
-.cxx
+/build/
+app/build/
+app/.gradle/
+app/.idea/
+app/local.properties
 local.properties
-/app/logcat.txt
-
-# Added by Task Master AI
-# Logs
-logs
+captures/
+.externalNativeBuild/
+cxx/
+*.iml
+*.apk
+*.ap_*
+*.dex
+*.class
+*.jar
+*.war
+*.ear
+*.db
+*.db-journal
+*.keystore
+*.jks
 *.log
+*.tmp
+*.swp
+*.swo
+*.swn
+*.sublime-workspace
+*.sublime-project
+*.vscode/
+
+# Android Studio
+.idea/
+*.iws
+*.ipr
+*.iml
+.idea/caches/
+.idea/libraries/
+.idea/modules.xml
+.idea/workspace.xml
+.idea/navEditor.xml
+.idea/assetWizardSettings.xml
+
+# Gradle Wrapper
+/gradle/wrapper/gradle-wrapper.jar
+
+# Build output
+/build/
+app/build/
+
+# Local config
+/local.properties
+app/local.properties
+
+# Logs
+logs/
+*.log
+app/logcat.txt
+
+# Node/npm/yarn (if ever used)
+node_modules/
 npm-debug.log*
 yarn-debug.log*
 yarn-error.log*
 dev-debug.log
-# Dependency directories
-node_modules/
+
 # Environment variables
 .env
-# Editor directories and files
-.idea
-.vscode
+
+# Editor/IDE
+.vscode/
 *.suo
 *.ntvs*
 *.njsproj
 *.sln
 *.sw?
+
 # OS specific
+.DS_Store
+Thumbs.db
+
+# Taskmaster/AI/Temp
+.taskmaster/
+.cursor/
+.kotlin/
+.whisper/
+roo/
+windsurfrules
+roomodes
+
 # Task files
-tasks.json
-tasks/ 
+/tasks.json
+tasks/
+
+# Misc
+*.orig
+*.rej
+*.bak
+*.tmp
+*.temp
+
+# Ignore screenshots and temp icons
+Screenshot *.png
+temp_icons/
+
+# Ignore reports
+build/reports/
+app/build/reports/
+
+# Ignore Room/Jetpack Compose caches
+app/.room/
+
+# Ignore any other build artifacts
+app/intermediates/
+app/generated/
+app/outputs/
+app/kotlin/
+app/kspCaches/
+
+# Ignore .idea and .gradle in submodules
+**/.idea/
+**/.gradle/
+
+# Ignore .taskmaster state
+.taskmaster/state.json
+
+# Ignore .cursor-dataentry-checklist.md
+.cursor-dataentry-checklist.md
