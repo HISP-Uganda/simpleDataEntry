@@ -52,9 +52,10 @@ class ValidateValueUseCase @Inject constructor(
     }
 }
 
-
 data class DataEntryUseCases @Inject constructor(
     val getDataValues: GetDataValuesUseCase,
     val saveDataValue: SaveDataValueUseCase,
-    val validateValue: ValidateValueUseCase
+    val validateValue: ValidateValueUseCase,
+    val completeDatasetInstance: CompleteDatasetInstanceUseCase,
+    val markDatasetInstanceIncomplete: MarkDatasetInstanceIncompleteUseCase
 )

@@ -4,6 +4,8 @@ import android.app.Application
 import android.os.Build
 import android.util.Log
 import androidx.annotation.RequiresApi
+import androidx.compose.foundation.layout.size
+import androidx.compose.runtime.mutableStateMapOf
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.ash.simpledataentry.data.local.DataValueDraftDao
@@ -46,7 +48,9 @@ data class DataEntryState(
     val saveResult: Result<Unit>? = null,
     val attributeOptionCombos: List<Pair<String, String>> = emptyList(),
     val expandedGridRows: Map<String, Set<String>> = emptyMap(),
-    val isExpandedSections: Map<String, Boolean> = emptyMap()
+    val isExpandedSections: Map<String, Boolean> = emptyMap(),
+    val currentSectionIndex: Int = -1,
+    val totalSections: Int = 0
 )
 
 @HiltViewModel
@@ -61,6 +65,23 @@ class DataEntryViewModel @Inject constructor(
 
     // Track unsaved edits: key = Pair<dataElement, categoryOptionCombo>, value = DataValue
     private val dirtyDataValues = mutableMapOf<Pair<String, String>, DataValue>()
+
+    // --- BEGIN: Per-field TextFieldValue state ---
+    private val _fieldStates = mutableStateMapOf<String, androidx.compose.ui.text.input.TextFieldValue>()
+    val fieldStates: Map<String, androidx.compose.ui.text.input.TextFieldValue> get() = _fieldStates
+    private fun fieldKey(dataElement: String, categoryOptionCombo: String): String = "$dataElement|$categoryOptionCombo"
+    fun initializeFieldState(dataValue: DataValue) {
+        val key = fieldKey(dataValue.dataElement, dataValue.categoryOptionCombo)
+        if (!_fieldStates.containsKey(key)) {
+            _fieldStates[key] = androidx.compose.ui.text.input.TextFieldValue(dataValue.value ?: "")
+        }
+    }
+    fun onFieldValueChange(newValue: androidx.compose.ui.text.input.TextFieldValue, dataValue: DataValue) {
+        val key = fieldKey(dataValue.dataElement, dataValue.categoryOptionCombo)
+        _fieldStates[key] = newValue
+        updateCurrentValue(newValue.text, dataValue.dataElement, dataValue.categoryOptionCombo)
+    }
+    // --- END: Per-field TextFieldValue state ---
 
     private var savePressed = false
 
@@ -145,9 +166,36 @@ class DataEntryViewModel @Inject constructor(
                     }
 
                     _state.update { currentState ->
+
+                        val groupedBySection = mergedValues.groupBy { it.sectionName } // Group once
+                        val totalSections = groupedBySection.size
+
+                        // Determine the initial currentSectionIndex
+                        val initialOrPreservedIndex = if (totalSections > 0) {
+                            // If you want to ALWAYS open the first section on load, uncomment next line:
+                            // 0
+                            // If you want to respect a previously opened section or default to closed:
+                            if (currentState.currentSectionIndex >= 0 && currentState.currentSectionIndex < totalSections) {
+                                currentState.currentSectionIndex // Preserve if valid
+                            } else if (currentState.currentSectionIndex == -1 && currentState.dataValues.isEmpty()) { // First ever load and state is still default
+                                0 // Open first section on very first load
+                            }
+                            else {
+                                currentState.currentSectionIndex // Keep as -1 or whatever it was if sections changed
+                            }
+                        } else {
+                            -1 // No sections, so no section can be open
+                        }.let {
+                            // Final check to ensure index is valid or -1
+                            if (it >= totalSections && totalSections > 0) totalSections -1
+                            else if (it < -1) -1
+                            else it
+                        }
+
                         currentState.copy(
                             dataValues = mergedValues,
-                            currentDataValue = mergedValues.firstOrNull(),
+                            totalSections = totalSections,
+                            currentSectionIndex = initialOrPreservedIndex,                            currentDataValue = mergedValues.firstOrNull(),
                             currentStep = 0,
                             isLoading = false,
                             expandedSection = null,
@@ -295,8 +343,16 @@ class DataEntryViewModel @Inject constructor(
                 }.awaitAll()
                 val failed = results.filter { it.isFailure }
                 if (failed.isNotEmpty()) {
-                    Log.e("DataEntryViewModel", "Failed to stage ${'$'}{failed.size} drafts: ${'$'}{failed.map { it.exceptionOrNull()?.message }}")
-                    _state.update { it.copy(isLoading = false, error = "Failed to stage some values for upload.") }
+                    Log.e(
+                        "DataEntryViewModel",
+                        "Failed to stage ${'$'}{failed.size} drafts: ${'$'}{failed.map { it.exceptionOrNull()?.message }}"
+                    )
+                    _state.update {
+                        it.copy(
+                            isLoading = false,
+                            error = "Failed to stage some values for upload."
+                        )
+                    }
                     return@launch
                 }
                 Log.d("DataEntryViewModel", "All drafts staged in SDK")
@@ -319,13 +375,26 @@ class DataEntryViewModel @Inject constructor(
                         }
                         Log.d("DataEntryViewModel", "Drafts deleted after successful upload")
                     } else {
-                        Log.e("DataEntryViewModel", "Upload failed or returned empty result: $uploadResult")
-                        _state.update { it.copy(isLoading = false, error = "Upload failed or returned empty result.") }
+                        Log.e(
+                            "DataEntryViewModel",
+                            "Upload failed or returned empty result: $uploadResult"
+                        )
+                        _state.update {
+                            it.copy(
+                                isLoading = false,
+                                error = "Upload failed or returned empty result."
+                            )
+                        }
                         return@launch
                     }
                 } catch (e: Exception) {
                     Log.e("DataEntryViewModel", "Upload failed: ${'$'}{e.message}", e)
-                    _state.update { it.copy(isLoading = false, error = "Upload failed: ${'$'}{e.message}") }
+                    _state.update {
+                        it.copy(
+                            isLoading = false,
+                            error = "Upload failed: ${'$'}{e.message}"
+                        )
+                    }
                     return@launch
                 }
 
@@ -338,26 +407,74 @@ class DataEntryViewModel @Inject constructor(
                     attributeOptionCombo = _state.value.attributeOptionCombo,
                     isEditMode = _state.value.isEditMode
                 )
-
-                _state.update { it.copy(isLoading = false, error = null) }
-            } catch (e: Exception) {
-                Log.e("DataEntryViewModel", "Sync failed: ${'$'}{e.message}", e)
-                _state.update { currentState ->
-                    currentState.copy(error = "Sync failed: ${'$'}{e.message}", isLoading = false)
-                }
+            }
+            catch (e: Exception) {
+                null
             }
         }
+
+
     }
-    
-    fun updateComment(comment: String) {
-        _state.value.currentDataValue?.let { currentValue ->
-            _state.update { currentState ->
-                currentState.copy(
-                    currentDataValue = currentValue.copy(
-                        comment = comment
-                    )
-                )
+
+
+    fun toggleSection(sectionName: String) {
+        _state.update { currentState ->
+            val current = currentState.isExpandedSections[sectionName] ?: false
+            currentState.copy(
+                isExpandedSections = currentState.isExpandedSections.toMutableMap().apply {
+                    this[sectionName] = !current
+                }
+            )
+        }
+    }
+
+    fun setCurrentSectionIndex(index: Int) {
+        _state.update { currentState ->
+            if (index < 0 || index >= currentState.totalSections) { // Safety check
+                return@update currentState
             }
+            val newIndex = if (currentState.currentSectionIndex == index) {
+                -1 // If clicking the currently open section, close it
+            } else {
+                index // Otherwise, open the clicked section
+            }
+            currentState.copy(currentSectionIndex = newIndex)
+        }
+    }
+
+
+    fun goToNextSection() {
+        _state.update { currentState ->
+            if (currentState.totalSections == 0) return@update currentState
+
+            val newIndex = if (currentState.currentSectionIndex == -1) {
+                0 // If nothing is open, "Next" opens the first section
+            } else {
+                (currentState.currentSectionIndex + 1).coerceAtMost(currentState.totalSections - 1)
+            }
+            currentState.copy(currentSectionIndex = newIndex)
+        }
+    }
+
+    fun goToPreviousSection() {
+        _state.update { currentState ->
+            if (currentState.totalSections == 0) return@update currentState
+
+            val newIndex = if (currentState.currentSectionIndex == -1) {
+                currentState.totalSections - 1 // If nothing is open, "Previous" opens the last section
+            } else {
+                (currentState.currentSectionIndex - 1).coerceAtLeast(0)
+            }
+            currentState.copy(currentSectionIndex = newIndex)
+        }
+    }
+
+
+    fun toggleCategoryGroup(sectionName: String, categoryGroup: String) {
+        _state.update { currentState ->
+            val key = "$sectionName:$categoryGroup"
+            val newExpanded = if (currentState.expandedCategoryGroup == key) null else key
+            currentState.copy(expandedCategoryGroup = newExpanded)
         }
     }
 
@@ -398,25 +515,6 @@ class DataEntryViewModel @Inject constructor(
         }
     }
 
-    fun toggleSection(sectionName: String) {
-        _state.update { currentState ->
-            val current = currentState.isExpandedSections[sectionName] ?: false
-            currentState.copy(
-                isExpandedSections = currentState.isExpandedSections.toMutableMap().apply {
-                    this[sectionName] = !current
-                }
-            )
-        }
-    }
-
-    fun toggleCategoryGroup(sectionName: String, categoryGroup: String) {
-        _state.update { currentState ->
-            val key = "$sectionName:$categoryGroup"
-            val newExpanded = if (currentState.expandedCategoryGroup == key) null else key
-            currentState.copy(expandedCategoryGroup = newExpanded)
-        }
-    }
-
     suspend fun getAvailablePeriods(datasetId: String): List<Period> {
         return repository.getAvailablePeriods(datasetId)
     }
@@ -444,7 +542,7 @@ class DataEntryViewModel @Inject constructor(
     fun setNavigating(isNavigating: Boolean) {
         _state.update { it.copy(isNavigating = isNavigating) }
     }
-    
+
     fun resetSaveFeedback() {
         _state.update { it.copy(saveResult = null, saveInProgress = false) }
         savePressed = false
@@ -478,7 +576,8 @@ class DataEntryViewModel @Inject constructor(
     fun toggleGridRow(sectionName: String, rowKey: String) {
         _state.update { currentState ->
             val currentSet = currentState.expandedGridRows[sectionName] ?: emptySet()
-            val newSet = if (currentSet.contains(rowKey)) currentSet - rowKey else currentSet + rowKey
+            val newSet =
+                if (currentSet.contains(rowKey)) currentSet - rowKey else currentSet + rowKey
             currentState.copy(
                 expandedGridRows = currentState.expandedGridRows.toMutableMap().apply {
                     put(sectionName, newSet)
@@ -489,5 +588,39 @@ class DataEntryViewModel @Inject constructor(
 
     fun isGridRowExpanded(sectionName: String, rowKey: String): Boolean {
         return _state.value.expandedGridRows[sectionName]?.contains(rowKey) == true
+    }
+
+    fun markDatasetComplete(onResult: (Boolean, String?) -> Unit) {
+        val stateSnapshot = _state.value
+        viewModelScope.launch {
+            Log.d(
+                "DataEntryViewModel",
+                "Attempting to mark dataset as complete: ${'$'}{stateSnapshot.datasetId}, ${'$'}{stateSnapshot.period}, ${'$'}{stateSnapshot.orgUnit}, ${'$'}{stateSnapshot.attributeOptionCombo}"
+            )
+            _state.update { it.copy(isLoading = true, error = null) }
+            val result = useCases.completeDatasetInstance(
+                stateSnapshot.datasetId,
+                stateSnapshot.period,
+                stateSnapshot.orgUnit,
+                stateSnapshot.attributeOptionCombo
+            )
+            if (result.isSuccess) {
+                Log.d("DataEntryViewModel", "Dataset marked as complete successfully.")
+                _state.update { it.copy(isCompleted = true, isLoading = false) }
+                onResult(true, null)
+            } else {
+                Log.e(
+                    "DataEntryViewModel",
+                    "Failed to mark dataset as complete: ${'$'}{result.exceptionOrNull()?.message}"
+                )
+                _state.update {
+                    it.copy(
+                        isLoading = false,
+                        error = result.exceptionOrNull()?.message
+                    )
+                }
+                onResult(false, result.exceptionOrNull()?.message)
+            }
+        }
     }
 }

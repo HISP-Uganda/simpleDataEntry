@@ -10,6 +10,7 @@ import androidx.compose.foundation.lazy.items
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.Check
+import androidx.compose.material.icons.filled.FilterList
 import androidx.compose.material.icons.filled.Sync
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
@@ -19,6 +20,7 @@ import androidx.compose.ui.unit.dp
 import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.navigation.NavController
 import com.ash.simpledataentry.domain.model.DatasetInstance
+import com.ash.simpledataentry.domain.model.DatasetInstanceFilterState
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.delay
 import java.net.URLEncoder
@@ -35,6 +37,10 @@ import org.hisp.dhis.mobile.ui.designsystem.component.state.rememberAdditionalIn
 import org.hisp.dhis.mobile.ui.designsystem.component.state.rememberListCardState
 import org.hisp.dhis.mobile.ui.designsystem.theme.DHIS2Theme
 import org.hisp.dhis.mobile.ui.designsystem.theme.TextColor
+import androidx.compose.ui.graphics.Color
+import kotlinx.coroutines.coroutineScope
+import androidx.compose.material.icons.filled.CheckCircle
+import androidx.compose.runtime.rememberCoroutineScope
 
 @SuppressLint("SuspiciousIndentation")
 @OptIn(ExperimentalMaterial3Api::class)
@@ -45,8 +51,15 @@ fun DatasetInstancesScreen(
     datasetName: String,
     viewModel: DatasetInstancesViewModel = hiltViewModel()
 ) {
+    val coroutineScope = rememberCoroutineScope()
     val snackbarHostState = remember { SnackbarHostState() }
     val state by viewModel.state.collectAsState()
+    val bulkMode by viewModel.bulkCompletionMode.collectAsState()
+    val selectedInstances by viewModel.selectedInstances.collectAsState()
+    val filterState by viewModel.filterState.collectAsState()
+    var bulkActionMessage by remember { mutableStateOf<String?>(null) }
+    var bulkActionSuccess by remember { mutableStateOf<Boolean?>(null) }
+    var showFilterDialog by remember { mutableStateOf(false) }
 
     LaunchedEffect(datasetId) {
         viewModel.setDatasetId(datasetId)
@@ -75,13 +88,33 @@ fun DatasetInstancesScreen(
         navController = navController,
         actions = {
             IconButton(
+                onClick = { showFilterDialog = true },
+                enabled = !state.isLoading && !state.isSyncing && !bulkMode
+            ) {
+                Icon(
+                    imageVector = Icons.Default.FilterList,
+                    contentDescription = "Filter",
+                    tint = if (filterState != DatasetInstanceFilterState()) MaterialTheme.colorScheme.primary else TextColor.OnSurface
+                )
+            }
+            IconButton(
                 onClick = { viewModel.manualRefresh() },
-                enabled = !state.isLoading && !state.isSyncing
+                enabled = !state.isLoading && !state.isSyncing && !bulkMode
             ) {
                 Icon(
                     imageVector = Icons.Default.Sync,
                     contentDescription = "Sync",
                     tint = TextColor.OnSurface
+                )
+            }
+            IconButton(
+                onClick = { viewModel.toggleBulkCompletionMode() },
+                enabled = !state.isLoading && !state.isSyncing
+            ) {
+                Icon(
+                    imageVector = Icons.Default.Check,
+                    contentDescription = if (bulkMode) "Exit Bulk Complete" else "Bulk Complete",
+                    tint = if (bulkMode) MaterialTheme.colorScheme.primary else TextColor.OnSurface
                 )
             }
         }
@@ -115,7 +148,7 @@ fun DatasetInstancesScreen(
                     contentPadding = PaddingValues(16.dp),
                     verticalArrangement = Arrangement.spacedBy(8.dp)
                 ) {
-                    val sortedInstances = state.instances.sortedByDescending { instance ->
+                    val sortedInstances = state.filteredInstances.sortedByDescending { instance ->
                         parseDhis2PeriodToDate(instance.period.id)?.time ?: 0L
                     }
                     items(sortedInstances) { instance ->
@@ -138,49 +171,83 @@ fun DatasetInstancesScreen(
                         val periodText = instance.period.toString().replace("Period(id=", "").replace(")", "")
                         val attrComboName = state.attributeOptionCombos.find { it.first == instance.attributeOptionCombo }?.second ?: instance.attributeOptionCombo
                         val showAttrCombo = !attrComboName.equals("default", ignoreCase = true)
-                        ListCard(
-                            listCardState = rememberListCardState(
-                                title = ListCardTitleModel(
-                                    text = if (showAttrCombo) "$periodText $attrComboName" else periodText,
-                                    modifier = Modifier.padding(0.dp)
-                                ),
-                                description = ListCardDescriptionModel(
-                                    text = if (isLoading) "Loading..." else "",
-                                    modifier = Modifier
-                                ),
-                                additionalInfoColumnState = rememberAdditionalInfoColumnState(
-                                    additionalInfoList = listOf(
-                                        AdditionalInfoItem(
-                                            key = "Last Updated",
-                                            value = formattedDate,
-                                            isConstantItem = true
-                                        )
-                                    ),
-                                    syncProgressItem = AdditionalInfoItem(
-                                        key = "",
-                                        value = "",
-                                        isConstantItem = true
-                                    ),
-                                    expandLabelText = "Show more",
-                                    shrinkLabelText = "Show Less",
-                                    minItemsToShow = 1,
-                                    scrollableContent = false
-                                ),
-                                shadow = true
-                            ),
-                            onCardClick = {
-                                if (!isLoading) {
-                                    val encodedDatasetId = URLEncoder.encode(datasetId, "UTF-8")
-                                    val encodedDatasetName = URLEncoder.encode(datasetName, "UTF-8")
-                                    navController.navigate("EditEntry/$encodedDatasetId/${instance.period.id}/${instance.organisationUnit.id}/${instance.attributeOptionCombo}/$encodedDatasetName") {
-                                        launchSingleTop = true
-                                        popUpTo("DatasetInstances/{datasetId}/{datasetName}") {
-                                            saveState = true
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            modifier = Modifier.fillMaxWidth()
+                        ) {
+                            if (bulkMode) {
+                                Checkbox(
+                                    checked = selectedInstances.contains(instance.id) || instance.state == DatasetInstanceState.COMPLETE,
+                                    onCheckedChange = { checked ->
+                                        if (!state.isLoading && !state.isSyncing) {
+                                            viewModel.toggleInstanceSelection(instance.id)
                                         }
+                                    },
+                                    enabled = !state.isLoading && !state.isSyncing
+                                )
+                            }
+                            Box(modifier = Modifier.weight(1f)) {
+                                Row(
+                                    modifier = Modifier.fillMaxWidth(),
+                                    horizontalArrangement = Arrangement.SpaceBetween,
+                                    verticalAlignment = Alignment.CenterVertically
+                                ) {
+                                    ListCard(
+                                        listCardState = rememberListCardState(
+                                            title = ListCardTitleModel(
+                                                text = if (showAttrCombo) "$periodText $attrComboName" else periodText,
+                                                modifier = Modifier.padding(0.dp)
+                                            ),
+                                            description = ListCardDescriptionModel(
+                                                text = if (isLoading) "Loading..." else "",
+                                                modifier = Modifier
+                                            ),
+                                            additionalInfoColumnState = rememberAdditionalInfoColumnState(
+                                                additionalInfoList = listOf(
+                                                    AdditionalInfoItem(
+                                                        key = "Last Updated",
+                                                        value = formattedDate,
+                                                        isConstantItem = true
+                                                    )
+                                                ),
+                                                syncProgressItem = AdditionalInfoItem(
+                                                    key = "",
+                                                    value = "",
+                                                    isConstantItem = true
+                                                ),
+                                                expandLabelText = "Show more",
+                                                shrinkLabelText = "Show Less",
+                                                minItemsToShow = 1,
+                                                scrollableContent = false
+                                            ),
+                                            shadow = true
+                                        ),
+                                        onCardClick = {
+                                            if (!isLoading && !bulkMode) {
+                                                val encodedDatasetId = URLEncoder.encode(datasetId, "UTF-8")
+                                                val encodedDatasetName = URLEncoder.encode(datasetName, "UTF-8")
+                                                navController.navigate("EditEntry/$encodedDatasetId/${instance.period.id}/${instance.organisationUnit.id}/${instance.attributeOptionCombo}/$encodedDatasetName") {
+                                                    launchSingleTop = true
+                                                    popUpTo("DatasetInstances/{datasetId}/{datasetName}") {
+                                                        saveState = true
+                                                    }
+                                                }
+                                            }
+                                        }
+                                    )
+                                    if (!bulkMode && instance.state == DatasetInstanceState.COMPLETE) {
+                                        Icon(
+                                            imageVector = Icons.Default.CheckCircle,
+                                            contentDescription = "Completed",
+                                            tint = MaterialTheme.colorScheme.primary,
+                                            modifier = Modifier
+                                                .padding(start = 8.dp, end = 8.dp)
+                                                .size(28.dp)
+                                        )
                                     }
                                 }
                             }
-                        )
+                        }
                     }
                 }
             }
@@ -189,28 +256,80 @@ fun DatasetInstancesScreen(
                 hostState = snackbarHostState,
                 modifier = Modifier
                     .align(Alignment.BottomCenter)
-                    .padding(16.dp)
-            )
-
-            FloatingActionButton(
-                onClick = {
-                    val encodedDatasetName = URLEncoder.encode(datasetName, "UTF-8")
-                    navController.navigate("CreateDataEntry/$datasetId/$encodedDatasetName") {
-                        launchSingleTop = true
-                        popUpTo("DatasetInstances/{datasetId}/{datasetName}") {
-                            saveState = true
-                        }
+                    .padding(16.dp),
+                snackbar = { data ->
+                    Snackbar(
+                        containerColor = MaterialTheme.colorScheme.surface,
+                        contentColor = Color.White
+                    ) {
+                        Text(data.visuals.message)
                     }
-                },
-                modifier = Modifier
-                    .align(Alignment.BottomEnd)
-                    .padding(16.dp)
-            ) {
-                Icon(
-                    imageVector = Icons.Default.Add,
-                    contentDescription = "Create Data Entry"
-                )
+                }
+            )
+            if (bulkActionMessage != null) {
+                LaunchedEffect(bulkActionMessage) {
+                    snackbarHostState.showSnackbar(bulkActionMessage!!)
+                    bulkActionMessage = null
+                }
             }
+            if (bulkMode) {
+                Row(
+                    modifier = Modifier
+                        .align(Alignment.BottomCenter)
+                        .padding(16.dp),
+                    horizontalArrangement = Arrangement.spacedBy(16.dp)
+                ) {
+                    Button(
+                        onClick = {
+                            viewModel.bulkCompleteSelectedInstances { success, error ->
+                                bulkActionSuccess = success
+                                bulkActionMessage = if (success) "Selected instances marked as complete." else (error ?: "Failed to complete selected instances.")
+                            }
+                        },
+                        enabled = selectedInstances.isNotEmpty() && !state.isLoading && !state.isSyncing
+                    ) {
+                        Text("Complete Selected")
+                    }
+                    Button(
+                        onClick = { viewModel.clearBulkSelection() },
+                        enabled = !state.isLoading && !state.isSyncing
+                    ) {
+                        Text("Cancel")
+                    }
+                }
+            }
+            if (!bulkMode) {
+                FloatingActionButton(
+                    onClick = {
+                        val encodedDatasetName = URLEncoder.encode(datasetName, "UTF-8")
+                        navController.navigate("CreateDataEntry/$datasetId/$encodedDatasetName") {
+                            launchSingleTop = true
+                            popUpTo("DatasetInstances/{datasetId}/{datasetName}") {
+                                saveState = true
+                            }
+                        }
+                    },
+                    modifier = Modifier
+                        .align(Alignment.BottomEnd)
+                        .padding(16.dp)
+                ) {
+                    Icon(
+                        imageVector = Icons.Default.Add,
+                        contentDescription = "Create Data Entry"
+                    )
+                }
+            }
+        }
+        
+        // Filter Dialog
+        if (showFilterDialog) {
+            DatasetInstanceFilterDialog(
+                currentFilter = filterState,
+                onFilterChanged = { newFilter ->
+                    viewModel.updateFilterState(newFilter)
+                },
+                onDismiss = { showFilterDialog = false }
+            )
         }
     }
 }

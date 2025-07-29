@@ -16,11 +16,13 @@ import com.ash.simpledataentry.navigation.Screen.DatasetInstanceScreen
 import com.ash.simpledataentry.navigation.Screen.DatasetsScreen
 //import com.ash.simpledataentry.navigation.Screen.EditEntryScreen
 import com.ash.simpledataentry.navigation.Screen.LoginScreen
+import com.ash.simpledataentry.presentation.about.AboutScreen
 import com.ash.simpledataentry.presentation.dataEntry.CreateNewEntryScreen
 import com.ash.simpledataentry.presentation.dataEntry.DataEntryViewModel
 import com.ash.simpledataentry.presentation.dataEntry.EditEntryScreen
 import com.ash.simpledataentry.presentation.datasetInstances.DatasetInstancesScreen
 import com.ash.simpledataentry.presentation.datasets.DatasetsScreen
+import com.ash.simpledataentry.presentation.issues.ReportIssuesScreen
 import com.ash.simpledataentry.presentation.login.LoginScreen
 
 sealed class Screen(val route: String) {
@@ -28,6 +30,8 @@ sealed class Screen(val route: String) {
     data object LoginScreen : Screen("login")  // Added login screen
     data object DatasetsScreen : Screen("datasets")
     data class DatasetInstanceScreen(val datasetId: String, val datasetName: String) : Screen("instances")
+    data object AboutScreen : Screen("about")
+    data object ReportIssuesScreen : Screen("report_issues")
 //    data object CreateNewEntryScreen : Screen("createnewinstance")
 //    data object EditEntryScreen : Screen("editinstance")
 
@@ -121,7 +125,14 @@ fun AppNavigation(
                 attributeOptionCombo = attributeOptionCombo
             )
         }
+
+        composable(Screen.AboutScreen.route) {
+            AboutScreen(navController = navController)
+        }
+
+        composable(Screen.ReportIssuesScreen.route) {
+            ReportIssuesScreen(navController = navController)
+        }
     }
 
     }
-

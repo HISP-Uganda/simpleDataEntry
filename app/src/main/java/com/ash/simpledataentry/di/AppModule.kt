@@ -8,6 +8,7 @@ import com.ash.simpledataentry.data.repositoryImpl.DataEntryRepositoryImpl
 import com.ash.simpledataentry.data.repositoryImpl.DatasetInstancesRepositoryImpl
 import com.ash.simpledataentry.data.repositoryImpl.DatasetsRepositoryImpl
 import com.ash.simpledataentry.data.repositoryImpl.SystemRepositoryImpl
+import com.ash.simpledataentry.data.repositoryImpl.LoginUrlCacheRepository
 import com.ash.simpledataentry.data.local.AppDatabase
 import com.ash.simpledataentry.data.local.DataValueDraftDao
 import com.ash.simpledataentry.data.local.DataElementDao
@@ -15,6 +16,7 @@ import com.ash.simpledataentry.data.local.CategoryComboDao
 import com.ash.simpledataentry.data.local.CategoryOptionComboDao
 import com.ash.simpledataentry.data.local.DatasetDao
 import com.ash.simpledataentry.data.local.OrganisationUnitDao
+import com.ash.simpledataentry.data.local.CachedUrlDao
 import com.ash.simpledataentry.domain.repository.AuthRepository
 import com.ash.simpledataentry.domain.repository.DataEntryRepository
 import com.ash.simpledataentry.domain.repository.DatasetInstancesRepository
@@ -30,6 +32,8 @@ import com.ash.simpledataentry.domain.useCase.SaveDataValueUseCase
 import com.ash.simpledataentry.domain.useCase.SyncDatasetInstancesUseCase
 import com.ash.simpledataentry.domain.useCase.SyncDatasetsUseCase
 import com.ash.simpledataentry.domain.useCase.ValidateValueUseCase
+import com.ash.simpledataentry.domain.useCase.CompleteDatasetInstanceUseCase
+import com.ash.simpledataentry.domain.useCase.MarkDatasetInstanceIncompleteUseCase
 import dagger.Module
 import dagger.Provides
 import dagger.hilt.InstallIn
@@ -48,6 +52,19 @@ object AppModule {
         override fun migrate(database: SupportSQLiteDatabase) {
             database.execSQL("ALTER TABLE datasets ADD COLUMN description TEXT NOT NULL DEFAULT ''")
             database.execSQL("ALTER TABLE data_elements ADD COLUMN description TEXT")
+        }
+    }
+
+    val MIGRATION_3_4 = object : Migration(3, 4) {
+        override fun migrate(database: SupportSQLiteDatabase) {
+            database.execSQL("""
+                CREATE TABLE IF NOT EXISTS cached_urls (
+                    url TEXT NOT NULL PRIMARY KEY,
+                    lastUsed INTEGER NOT NULL,
+                    frequency INTEGER NOT NULL DEFAULT 1,
+                    isValid INTEGER NOT NULL DEFAULT 1
+                )
+            """)
         }
     }
 
@@ -190,15 +207,28 @@ object AppModule {
 
     @Provides
     @Singleton
+    fun provideCompleteDatasetInstanceUseCase(repository: DatasetInstancesRepository): CompleteDatasetInstanceUseCase {
+        return CompleteDatasetInstanceUseCase(repository)
+    }
+
+    @Provides
+    @Singleton
+    fun provideMarkDatasetInstanceIncompleteUseCase(repository: DatasetInstancesRepository): MarkDatasetInstanceIncompleteUseCase {
+        return MarkDatasetInstanceIncompleteUseCase(repository)
+    }
+
+    @Provides
+    @Singleton
     fun provideDataEntryUseCases(
-        getDataValuesUseCase: GetDataValuesUseCase,
-        saveDataValueUseCase: SaveDataValueUseCase,
-        validateValueUseCase: ValidateValueUseCase
+        dataEntryRepository: DataEntryRepository,
+        datasetInstancesRepository: DatasetInstancesRepository
     ): DataEntryUseCases {
         return DataEntryUseCases(
-            getDataValues = getDataValuesUseCase,
-            saveDataValue = saveDataValueUseCase,
-            validateValue = validateValueUseCase
+            getDataValues = GetDataValuesUseCase(dataEntryRepository),
+            saveDataValue = SaveDataValueUseCase(dataEntryRepository),
+            validateValue = ValidateValueUseCase(dataEntryRepository),
+            completeDatasetInstance = CompleteDatasetInstanceUseCase(datasetInstancesRepository),
+            markDatasetInstanceIncomplete = MarkDatasetInstanceIncompleteUseCase(datasetInstancesRepository)
         )
     }
 
@@ -210,7 +240,7 @@ object AppModule {
             AppDatabase::class.java,
             "simple_data_entry_db"
         )
-        .addMigrations(MIGRATION_1_2)
+        .addMigrations(MIGRATION_1_2, MIGRATION_3_4)
         .build()
     }
 
@@ -234,5 +264,14 @@ object AppModule {
 
     @Provides
     fun provideDataValueDao(db: AppDatabase): DataValueDao = db.dataValueDao()
+
+    @Provides
+    fun provideCachedUrlDao(db: AppDatabase): CachedUrlDao = db.cachedUrlDao()
+
+    @Provides
+    @Singleton
+    fun provideLoginUrlCacheRepository(db: AppDatabase): LoginUrlCacheRepository {
+        return LoginUrlCacheRepository(db)
+    }
 
 }

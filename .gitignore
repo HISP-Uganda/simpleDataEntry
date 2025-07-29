@@ -30,7 +30,7 @@ cxx/
 *.swn
 *.sublime-workspace
 *.sublime-project
-*.vscode/
+.vscode/
 
 # Android Studio
 .idea/
@@ -67,65 +67,74 @@ yarn-debug.log*
 yarn-error.log*
 dev-debug.log
 
-# Environment variables
+# Environment variables and secrets
 .env
+.env.*
+*.env
+*.env.*
+.envrc
+secrets.*
+*.secrets.*
+*.key
+*.pem
+*.crt
+*.p12
+*.jks
+*.keystore
+*.pfx
+*.asc
+*.gpg
+*.token
+*.credentials
+*.config
+*.secret
+*.private
+*.pub
+*.vault
+*.sops.yaml
+*.sops.json
+# Taskmaster/AI config
 
-# Editor/IDE
-.vscode/
-*.suo
-*.ntvs*
-*.njsproj
-*.sln
-*.sw?
+.taskmaster/config.json
+.cursor/mcp.json
+# VSCode/IDE settings that may contain secrets
+.vscode/settings.json
+.idea/workspace.xml
+.idea/gradle.xml
+.idea/sonarlint/
+# Android local config
+local.properties
+app/local.properties
 
 # OS specific
 .DS_Store
 Thumbs.db
 
-# Taskmaster/AI/Temp
-.taskmaster/
-.cursor/
-.kotlin/
-.whisper/
-roo/
-windsurfrules
-roomodes
-
-# Task files
-/tasks.json
-tasks/
-
-# Misc
-*.orig
-*.rej
-*.bak
-*.tmp
-*.temp
-
-# Ignore screenshots and temp icons
+# Screenshots and temp icons
 Screenshot *.png
 temp_icons/
 
-# Ignore reports
+# Miscellaneous
+*.bak
+*.tmp
+*.swp
+*.swo
+*.swn
+
+# Room/Jetpack Compose caches
+.kotlin/
+.whisper/
+
+# Reports
 build/reports/
-app/build/reports/
 
-# Ignore Room/Jetpack Compose caches
-app/.room/
+# Ignore everything in .taskmaster except .gitignore
 
-# Ignore any other build artifacts
-app/intermediates/
-app/generated/
-app/outputs/
-app/kotlin/
-app/kspCaches/
+/app/src/main/java/com.ash.simpledataentry/presentation/dataEntry/RENDERING_RULES.md
 
-# Ignore .idea and .gradle in submodules
-**/.idea/
-**/.gradle/
+/claude.md
 
-# Ignore .taskmaster state
-.taskmaster/state.json
+/README.md
 
-# Ignore .cursor-dataentry-checklist.md
-.cursor-dataentry-checklist.md
+/accordionLogic.md
+

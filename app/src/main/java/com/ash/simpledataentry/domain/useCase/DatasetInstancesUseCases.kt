@@ -30,3 +30,19 @@ class SyncDatasetInstancesUseCase @Inject constructor(
         }
     }
 }
+
+class CompleteDatasetInstanceUseCase @Inject constructor(
+    private val repository: DatasetInstancesRepository
+) {
+    suspend operator fun invoke(datasetId: String, period: String, orgUnit: String, attributeOptionCombo: String): Result<Unit> {
+        return repository.completeDatasetInstance(datasetId, period, orgUnit, attributeOptionCombo)
+    }
+}
+
+class MarkDatasetInstanceIncompleteUseCase @Inject constructor(
+    private val repository: DatasetInstancesRepository
+) {
+    suspend operator fun invoke(datasetId: String, period: String, orgUnit: String, attributeOptionCombo: String): Result<Unit> {
+        return repository.markDatasetInstanceIncomplete(datasetId, period, orgUnit, attributeOptionCombo)
+    }
+}

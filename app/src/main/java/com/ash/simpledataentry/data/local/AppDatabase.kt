@@ -18,9 +18,10 @@ import com.ash.simpledataentry.data.local.DataValueDao
         DataElementEntity::class,
         CategoryComboEntity::class,
         CategoryOptionComboEntity::class,
-        OrganisationUnitEntity::class
+        OrganisationUnitEntity::class,
+        CachedUrlEntity::class
     ],
-    version = 3,
+    version = 4,
     exportSchema = false
 )
 abstract class AppDatabase : RoomDatabase() {
@@ -31,4 +32,5 @@ abstract class AppDatabase : RoomDatabase() {
     abstract fun categoryOptionComboDao(): CategoryOptionComboDao
     abstract fun organisationUnitDao(): OrganisationUnitDao
     abstract fun dataValueDao(): DataValueDao
-} 
+    abstract fun cachedUrlDao(): CachedUrlDao
+}

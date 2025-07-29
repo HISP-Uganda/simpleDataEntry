@@ -37,10 +37,14 @@ import androidx.compose.material3.ModalNavigationDrawer
 import androidx.compose.material3.NavigationDrawerItem
 import androidx.compose.material3.NavigationDrawerItemDefaults
 import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.Snackbar
+import androidx.compose.material3.SnackbarHost
+import androidx.compose.material3.SnackbarHostState
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.rememberDrawerState
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -49,13 +53,16 @@ import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.lifecycle.viewmodel.compose.viewModel
 import androidx.navigation.NavController
 import com.ash.simpledataentry.data.SessionManager
+import com.ash.simpledataentry.domain.model.FilterState
 import com.ash.simpledataentry.domain.repository.AuthRepository
+import com.ash.simpledataentry.navigation.Screen
 import com.ash.simpledataentry.presentation.core.BaseScreen
 import com.ash.simpledataentry.presentation.login.LoginViewModel
 import kotlinx.coroutines.launch
@@ -76,6 +83,7 @@ fun DatasetsScreen(
     val drawerState = rememberDrawerState(initialValue = DrawerValue.Closed)
     val scope = rememberCoroutineScope()
     val datasetsState by viewModel.uiState.collectAsState()
+    val snackbarHostState = remember { SnackbarHostState() }
 
     ModalNavigationDrawer(
         drawerState = drawerState,
@@ -99,7 +107,24 @@ fun DatasetsScreen(
                     icon = { Icon(Icons.Default.Info, contentDescription = null) },
                     label = { Text("About") },
                     selected = false,
-                    onClick = { /* TODO: Navigate to about */ }
+                    onClick = {
+                        scope.launch {
+                            drawerState.close()
+                            navController.navigate(Screen.AboutScreen.route)
+                        }
+                    }
+                )
+
+                NavigationDrawerItem(
+                    icon = { Icon(Icons.Default.Settings, contentDescription = null) },
+                    label = { Text("Report Issues") },
+                    selected = false,
+                    onClick = {
+                        scope.launch {
+                            drawerState.close()
+                            navController.navigate(Screen.ReportIssuesScreen.route)
+                        }
+                    }
                 )
 
                 NavigationDrawerItem(
@@ -156,111 +181,12 @@ fun DatasetsScreen(
                 }
 
                 if (showFilterDialog) {
-                    var selectedPeriod by remember { mutableStateOf("") }
-                    var selectedSyncStatus by remember { mutableStateOf<Boolean?>(null) }
-                    var showSyncDropdown by remember { mutableStateOf(false) }
-
-                    AlertDialog(
-                        onDismissRequest = { showFilterDialog = false },
-                        title = { Text("Filter Datasets") },
-                        text = {
-                            Column(
-                                modifier = Modifier
-                                    .fillMaxWidth()
-                                    .padding(vertical = 8.dp)
-                            ) {
-                                OutlinedTextField(
-                                    value = selectedPeriod,
-                                    onValueChange = { selectedPeriod = it },
-                                    label = { Text("Period ID") },
-                                    modifier = Modifier
-                                        .fillMaxWidth()
-                                        .padding(vertical = 8.dp),
-                                    placeholder = { Text("Enter period ID") }
-                                )
-
-                                Box(
-                                    modifier = Modifier
-                                        .fillMaxWidth()
-                                        .padding(vertical = 8.dp)
-                                ) {
-                                    OutlinedTextField(
-                                        value = when(selectedSyncStatus) {
-                                            true -> "Synced"
-                                            false -> "Not Synced"
-                                            null -> "All"
-                                        },
-                                        onValueChange = { },
-                                        label = { Text("Sync Status") },
-                                        readOnly = true,
-                                        modifier = Modifier
-                                            .fillMaxWidth()
-                                            .clickable { showSyncDropdown = true },
-                                        trailingIcon = {
-                                            Icon(
-                                                imageVector = Icons.Default.ArrowDropDown,
-                                                contentDescription = "Select sync status"
-                                            )
-                                        }
-                                    )
-
-                                    DropdownMenu(
-                                        expanded = showSyncDropdown,
-                                        onDismissRequest = { showSyncDropdown = false },
-                                        modifier = Modifier.fillMaxWidth(0.9f)
-                                    ) {
-                                        DropdownMenuItem(
-                                            text = { Text("All") },
-                                            onClick = {
-                                                selectedSyncStatus = null
-                                                showSyncDropdown = false
-                                            }
-                                        )
-                                        DropdownMenuItem(
-                                            text = { Text("Synced") },
-                                            onClick = {
-                                                selectedSyncStatus = true
-                                                showSyncDropdown = false
-                                            }
-                                        )
-                                        DropdownMenuItem(
-                                            text = { Text("Not Synced") },
-                                            onClick = {
-                                                selectedSyncStatus = false
-                                                showSyncDropdown = false
-                                            }
-                                        )
-                                    }
-                                }
-                            }
+                    PeriodFilterDialog(
+                        currentFilter = (datasetsState as? DatasetsState.Success)?.currentFilter ?: FilterState(),
+                        onFilterChanged = { filterState ->
+                            viewModel.applyFilter(filterState)
                         },
-                        confirmButton = {
-                            Row(
-                                modifier = Modifier.padding(8.dp),
-                                horizontalArrangement = Arrangement.spacedBy(8.dp)
-                            ) {
-                                TextButton(
-                                    onClick = {
-                                        viewModel.clearFilters()
-                                        showFilterDialog = false
-                                    }
-                                ) {
-                                    Text("Clear")
-                                }
-                                Button(
-                                    onClick = {
-                                        viewModel.filterDatasets(
-                                            period = selectedPeriod.takeIf { it.isNotEmpty() },
-                                            syncStatus = selectedSyncStatus
-                                        )
-                                        showFilterDialog = false
-                                    }
-                                ) {
-                                    Text("Apply")
-                                }
-                            }
-                        },
-                        dismissButton = null
+                        onDismiss = { showFilterDialog = false }
                     )
                 }
             },
@@ -290,6 +216,9 @@ fun DatasetsScreen(
                     }
                 }
                 is DatasetsState.Error -> {
+                    LaunchedEffect(datasetsState) {
+                        snackbarHostState.showSnackbar((datasetsState as DatasetsState.Error).message)
+                    }
                     Box(
                         modifier = Modifier.fillMaxSize(),
                         contentAlignment = Alignment.Center
@@ -337,5 +266,25 @@ fun DatasetsScreen(
                 }
             }
         }
+    }
+
+    Box(modifier = Modifier.fillMaxSize()) {
+        SnackbarHost(
+            hostState = snackbarHostState,
+            modifier = Modifier
+                .align(Alignment.BottomCenter)
+                .padding(16.dp),
+            snackbar = { data ->
+                Snackbar(
+                    containerColor = MaterialTheme.colorScheme.surface,
+                    contentColor = Color.White
+                ) {
+                    Text(
+                        data.visuals.message,
+                        style = MaterialTheme.typography.bodyLarge
+                    )
+                }
+            }
+        )
     }
 }

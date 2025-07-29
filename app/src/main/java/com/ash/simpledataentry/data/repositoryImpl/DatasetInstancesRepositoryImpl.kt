@@ -104,4 +104,35 @@ class DatasetInstancesRepositoryImpl @Inject constructor(
             }
         }
     }
+
+    override suspend fun completeDatasetInstance(datasetId: String, period: String, orgUnit: String, attributeOptionCombo: String): Result<Unit> {
+        return withContext(Dispatchers.IO) {
+            try {
+                Log.d(TAG, "Marking dataset as complete: $datasetId, $period, $orgUnit, $attributeOptionCombo")
+                d2.dataSetModule().dataSetCompleteRegistrations().value(period,orgUnit,datasetId,attributeOptionCombo).blockingSet()
+                d2.dataSetModule().dataSetCompleteRegistrations().blockingUpload()
+                Log.d(TAG, "Dataset marked as complete successfully.")
+                Result.success(Unit)
+            } catch (e: Exception) {
+                Log.e(TAG, "Failed to complete dataset instance", e)
+                Result.failure(e)
+            }
+        }
+    }
+
+    override suspend fun markDatasetInstanceIncomplete(datasetId: String, period: String, orgUnit: String, attributeOptionCombo: String): Result<Unit> {
+        return withContext(Dispatchers.IO) {
+            try {
+                Log.d(TAG, "Marking dataset as incomplete: $datasetId, $period, $orgUnit, $attributeOptionCombo")
+                d2.dataSetModule().dataSetCompleteRegistrations()
+                    .value(period, orgUnit, datasetId, attributeOptionCombo).blockingDeleteIfExist()
+                d2.dataSetModule().dataSetCompleteRegistrations().blockingUpload()
+                Log.d(TAG, "Dataset marked as incomplete successfully.")
+                Result.success(Unit)
+            } catch (e: Exception) {
+                Log.e(TAG, "Failed to mark dataset as incomplete", e)
+                Result.failure(e)
+            }
+        }
+    }
 }

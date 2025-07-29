@@ -17,9 +17,18 @@ import androidx.compose.material3.Button
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.DropdownMenu
+import androidx.compose.material3.DropdownMenuItem
+import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Snackbar
 import androidx.compose.material3.Text
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.ArrowDropDown
+import androidx.compose.material.icons.filled.Clear
+import androidx.compose.material.icons.filled.Visibility
+import androidx.compose.material.icons.filled.VisibilityOff
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
@@ -32,6 +41,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.input.PasswordVisualTransformation
+import androidx.compose.ui.text.input.VisualTransformation
 import androidx.compose.ui.unit.dp
 import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.navigation.NavController
@@ -48,9 +58,9 @@ import kotlinx.coroutines.launch
 import com.ash.simpledataentry.data.local.AppDatabase
 import androidx.room.Room
 import dagger.hilt.android.lifecycle.HiltViewModel
-import dagger.hilt.android.qualifiers.ApplicationContext
 import dagger.hilt.android.AndroidEntryPoint
 import javax.inject.Inject
+import androidx.compose.ui.graphics.Color
 
 
 @OptIn(ExperimentalMaterial3Api::class, ExperimentalFoundationApi::class)
@@ -109,6 +119,8 @@ fun LoginScreen(
         var serverUrl by rememberSaveable { mutableStateOf("") }
         var username by rememberSaveable { mutableStateOf("") }
         var password by rememberSaveable { mutableStateOf("") }
+        var showUrlDropdown by remember { mutableStateOf(false) }
+        var passwordVisible by remember { mutableStateOf(false) }
 
         val context = LocalContext.current
 
@@ -142,20 +154,90 @@ fun LoginScreen(
                 horizontalAlignment = Alignment.CenterHorizontally,
                 verticalArrangement = Arrangement.Center
             ) {
-                OutlinedTextField(
-                    value = serverUrl,
-                    onValueChange = { serverUrl = it },
-                    label = { Text("Server URL") },
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .padding(bottom = 8.dp)
-                        .bringIntoViewRequester(serverUrlBringIntoViewRequester)
-                        .onFocusChanged { focusState ->
-                            serverUrlFocused = focusState.isFocused
+                Box {
+                    OutlinedTextField(
+                        value = serverUrl,
+                        onValueChange = { 
+                            serverUrl = it
+                            viewModel.updateUrlSuggestions(it)
                         },
-                    enabled = !state.isLoading,
-                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Uri)
-                )
+                        label = { Text("Server URL") },
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(bottom = 8.dp)
+                            .bringIntoViewRequester(serverUrlBringIntoViewRequester)
+                            .onFocusChanged { focusState ->
+                                serverUrlFocused = focusState.isFocused
+                                if (focusState.isFocused) {
+                                    viewModel.updateUrlSuggestions(serverUrl)
+                                } else {
+                                    viewModel.clearUrlSuggestions()
+                                }
+                            },
+                        enabled = !state.isLoading,
+                        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Uri),
+                        trailingIcon = {
+                            if (state.cachedUrls.isNotEmpty()) {
+                                IconButton(
+                                    onClick = { showUrlDropdown = !showUrlDropdown }
+                                ) {
+                                    Icon(
+                                        imageVector = Icons.Default.ArrowDropDown,
+                                        contentDescription = "Show cached URLs"
+                                    )
+                                }
+                            }
+                        }
+                    )
+                    
+                    // Dropdown for cached URLs
+                    DropdownMenu(
+                        expanded = showUrlDropdown,
+                        onDismissRequest = { showUrlDropdown = false }
+                    ) {
+                        state.cachedUrls.take(5).forEach { cachedUrl ->
+                            DropdownMenuItem(
+                                text = { Text(cachedUrl.url) },
+                                onClick = {
+                                    serverUrl = cachedUrl.url
+                                    showUrlDropdown = false
+                                    viewModel.clearUrlSuggestions()
+                                },
+                                trailingIcon = {
+                                    IconButton(
+                                        onClick = {
+                                            viewModel.removeUrl(cachedUrl.url)
+                                            showUrlDropdown = false
+                                        }
+                                    ) {
+                                        Icon(
+                                            imageVector = Icons.Default.Clear,
+                                            contentDescription = "Remove URL"
+                                        )
+                                    }
+                                }
+                            )
+                        }
+                    }
+                    
+                    // Dropdown for URL suggestions
+                    if (state.urlSuggestions.isNotEmpty() && serverUrl.isNotBlank()) {
+                        DropdownMenu(
+                            expanded = true,
+                            onDismissRequest = { viewModel.clearUrlSuggestions() }
+                        ) {
+                            state.urlSuggestions.forEach { suggestion ->
+                                DropdownMenuItem(
+                                    text = { Text(suggestion.url) },
+                                    onClick = {
+                                        serverUrl = suggestion.url
+                                        viewModel.clearUrlSuggestions()
+                                    }
+                                )
+                            }
+                        }
+                    }
+                }
 
                 Spacer(modifier = Modifier.height(8.dp))
 
@@ -179,7 +261,7 @@ fun LoginScreen(
                     value = password,
                     onValueChange = { password = it },
                     label = { Text("Password") },
-                    visualTransformation = PasswordVisualTransformation(),
+                    visualTransformation = if (passwordVisible) VisualTransformation.None else PasswordVisualTransformation(),
                     modifier = Modifier
                         .fillMaxWidth()
                         .padding(bottom = 16.dp)
@@ -188,7 +270,17 @@ fun LoginScreen(
                             passwordFocused = focusState.isFocused
                         },
                     enabled = !state.isLoading,
-                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password)
+                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password),
+                    trailingIcon = {
+                        IconButton(
+                            onClick = { passwordVisible = !passwordVisible }
+                        ) {
+                            Icon(
+                                imageVector = if (passwordVisible) Icons.Default.VisibilityOff else Icons.Default.Visibility,
+                                contentDescription = if (passwordVisible) "Hide password" else "Show password"
+                            )
+                        }
+                    }
                 )
             }
                 Box(
@@ -225,7 +317,18 @@ fun LoginScreen(
                 hostState = snackbarHostState,
                 modifier = Modifier
                     .align(Alignment.BottomCenter)
-                    .padding(16.dp)
+                    .padding(16.dp),
+                snackbar = { data ->
+                    Snackbar(
+                        containerColor = MaterialTheme.colorScheme.surface,
+                        contentColor = Color.White
+                    ) {
+                        Text(
+                            data.visuals.message,
+                            style = MaterialTheme.typography.bodyLarge
+                        )
+                    }
+                }
             )
         }
     }

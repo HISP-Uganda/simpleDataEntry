@@ -30,6 +30,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.unit.dp
+import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.navigation.NavController
 import com.ash.simpledataentry.domain.model.OrganisationUnit
 import com.ash.simpledataentry.domain.model.Period
@@ -41,7 +42,7 @@ fun CreateNewEntryScreen(
     navController: NavController,
     datasetId: String,
     datasetName: String,
-    viewModel: DataEntryViewModel
+    viewModel: DataEntryViewModel = hiltViewModel()
 ) {
     var periods by remember { mutableStateOf<List<Period>>(emptyList()) }
     var selectedPeriod by remember { mutableStateOf("") }
@@ -186,7 +187,9 @@ fun CreateNewEntryScreen(
                             val encodedAttributeOptionCombo = java.net.URLEncoder.encode(selectedAttributeOptionCombo, "UTF-8")
                             navController.navigate(
                                 "EditEntry/$datasetId/$encodedPeriod/$encodedOrgUnit/$encodedAttributeOptionCombo/$encodedDatasetName"
-                            )
+                            ) {
+                                popUpTo("CreateDataEntry/$datasetId/$datasetName") { inclusive = true }
+                            }
                         },
                         modifier = Modifier.padding(16.dp)
                     ) {

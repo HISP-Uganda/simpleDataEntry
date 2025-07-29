@@ -5,6 +5,8 @@ import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.ash.simpledataentry.domain.useCase.LoginUseCase
 import com.ash.simpledataentry.data.local.AppDatabase
+import com.ash.simpledataentry.data.local.CachedUrlEntity
+import com.ash.simpledataentry.data.repositoryImpl.LoginUrlCacheRepository
 import dagger.hilt.android.lifecycle.HiltViewModel
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -16,16 +18,23 @@ data class LoginState(
     val isLoading: Boolean = false,
     val isLoggedIn: Boolean = false,
     val error: String? = null,
-    val showSplash: Boolean = false
+    val showSplash: Boolean = false,
+    val cachedUrls: List<CachedUrlEntity> = emptyList(),
+    val urlSuggestions: List<CachedUrlEntity> = emptyList()
 )
 
 @HiltViewModel
 class LoginViewModel @Inject constructor(
     private val loginUseCase: LoginUseCase,
+    private val urlCacheRepository: LoginUrlCacheRepository
 ) : ViewModel() {
 
     private val _state = MutableStateFlow(LoginState())
     val state: StateFlow<LoginState> = _state.asStateFlow()
+
+    init {
+        loadCachedUrls()
+    }
 
     fun login(serverUrl: String, username: String, password: String, context: Context, db: AppDatabase) {
         viewModelScope.launch {
@@ -39,6 +48,9 @@ class LoginViewModel @Inject constructor(
 
                 val loginResult = loginUseCase(username, password, serverUrl, context, db)
                 if (loginResult) {
+                    // Cache the successful URL
+                    urlCacheRepository.addOrUpdateUrl(serverUrl)
+                    
                     _state.value = _state.value.copy(
                         isLoading = false,
                         isLoggedIn = true,
@@ -67,5 +79,43 @@ class LoginViewModel @Inject constructor(
 
     fun clearError() {
         _state.value = _state.value.copy(error = null)
+    }
+
+    private fun loadCachedUrls() {
+        viewModelScope.launch {
+            try {
+                val cachedUrls = urlCacheRepository.getCachedUrls()
+                _state.value = _state.value.copy(cachedUrls = cachedUrls)
+            } catch (e: Exception) {
+                // Silently handle error - cached URLs are not critical for login
+            }
+        }
+    }
+
+    fun updateUrlSuggestions(query: String) {
+        viewModelScope.launch {
+            try {
+                val suggestions = urlCacheRepository.getSuggestedUrls(query)
+                _state.value = _state.value.copy(urlSuggestions = suggestions)
+            } catch (e: Exception) {
+                // Silently handle error - suggestions are not critical
+                _state.value = _state.value.copy(urlSuggestions = emptyList())
+            }
+        }
+    }
+
+    fun clearUrlSuggestions() {
+        _state.value = _state.value.copy(urlSuggestions = emptyList())
+    }
+
+    fun removeUrl(url: String) {
+        viewModelScope.launch {
+            try {
+                urlCacheRepository.removeUrl(url)
+                loadCachedUrls() // Refresh the cached URLs list
+            } catch (e: Exception) {
+                // Silently handle error
+            }
+        }
     }
 }

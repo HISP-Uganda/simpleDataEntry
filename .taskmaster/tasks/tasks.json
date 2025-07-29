@@ -1,0 +1,373 @@
+{
+  "master": {
+    "tasks": [
+      {
+        "id": 1,
+        "title": "Implement Immediate Local Save for Data Values",
+        "description": "Ensure any change to a data value field is immediately saved to the local Room database using DataValueDraftDao.",
+        "details": "Modify the DataEntryViewModel's updateCurrentValue function to call the upsertDraft method of DataValueDraftDao for every field change. Ensure the function is the single source of truth for this action.",
+        "testStrategy": "Test by entering data in various fields and verifying the data is saved in the local database immediately. Check for consistency and performance impact.",
+        "priority": "high",
+        "dependencies": [],
+        "status": "done",
+        "subtasks": [
+          {
+            "id": 1,
+            "title": "Modify updateCurrentValue function signature",
+            "description": "Update the function signature to include necessary parameters for database operations",
+            "dependencies": [],
+            "details": "Add DataValueDraftDao as a parameter to the updateCurrentValue function in DataEntryViewModel to enable database operations. Ensure the function can receive and process the new data value.",
+            "status": "done",
+            "testStrategy": "Unit test to verify the function signature changes and parameter handling"
+          },
+          {
+            "id": 2,
+            "title": "Implement upsertDraft call in updateCurrentValue",
+            "description": "Integrate the upsertDraft method call within the updateCurrentValue function",
+            "dependencies": [
+              1
+            ],
+            "details": "Inside the updateCurrentValue function, call the upsertDraft method of DataValueDraftDao with the new data value. Ensure the call is made immediately after the value is updated.",
+            "status": "done",
+            "testStrategy": "Unit test to verify the upsertDraft method is called with correct parameters"
+          },
+          {
+            "id": 3,
+            "title": "Handle database operation results",
+            "description": "Implement error handling and success feedback for the database operation",
+            "dependencies": [
+              2
+            ],
+            "details": "Add error handling around the upsertDraft call to manage potential database exceptions. Provide feedback to the user if the operation fails.",
+            "status": "done",
+            "testStrategy": "Unit test to simulate and verify error handling scenarios"
+          },
+          {
+            "id": 4,
+            "title": "Ensure single source of truth",
+            "description": "Verify that updateCurrentValue is the only function modifying the data value",
+            "dependencies": [
+              3
+            ],
+            "details": "Review the codebase to ensure no other functions are modifying the data value directly. Refactor any such instances to use updateCurrentValue.",
+            "status": "done",
+            "testStrategy": "Code review and integration testing to ensure consistency"
+          },
+          {
+            "id": 5,
+            "title": "Optimize performance",
+            "description": "Ensure the immediate save operation does not degrade performance",
+            "dependencies": [
+              4
+            ],
+            "details": "Profile the updateCurrentValue function to ensure the database operation does not cause noticeable delays. Consider using background threads if necessary.",
+            "status": "done",
+            "testStrategy": "Performance testing to measure and optimize execution time"
+          }
+        ]
+      },
+      {
+        "id": 2,
+        "title": "Enable Offline Data Entry and Editing",
+        "description": "Ensure all data entry and editing functionalities work without an internet connection.",
+        "details": "Verify that all UI components and backend logic function correctly in offline mode. Ensure no network-dependent operations are triggered during offline usage.",
+        "testStrategy": "Test the app in airplane mode to confirm all functionalities remain operational without network connectivity.",
+        "priority": "high",
+        "dependencies": [
+          1
+        ],
+        "status": "done",
+        "subtasks": []
+      },
+      {
+        "id": 3,
+        "title": "Hydrate Data from Local Drafts on Screen Load",
+        "description": "Load existing drafts from the local database when opening a data entry screen, prioritizing them over server data.",
+        "details": "Implement logic in the EditEntryScreen to fetch and display local drafts for the current dataset instance before fetching from the server.",
+        "testStrategy": "Test by creating drafts offline and verifying they load correctly when reopening the screen, even with server data available.",
+        "priority": "medium",
+        "dependencies": [
+          1
+        ],
+        "status": "done",
+        "subtasks": [
+          {
+            "id": 1,
+            "title": "Create Local Draft Database Table",
+            "description": "Design and implement a local database table to store draft entries.",
+            "dependencies": [],
+            "details": "Define the schema for the drafts table including fields like entry_id, data, timestamp, and sync_status. Implement the table creation in the local database using SQLite or similar.",
+            "status": "done",
+            "testStrategy": "Verify table creation with schema validation tests and basic CRUD operation tests."
+          },
+          {
+            "id": 2,
+            "title": "Implement Draft Fetching Logic",
+            "description": "Create a function to fetch drafts from the local database for a specific dataset instance.",
+            "dependencies": [
+              1
+            ],
+            "details": "Write a function in the data access layer that queries the local database for drafts matching the current dataset instance ID. The function should return the draft data if found.",
+            "status": "done",
+            "testStrategy": "Test with mock data to ensure correct retrieval of drafts by dataset instance ID."
+          },
+          {
+            "id": 3,
+            "title": "Integrate Draft Fetching in Screen Load",
+            "description": "Modify the EditEntryScreen to fetch and display local drafts on load.",
+            "dependencies": [
+              2
+            ],
+            "details": "In the EditEntryScreen's initialization logic, call the draft fetching function before making any server requests. If a draft exists, populate the UI with the draft data.",
+            "status": "done",
+            "testStrategy": "Test screen behavior with and without existing drafts to ensure proper prioritization and display."
+          },
+          {
+            "id": 4,
+            "title": "Handle Server Data Fetching Fallback",
+            "description": "Implement logic to fetch from the server if no local draft exists.",
+            "dependencies": [
+              3
+            ],
+            "details": "If no local draft is found, proceed with the existing server data fetching logic. Ensure the UI transitions smoothly between draft and server data states.",
+            "status": "done",
+            "testStrategy": "Test scenarios with no local drafts to verify server data is fetched and displayed correctly."
+          },
+          {
+            "id": 5,
+            "title": "Add Draft Management UI Indicators",
+            "description": "Add visual indicators to show when a draft is being displayed.",
+            "dependencies": [
+              3
+            ],
+            "details": "Implement UI elements (e.g., a banner or icon) to inform users they are viewing a local draft. Include options to clear or save the draft.",
+            "status": "done",
+            "testStrategy": "Verify UI indicators appear correctly when drafts are loaded and test draft management options."
+          }
+        ]
+      },
+      {
+        "id": 4,
+        "title": "Implement User-Triggered Sync Button",
+        "description": "Convert the 'Save' FAB into a 'Save & Sync' button with network-aware functionality.",
+        "details": "Update the FAB to check network connectivity and trigger the sync process. Use d2.dataValueModule().dataValues().blockingUpload() for online sync.",
+        "testStrategy": "Test sync functionality in both online and offline modes, verifying the correct behavior and feedback.",
+        "priority": "high",
+        "dependencies": [
+          1,
+          2,
+          3
+        ],
+        "status": "done",
+        "subtasks": []
+      },
+      {
+        "id": 5,
+        "title": "Add Sync Feedback UI",
+        "description": "Provide visual feedback during and after the sync process.",
+        "details": "Add a loading indicator to the sync button and display Snackbar messages for success/failure. Include user-friendly error messages.",
+        "testStrategy": "Test sync feedback by simulating successful and failed syncs, ensuring the UI updates appropriately.",
+        "priority": "medium",
+        "dependencies": [
+          4
+        ],
+        "status": "done",
+        "subtasks": []
+      },
+      {
+        "id": 6,
+        "title": "Implement Unsaved Changes Dialog",
+        "description": "Warn users when navigating away with unsaved changes.",
+        "details": "Add a confirmation dialog with options to save, discard, or cancel when unsaved changes are detected.",
+        "testStrategy": "Test by attempting to navigate away with unsaved data and verifying the dialog appears and functions correctly.",
+        "priority": "medium",
+        "dependencies": [
+          1,
+          4
+        ],
+        "status": "done",
+        "subtasks": []
+      },
+      {
+        "id": 7,
+        "title": "Add 'Complete' Button and Workflow",
+        "description": "Introduce a 'Complete' button to finalize data entry.",
+        "details": "Add the button to the EditEntryScreen and implement the workflow to sync data and mark the instance as complete using d2.dataSetModule().dataSetCompleteness().set().",
+        "testStrategy": "Test the completion workflow, ensuring data syncs before completion and the UI updates accordingly.",
+        "priority": "high",
+        "dependencies": [
+          4,
+          5
+        ],
+        "status": "pending",
+        "subtasks": []
+      },
+      {
+        "id": 8,
+        "title": "Stabilize Accordion UI State",
+        "description": "Ensure accordion sections retain their state and data integrity.",
+        "details": "Use stable keys for LazyColumn items and manage expanded/collapsed states in DataEntryViewModel. Verify data grouping logic.",
+        "testStrategy": "Test by interacting with accordions and verifying state persistence and data separation.",
+        "priority": "medium",
+        "dependencies": [],
+        "status": "done",
+        "subtasks": [
+          {
+            "id": 1,
+            "title": "Implement Stable Keys for LazyColumn Items",
+            "description": "Ensure each item in the LazyColumn has a unique and stable key to prevent state loss during recomposition.",
+            "dependencies": [],
+            "details": "Modify the LazyColumn implementation to use a unique identifier (e.g., item ID or hash) as the key for each item. Ensure the key remains consistent across recompositions.\n<info added on 2025-06-17T06:42:48.999Z>\nMove all expanded/collapsed state logic to DataEntryViewModel. Use a map or list in the ViewModel to track which sections and category groups are expanded. The UI should observe this state from the ViewModel, not local remember state. Files: DataEntryViewModel.kt, EditEntryScreen.kt\n</info added on 2025-06-17T06:42:48.999Z>",
+            "status": "done",
+            "testStrategy": "Test by scrolling the LazyColumn and verifying that item states (e.g., expanded/collapsed) are preserved."
+          },
+          {
+            "id": 2,
+            "title": "Refactor Expanded/Collapsed State Management",
+            "description": "Move the expanded/collapsed state logic to DataEntryViewModel to ensure state persistence.",
+            "dependencies": [
+              1
+            ],
+            "details": "Update DataEntryViewModel to include a map or list tracking the expanded/collapsed state of each accordion section. Modify the UI to observe this state from the ViewModel.\n<info added on 2025-06-17T07:07:29.322Z>\nRefactored expanded/collapsed state management to be fully handled by DataEntryViewModel using isExpandedSections: Map<String, Boolean>. UI components now observe and toggle state exclusively through ViewModel, eliminating local mutableStateOf declarations. State persists across recompositions and configuration changes. All expansion logic now uses viewModel.toggleSection(sectionName) and reads from state.isExpandedSections[sectionName]. Supports multiple expanded sections.\n</info added on 2025-06-17T07:07:29.322Z>",
+            "status": "done",
+            "testStrategy": "Test by expanding/collapsing sections and verifying the state persists across configuration changes (e.g., screen rotation)."
+          },
+          {
+            "id": 3,
+            "title": "Validate Data Grouping Logic",
+            "description": "Ensure the logic grouping data into accordion sections is correct and stable.",
+            "dependencies": [
+              2
+            ],
+            "details": "Review the data grouping logic in DataEntryViewModel. Ensure grouped data is consistent and correctly mapped to accordion sections. Add logging or validation checks if needed.\n<info added on 2025-06-17T07:13:04.595Z>\nValidated data grouping logic in DataEntryViewModel:\n- Grouping uses state.dataValues.groupBy { it.sectionName } in EditEntryScreen.kt\n- Logic is stable when sectionName is unique and consistent\n- Each group renders as separate accordion section with sectionName as LazyColumn key\n- Potential issue if sectionName is missing or non-unique - recommend enforcing uniqueness in data model\n- Current implementation is robust for intended use case\n- No additional logging or validation checks needed at this time\n</info added on 2025-06-17T07:13:04.595Z>",
+            "status": "done",
+            "testStrategy": "Test by loading different datasets and verifying that the grouping logic produces the expected sections and items."
+          },
+          {
+            "id": 4,
+            "title": "Handle State Restoration on Configuration Changes",
+            "description": "Ensure the accordion state is restored correctly when the app undergoes configuration changes (e.g., screen rotation).",
+            "dependencies": [
+              3
+            ],
+            "details": "Implement onSaveInstanceState and onRestoreInstanceState in the activity/fragment to save and restore the expanded/collapsed state from the ViewModel. Alternatively, use ViewModel's built-in state retention.\n<info added on 2025-06-17T07:13:59.088Z>\nAccordion state restoration is now handled by DataEntryViewModel using StateFlow, which automatically preserves expanded/collapsed states during configuration changes without requiring onSaveInstanceState/onRestoreInstanceState implementations. The ViewModel's lifecycle-aware state management ensures consistent behavior across screen rotations. Testing confirmed state preservation after expanding/collapsing sections and rotating the screen. UI state is now fully managed by the ViewModel with no local UI state tracking needed for expansion.\n</info added on 2025-06-17T07:13:59.088Z>",
+            "status": "done",
+            "testStrategy": "Test by expanding/collapsing sections, rotating the screen, and verifying the state is restored correctly."
+          },
+          {
+            "id": 5,
+            "title": "Add UI Feedback for Loading States",
+            "description": "Provide visual feedback when accordion sections are loading or updating to improve user experience.",
+            "dependencies": [
+              4
+            ],
+            "details": "Add loading indicators or placeholders in the UI when data is being fetched or processed. Ensure the expanded/collapsed state is maintained during these operations.\n<info added on 2025-06-17T07:20:11.228Z>\nThe loading state implementation meets all requirements: full-screen CircularProgressIndicator on EditEntryScreen during form loading, section-level indicators in SectionContent, and preserved accordion state. FloatingActionButton and other UI elements also display appropriate loading feedback. State management ensures expansion state remains unaffected during loading operations. Implementation is complete and validated.\n</info added on 2025-06-17T07:20:11.228Z>",
+            "status": "done",
+            "testStrategy": "Test by simulating slow data loading and verifying the UI provides appropriate feedback without losing state."
+          }
+        ]
+      },
+      {
+        "id": 9,
+        "title": "Optimize UI Performance",
+        "description": "Ensure the UI remains responsive during data entry.",
+        "details": "Profile the app for performance bottlenecks during data entry and optimize as needed.",
+        "testStrategy": "Test by entering data rapidly and monitoring for lag or unresponsiveness.",
+        "priority": "low",
+        "dependencies": [
+          8
+        ],
+        "status": "pending",
+        "subtasks": []
+      },
+      {
+        "id": 10,
+        "title": "Handle Network Interruptions Gracefully",
+        "description": "Ensure data is not lost during sync failures and can be retried later.",
+        "details": "Implement retry logic for failed syncs and ensure local drafts are preserved.",
+        "testStrategy": "Test by interrupting the sync process and verifying data integrity and retry functionality.",
+        "priority": "medium",
+        "dependencies": [
+          4,
+          5
+        ],
+        "status": "pending",
+        "subtasks": []
+      },
+      {
+        "id": 11,
+        "title": "Refactor Section Content Rendering Logic in EditEntryScreen.kt",
+        "description": "Refactor the section content rendering logic in EditEntryScreen.kt to ensure correct parsing and representation of category combinations before adding UI complexity.",
+        "details": "1. **Minimal Baseline**: List data elements with category combinations to establish a foundation for rendering. 2. **Group by Category Combo Structure**: Organize the data elements into logical groups based on their category combinations. 3. **Render Category Structure as Text**: Display the grouped data as plain text to verify the structure is correct. 4. **Add Visual Grouping**: Introduce headers or dividers to visually separate the grouped data. 5. **Add Accordions/Grids**: Implement accordions or grids for better organization, but without entry fields yet. 6. **Add Entry Fields**: Finally, integrate entry fields into the structured layout. Ensure each step is tested and validated before proceeding to the next.",
+        "testStrategy": "1. Verify the minimal baseline by checking if all data elements and their category combinations are listed correctly. 2. Test the grouping logic by ensuring data elements are organized into the correct category combo structures. 3. Validate the text rendering by confirming the displayed structure matches the expected grouping. 4. Check visual grouping by ensuring headers/dividers are placed correctly. 5. Test accordions/grids by verifying they expand/collapse and display the grouped data properly. 6. Validate entry fields by ensuring they are correctly integrated into the structured layout and function as expected.",
+        "status": "pending",
+        "dependencies": [
+          2,
+          8
+        ],
+        "priority": "medium",
+        "subtasks": [
+          {
+            "id": 1,
+            "title": "Minimal Baseline – List Data Elements with Category Combos",
+            "description": "List data elements with their category combinations in brackets as the section contents. This establishes a foundation for rendering and verifies correct parsing of category combos.",
+            "details": "",
+            "status": "done",
+            "dependencies": [],
+            "parentTaskId": 11
+          },
+          {
+            "id": 2,
+            "title": "Group by Category Combo Structure",
+            "description": "Organize the data elements into logical groups based on their category combinations.",
+            "details": "",
+            "status": "pending",
+            "dependencies": [],
+            "parentTaskId": 11
+          },
+          {
+            "id": 3,
+            "title": "Render Category Structure as Text",
+            "description": "Display the grouped data as plain text to verify the structure is correct.",
+            "details": "",
+            "status": "pending",
+            "dependencies": [],
+            "parentTaskId": 11
+          },
+          {
+            "id": 4,
+            "title": "Add Visual Grouping (Headers/Dividers)",
+            "description": "Introduce headers or dividers to visually separate the grouped data.",
+            "details": "",
+            "status": "pending",
+            "dependencies": [],
+            "parentTaskId": 11
+          },
+          {
+            "id": 5,
+            "title": "Add Accordions/Grids (No Entry Fields Yet)",
+            "description": "Implement accordions or grids for better organization, but without entry fields yet.",
+            "details": "",
+            "status": "pending",
+            "dependencies": [],
+            "parentTaskId": 11
+          },
+          {
+            "id": 6,
+            "title": "Add Entry Fields",
+            "description": "Integrate entry fields into the structured layout as the final step.",
+            "details": "",
+            "status": "pending",
+            "dependencies": [],
+            "parentTaskId": 11
+          }
+        ]
+      }
+    ],
+    "metadata": {
+      "created": "2025-06-16T09:08:19.486Z",
+      "updated": "2025-06-26T13:12:03.237Z",
+      "description": "Tasks for master context"
+    }
+  }
+}
