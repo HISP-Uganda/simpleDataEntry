@@ -27,6 +27,7 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.TextButton
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.AccountCircle
 import androidx.compose.material.icons.filled.ArrowDropDown
 import androidx.compose.material.icons.filled.Clear
 import androidx.compose.material.icons.filled.Visibility
@@ -63,6 +64,11 @@ import dagger.hilt.android.lifecycle.HiltViewModel
 import dagger.hilt.android.AndroidEntryPoint
 import javax.inject.Inject
 import androidx.compose.ui.graphics.Color
+import androidx.compose.animation.core.*
+import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.material3.Surface
+import androidx.compose.foundation.layout.Row
+import androidx.compose.ui.graphics.graphicsLayer
 
 
 @OptIn(ExperimentalMaterial3Api::class, ExperimentalFoundationApi::class)
@@ -103,12 +109,10 @@ fun LoginScreen(
                 horizontalAlignment = Alignment.CenterHorizontally,
                 verticalArrangement = Arrangement.Center
             ) {
-                CircularProgressIndicator(
-                    modifier = Modifier.size(48.dp),
-                    strokeWidth = 4.dp,
-                    color = MaterialTheme.colorScheme.primary
-                )
-                Spacer(modifier = Modifier.height(16.dp))
+                // DHIS2-style pulsing loading animation
+                Dhis2PulsingLoader()
+                
+                Spacer(modifier = Modifier.height(24.dp))
                 Text(
                     text = "Loading your data...",
                     style = MaterialTheme.typography.headlineSmall,
@@ -157,6 +161,16 @@ fun LoginScreen(
                 horizontalAlignment = Alignment.CenterHorizontally,
                 verticalArrangement = Arrangement.Center
             ) {
+                // TODO: Replace with custom app icon - modify this Icon() composable
+                Icon(
+                    imageVector = Icons.Default.AccountCircle,
+                    contentDescription = "App Icon",
+                    modifier = Modifier
+                        .size(80.dp)
+                        .padding(bottom = 32.dp),
+                    tint = MaterialTheme.colorScheme.primary
+                )
+                
                 // Saved Account Selection (if any accounts exist)
                 if (state.savedAccounts.isNotEmpty()) {
                     Box {
@@ -445,5 +459,57 @@ fun LoginScreen(
                 }
             }
         )
+    }
+}
+
+@Composable
+fun Dhis2PulsingLoader() {
+    // Three pulsing dots animation inspired by DHIS2 Android Capture App
+    Row(
+        horizontalArrangement = Arrangement.spacedBy(12.dp),
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        repeat(3) { index ->
+            val infiniteTransition = rememberInfiniteTransition(label = "pulseTransition")
+            val scale by infiniteTransition.animateFloat(
+                initialValue = 0.8f,
+                targetValue = 1.3f,
+                animationSpec = infiniteRepeatable(
+                    animation = tween(
+                        durationMillis = 800,
+                        delayMillis = index * 200, // Stagger the animation
+                        easing = EaseInOut
+                    ),
+                    repeatMode = RepeatMode.Reverse
+                ),
+                label = "scaleAnimation"
+            )
+            
+            val alpha by infiniteTransition.animateFloat(
+                initialValue = 0.5f,
+                targetValue = 1.0f,
+                animationSpec = infiniteRepeatable(
+                    animation = tween(
+                        durationMillis = 800,
+                        delayMillis = index * 200,
+                        easing = EaseInOut
+                    ),
+                    repeatMode = RepeatMode.Reverse
+                ),
+                label = "alphaAnimation"
+            )
+            
+            Surface(
+                modifier = Modifier
+                    .size(16.dp)
+                    .graphicsLayer {
+                        scaleX = scale
+                        scaleY = scale
+                        this.alpha = alpha
+                    },
+                shape = CircleShape,
+                color = MaterialTheme.colorScheme.primary
+            ) {}
+        }
     }
 }

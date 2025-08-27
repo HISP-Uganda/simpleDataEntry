@@ -11,6 +11,7 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.material.icons.Icons
@@ -24,6 +25,7 @@ import androidx.compose.material.icons.filled.Logout
 import androidx.compose.material.icons.filled.Menu
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material.icons.filled.Sync
+import androidx.compose.material.icons.filled.DataUsage
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.OutlinedButton
@@ -80,6 +82,12 @@ import org.hisp.dhis.mobile.ui.designsystem.component.ListCardTitleModel
 import org.hisp.dhis.mobile.ui.designsystem.component.state.rememberAdditionalInfoColumnState
 import org.hisp.dhis.mobile.ui.designsystem.component.state.rememberListCardState
 import org.hisp.dhis.mobile.ui.designsystem.theme.TextColor
+import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.slideInVertically
+import androidx.compose.animation.slideOutVertically
+import androidx.compose.foundation.background
+import androidx.compose.material3.Card
+import androidx.compose.material3.CardDefaults
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -92,6 +100,7 @@ fun DatasetsScreen(
     val datasetsState by viewModel.uiState.collectAsState()
     val snackbarHostState = remember { SnackbarHostState() }
     var showDeleteConfirmation by remember { mutableStateOf(false) }
+    var showFilterSection by remember { mutableStateOf(false) }
 
     ModalNavigationDrawer(
         drawerState = drawerState,
@@ -180,8 +189,6 @@ fun DatasetsScreen(
             title = "Home",
             navController = navController,
             actions = {
-                var showFilterDialog by remember { mutableStateOf(false) }
-
                 IconButton(onClick = { viewModel.syncDatasets() }) {
                     Icon(
                         imageVector = Icons.Default.Sync,
@@ -190,23 +197,11 @@ fun DatasetsScreen(
                     )
                 }
 
-                IconButton(onClick = { showFilterDialog = true }) {
+                IconButton(onClick = { showFilterSection = !showFilterSection }) {
                     Icon(
                         imageVector = Icons.Default.FilterList,
                         contentDescription = "Filter & Sort",
                         tint = TextColor.OnSurface
-                    )
-                }
-
-                // Filter Dialog
-                if (showFilterDialog) {
-                    FilterDialog(
-                        currentFilter = (datasetsState as? DatasetsState.Success)?.currentFilter ?: FilterState(),
-                        onApplyFilter = { filterState ->
-                            viewModel.applyFilter(filterState)
-                            showFilterDialog = false
-                        },
-                        onDismiss = { showFilterDialog = false }
                     )
                 }
             },
@@ -226,7 +221,31 @@ fun DatasetsScreen(
                 }
             }
         ) {
-            when (datasetsState) {
+            Column {
+                // Pull-down filter section
+                AnimatedVisibility(
+                    visible = showFilterSection,
+                    enter = slideInVertically(initialOffsetY = { -it }),
+                    exit = slideOutVertically(targetOffsetY = { -it })
+                ) {
+                    Card(
+                        modifier = Modifier.fillMaxWidth(),
+                        colors = CardDefaults.cardColors(
+                            containerColor = MaterialTheme.colorScheme.surfaceVariant
+                        ),
+                        elevation = CardDefaults.cardElevation(defaultElevation = 4.dp)
+                    ) {
+                        PullDownFilterSection(
+                            currentFilter = (datasetsState as? DatasetsState.Success)?.currentFilter ?: FilterState(),
+                            onApplyFilter = { filterState ->
+                                viewModel.applyFilter(filterState)
+                            }
+                        )
+                    }
+                }
+                
+                // Main content
+                when (datasetsState) {
                 is DatasetsState.Loading -> {
                     Box(
                         modifier = Modifier.fillMaxSize(),
@@ -266,8 +285,8 @@ fun DatasetsScreen(
                         items(datasets) { dataset ->
                             // Create entry count info for this specific dataset
                             val entryCountItem = AdditionalInfoItem(
-                                key = "Entries",
-                                value = "${dataset.instanceCount}",
+                                key = "${dataset.instanceCount} entries",
+                                value = "",
                                 icon = null,
                                 color = org.hisp.dhis.mobile.ui.designsystem.theme.SurfaceColor.Primary
                             )
@@ -285,6 +304,15 @@ fun DatasetsScreen(
                                     shadow = true,
                                     additionalInfoColumnState = additionalInfo,
                                 ),
+                                listAvatar = {
+                                    // TODO: Replace with dataset-type-specific icons - modify the Icons.Default.DataUsage
+                                    Icon(
+                                        imageVector = Icons.Default.DataUsage,
+                                        contentDescription = "Dataset Icon",
+                                        modifier = Modifier.size(40.dp),
+                                        tint = MaterialTheme.colorScheme.primary
+                                    )
+                                },
                                 onCardClick = {
                                     navController.navigate("DatasetInstances/${dataset.id}/${dataset.name}")
                                 }
@@ -295,6 +323,7 @@ fun DatasetsScreen(
             }
         }
     }
+}
 
     Box(modifier = Modifier.fillMaxSize()) {
         SnackbarHost(
@@ -537,4 +566,175 @@ fun FilterDialog(
             }
         }
     )
+}
+
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+fun PullDownFilterSection(
+    currentFilter: FilterState,
+    onApplyFilter: (FilterState) -> Unit
+) {
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(16.dp),
+        verticalArrangement = Arrangement.spacedBy(12.dp)
+    ) {
+        var searchQuery by remember { mutableStateOf(currentFilter.searchQuery) }
+        var syncStatus by remember { mutableStateOf(currentFilter.syncStatus) }
+        var periodType by remember { mutableStateOf(currentFilter.periodType) }
+        var relativePeriod by remember { mutableStateOf(currentFilter.relativePeriod) }
+        
+        var showSyncDropdown by remember { mutableStateOf(false) }
+        var showPeriodDropdown by remember { mutableStateOf(false) }
+        
+        // Search field
+        OutlinedTextField(
+            value = searchQuery,
+            onValueChange = { 
+                searchQuery = it
+                onApplyFilter(
+                    FilterState(
+                        searchQuery = searchQuery,
+                        syncStatus = syncStatus,
+                        periodType = periodType,
+                        relativePeriod = relativePeriod
+                    )
+                )
+            },
+            label = { Text("Search datasets") },
+            placeholder = { Text("Enter dataset name...") },
+            modifier = Modifier.fillMaxWidth(),
+            leadingIcon = {
+                Icon(Icons.Default.Search, contentDescription = null)
+            }
+        )
+        
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.spacedBy(8.dp)
+        ) {
+            // Sync Status Filter
+            Box(modifier = Modifier.weight(1f)) {
+                OutlinedTextField(
+                    value = syncStatus.displayName,
+                    onValueChange = { },
+                    label = { Text("Sync Status") },
+                    readOnly = true,
+                    modifier = Modifier.fillMaxWidth(),
+                    trailingIcon = {
+                        IconButton(onClick = { showSyncDropdown = !showSyncDropdown }) {
+                            Icon(Icons.Default.ArrowDropDown, contentDescription = null)
+                        }
+                    }
+                )
+                
+                DropdownMenu(
+                    expanded = showSyncDropdown,
+                    onDismissRequest = { showSyncDropdown = false }
+                ) {
+                    SyncStatus.entries.forEach { status ->
+                        DropdownMenuItem(
+                            text = { Text(status.displayName) },
+                            onClick = {
+                                syncStatus = status
+                                showSyncDropdown = false
+                                onApplyFilter(
+                                    FilterState(
+                                        searchQuery = searchQuery,
+                                        syncStatus = syncStatus,
+                                        periodType = periodType,
+                                        relativePeriod = relativePeriod
+                                    )
+                                )
+                            }
+                        )
+                    }
+                }
+            }
+            
+            // Period Filter
+            Box(modifier = Modifier.weight(1f)) {
+                OutlinedTextField(
+                    value = when (periodType) {
+                        PeriodFilterType.ALL -> "All Periods"
+                        PeriodFilterType.RELATIVE -> relativePeriod?.displayName ?: "Select Period"
+                        PeriodFilterType.CUSTOM_RANGE -> "Custom Range"
+                    },
+                    onValueChange = { },
+                    label = { Text("Period") },
+                    readOnly = true,
+                    modifier = Modifier.fillMaxWidth(),
+                    trailingIcon = {
+                        IconButton(onClick = { showPeriodDropdown = !showPeriodDropdown }) {
+                            Icon(Icons.Default.ArrowDropDown, contentDescription = null)
+                        }
+                    }
+                )
+                
+                DropdownMenu(
+                    expanded = showPeriodDropdown,
+                    onDismissRequest = { showPeriodDropdown = false }
+                ) {
+                    DropdownMenuItem(
+                        text = { Text("All Periods") },
+                        onClick = {
+                            periodType = PeriodFilterType.ALL
+                            relativePeriod = null
+                            showPeriodDropdown = false
+                            onApplyFilter(
+                                FilterState(
+                                    searchQuery = searchQuery,
+                                    syncStatus = syncStatus,
+                                    periodType = periodType,
+                                    relativePeriod = relativePeriod
+                                )
+                            )
+                        }
+                    )
+                    
+                    listOf(
+                        RelativePeriod.THIS_MONTH,
+                        RelativePeriod.LAST_MONTH,
+                        RelativePeriod.LAST_3_MONTHS,
+                        RelativePeriod.THIS_QUARTER,
+                        RelativePeriod.LAST_QUARTER
+                    ).forEach { period ->
+                        DropdownMenuItem(
+                            text = { Text(period.displayName) },
+                            onClick = {
+                                periodType = PeriodFilterType.RELATIVE
+                                relativePeriod = period
+                                showPeriodDropdown = false
+                                onApplyFilter(
+                                    FilterState(
+                                        searchQuery = searchQuery,
+                                        syncStatus = syncStatus,
+                                        periodType = periodType,
+                                        relativePeriod = relativePeriod
+                                    )
+                                )
+                            }
+                        )
+                    }
+                }
+            }
+        }
+        
+        // Clear button
+        if (searchQuery.isNotBlank() || syncStatus != SyncStatus.ALL || periodType != PeriodFilterType.ALL) {
+            OutlinedButton(
+                onClick = {
+                    searchQuery = ""
+                    syncStatus = SyncStatus.ALL
+                    periodType = PeriodFilterType.ALL
+                    relativePeriod = null
+                    onApplyFilter(FilterState())
+                },
+                modifier = Modifier.align(Alignment.CenterHorizontally)
+            ) {
+                Text("Clear Filters")
+            }
+        }
+    }
 }
