@@ -268,12 +268,35 @@ fun DatasetInstancesScreen(
                                         }
                                     )
                                     if (!bulkMode) {
+                                        // Use StatusInfo for better status organization
+                                        val statusInfo = when {
+                                            isDraftInstance -> StatusInfo(
+                                                text = "Draft",
+                                                icon = Icons.Default.Edit,
+                                                color = MaterialTheme.colorScheme.secondary,
+                                                backgroundColor = MaterialTheme.colorScheme.secondaryContainer
+                                            )
+                                            isComplete -> StatusInfo(
+                                                text = "Complete",
+                                                icon = Icons.Default.CheckCircle,
+                                                color = MaterialTheme.colorScheme.primary,
+                                                backgroundColor = MaterialTheme.colorScheme.primaryContainer
+                                            )
+                                            else -> StatusInfo(
+                                                text = "Incomplete",
+                                                icon = Icons.Default.CheckCircle,
+                                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                                backgroundColor = MaterialTheme.colorScheme.surfaceVariant
+                                            )
+                                        }
+                                        
+                                        // Keep same visual structure but use StatusInfo
                                         when {
                                             instance.state == DatasetInstanceState.COMPLETE -> {
                                                 Icon(
-                                                    imageVector = Icons.Default.CheckCircle,
-                                                    contentDescription = "Completed",
-                                                    tint = MaterialTheme.colorScheme.primary,
+                                                    imageVector = statusInfo.icon,
+                                                    contentDescription = statusInfo.text,
+                                                    tint = statusInfo.color,
                                                     modifier = Modifier
                                                         .padding(start = 8.dp, end = 8.dp)
                                                         .size(28.dp)
@@ -281,9 +304,9 @@ fun DatasetInstancesScreen(
                                             }
                                             isDraftInstance -> {
                                                 Icon(
-                                                    imageVector = Icons.Default.Edit,
-                                                    contentDescription = "Draft",
-                                                    tint = MaterialTheme.colorScheme.secondary,
+                                                    imageVector = statusInfo.icon,
+                                                    contentDescription = statusInfo.text,
+                                                    tint = statusInfo.color,
                                                     modifier = Modifier
                                                         .padding(start = 8.dp, end = 8.dp)
                                                         .size(24.dp)
