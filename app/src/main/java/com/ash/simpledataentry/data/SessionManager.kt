@@ -11,21 +11,23 @@ import org.hisp.dhis.android.core.D2Manager
 import javax.inject.Inject
 import javax.inject.Singleton
 import androidx.core.content.edit
-import org.koin.core.context.stopKoin
 import com.ash.simpledataentry.data.local.AppDatabase
 import okhttp3.OkHttpClient
 import okhttp3.Interceptor
+import org.koin.core.context.GlobalContext
 
 @Singleton
 class SessionManager @Inject constructor() {
     private var d2: D2? = null
 
     suspend fun initD2(context: Context) = withContext(Dispatchers.IO) {
+        // Stop any existing Koin instance that DHIS2 SDK might have started
         try {
-            stopKoin()
+            GlobalContext.stopKoin()
         } catch (e: Exception) {
             // Ignore if Koin wasn't started
         }
+        
         if (d2 == null) {
             try {
                 // Add OkHttp logging interceptor
@@ -97,10 +99,22 @@ class SessionManager @Inject constructor() {
 
     suspend fun wipeAllData(context: Context) = withContext(Dispatchers.IO) {
         try {
-            d2?.wipeModule()?.wipeEverything()
+            // Clear SharedPreferences first (always safe)
             val prefs = context.getSharedPreferences("session_prefs", Context.MODE_PRIVATE)
             prefs.edit().clear().apply()
-            Log.i("SessionManager", "All local data wiped successfully")
+            
+            // Only wipe DHIS2 data if we have an authenticated D2 instance
+            d2?.let { d2Instance ->
+                try {
+                    d2Instance.wipeModule()?.wipeEverything()
+                    Log.i("SessionManager", "DHIS2 data wiped successfully")
+                } catch (e: Exception) {
+                    Log.w("SessionManager", "Failed to wipe DHIS2 data (might not be logged in): ${e.message}")
+                    // Continue anyway - we'll reinitialize
+                }
+            }
+            
+            Log.i("SessionManager", "Local data cleared successfully")
             // Re-instantiate D2 after wipe
             d2 = null
             initD2(context)

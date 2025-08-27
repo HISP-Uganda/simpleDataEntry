@@ -8,6 +8,7 @@ data class Dataset(
     val name: String,
     val description: String?,
     val periodType: PeriodType,
+    val instanceCount: Int = 0, // Number of dataset instances for this dataset
 //    val categoryCombo: CategoryCombo,
 //    val formType: FormType,
 //    val lastUpdated: Date,

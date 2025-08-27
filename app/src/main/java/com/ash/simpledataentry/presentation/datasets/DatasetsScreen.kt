@@ -16,7 +16,9 @@ import androidx.compose.foundation.lazy.items
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.ArrowDropDown
 import androidx.compose.material.icons.filled.Delete
+import androidx.compose.material.icons.filled.Search
 import androidx.compose.material.icons.filled.FilterList
+import androidx.compose.material.icons.filled.Sort
 import androidx.compose.material.icons.filled.Info
 import androidx.compose.material.icons.filled.Logout
 import androidx.compose.material.icons.filled.Menu
@@ -24,6 +26,7 @@ import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material.icons.filled.Sync
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
+import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.DrawerValue
 import androidx.compose.material3.DropdownMenu
@@ -55,12 +58,16 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.style.TextAlign
+import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.lifecycle.viewmodel.compose.viewModel
 import androidx.navigation.NavController
 import com.ash.simpledataentry.data.SessionManager
 import com.ash.simpledataentry.domain.model.FilterState
+import com.ash.simpledataentry.domain.model.SyncStatus
+import com.ash.simpledataentry.domain.model.PeriodFilterType
+import com.ash.simpledataentry.domain.model.RelativePeriod
 import com.ash.simpledataentry.domain.repository.AuthRepository
 import com.ash.simpledataentry.navigation.Screen
 import com.ash.simpledataentry.presentation.core.BaseScreen
@@ -84,6 +91,7 @@ fun DatasetsScreen(
     val scope = rememberCoroutineScope()
     val datasetsState by viewModel.uiState.collectAsState()
     val snackbarHostState = remember { SnackbarHostState() }
+    var showDeleteConfirmation by remember { mutableStateOf(false) }
 
     ModalNavigationDrawer(
         drawerState = drawerState,
@@ -100,7 +108,12 @@ fun DatasetsScreen(
                     icon = { Icon(Icons.Default.Settings, contentDescription = null) },
                     label = { Text("Settings") },
                     selected = false,
-                    onClick = { /* TODO: Navigate to settings */ }
+                    onClick = {
+                        scope.launch {
+                            drawerState.close()
+                            navController.navigate("settings")
+                        }
+                    }
                 )
 
                 NavigationDrawerItem(
@@ -147,7 +160,12 @@ fun DatasetsScreen(
                     icon = { Icon(Icons.Default.Delete, contentDescription = null) },
                     label = { Text("Delete Account") },
                     selected = false,
-                    onClick = { /* TODO: Implement account deletion */ },
+                    onClick = { 
+                        scope.launch {
+                            drawerState.close()
+                            showDeleteConfirmation = true
+                        }
+                    },
                     colors = NavigationDrawerItemDefaults.colors(
                         unselectedIconColor = MaterialTheme.colorScheme.error,
                         unselectedTextColor = MaterialTheme.colorScheme.error
@@ -175,16 +193,18 @@ fun DatasetsScreen(
                 IconButton(onClick = { showFilterDialog = true }) {
                     Icon(
                         imageVector = Icons.Default.FilterList,
-                        contentDescription = "Filter",
+                        contentDescription = "Filter & Sort",
                         tint = TextColor.OnSurface
                     )
                 }
 
+                // Filter Dialog
                 if (showFilterDialog) {
-                    PeriodFilterDialog(
+                    FilterDialog(
                         currentFilter = (datasetsState as? DatasetsState.Success)?.currentFilter ?: FilterState(),
-                        onFilterChanged = { filterState ->
+                        onApplyFilter = { filterState ->
                             viewModel.applyFilter(filterState)
+                            showFilterDialog = false
                         },
                         onDismiss = { showFilterDialog = false }
                     )
@@ -237,11 +257,6 @@ fun DatasetsScreen(
                         isConstantItem = true
                     )
 
-                    val additionalInfo = rememberAdditionalInfoColumnState(
-                        additionalInfoList = emptyList(),
-                        syncProgressItem = syncItem
-                    )
-
                     val datasets = (datasetsState as DatasetsState.Success).filteredDatasets
                     LazyColumn(
                         modifier = Modifier.fillMaxSize(),
@@ -249,6 +264,19 @@ fun DatasetsScreen(
                         verticalArrangement = Arrangement.spacedBy(8.dp)
                     ) {
                         items(datasets) { dataset ->
+                            // Create entry count info for this specific dataset
+                            val entryCountItem = AdditionalInfoItem(
+                                key = "Entries",
+                                value = "${dataset.instanceCount}",
+                                icon = null,
+                                color = org.hisp.dhis.mobile.ui.designsystem.theme.SurfaceColor.Primary
+                            )
+                            
+                            val additionalInfo = rememberAdditionalInfoColumnState(
+                                additionalInfoList = listOf(entryCountItem),
+                                syncProgressItem = syncItem
+                            )
+                            
                             ListCard(
                                 modifier = Modifier.fillMaxWidth(),
                                 listCardState = rememberListCardState(
@@ -287,4 +315,226 @@ fun DatasetsScreen(
             }
         )
     }
+
+    // Delete Account Confirmation Dialog
+    if (showDeleteConfirmation) {
+        val context = androidx.compose.ui.platform.LocalContext.current
+        
+        AlertDialog(
+            onDismissRequest = { showDeleteConfirmation = false },
+            title = { 
+                Text(
+                    "Delete Account",
+                    color = MaterialTheme.colorScheme.error
+                ) 
+            },
+            text = {
+                Column {
+                    Text("Are you sure you want to delete your account?")
+                    Spacer(modifier = Modifier.height(8.dp))
+                    Text(
+                        "This will permanently delete:",
+                        style = MaterialTheme.typography.bodyMedium,
+                        fontWeight = FontWeight.Bold
+                    )
+                    Spacer(modifier = Modifier.height(4.dp))
+                    Text("• All saved login credentials")
+                    Text("• All downloaded data")
+                    Text("• All unsaved draft entries")
+                    Spacer(modifier = Modifier.height(8.dp))
+                    Text(
+                        "This action cannot be undone.",
+                        color = MaterialTheme.colorScheme.error,
+                        style = MaterialTheme.typography.bodySmall
+                    )
+                }
+            },
+            confirmButton = {
+                Button(
+                    onClick = {
+                        viewModel.deleteAccount(context)
+                        showDeleteConfirmation = false
+                        // Navigate to login after deletion
+                        navController.navigate("login") {
+                            popUpTo(0)
+                        }
+                    },
+                    colors = androidx.compose.material3.ButtonDefaults.buttonColors(
+                        containerColor = MaterialTheme.colorScheme.error
+                    )
+                ) {
+                    Text("Delete Account")
+                }
+            },
+            dismissButton = {
+                TextButton(
+                    onClick = { showDeleteConfirmation = false }
+                ) {
+                    Text("Cancel")
+                }
+            }
+        )
+    }
+}
+
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+fun FilterDialog(
+    currentFilter: FilterState,
+    onApplyFilter: (FilterState) -> Unit,
+    onDismiss: () -> Unit
+) {
+    var searchQuery by remember { mutableStateOf(currentFilter.searchQuery) }
+    var syncStatus by remember { mutableStateOf(currentFilter.syncStatus) }
+    var periodType by remember { mutableStateOf(currentFilter.periodType) }
+    var relativePeriod by remember { mutableStateOf(currentFilter.relativePeriod) }
+    
+    var showSyncDropdown by remember { mutableStateOf(false) }
+    var showPeriodDropdown by remember { mutableStateOf(false) }
+    
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("Filter & Sort Datasets") },
+        text = {
+            Column(
+                modifier = Modifier.fillMaxWidth(),
+                verticalArrangement = Arrangement.spacedBy(16.dp)
+            ) {
+                // Search Query
+                OutlinedTextField(
+                    value = searchQuery,
+                    onValueChange = { searchQuery = it },
+                    label = { Text("Search datasets") },
+                    placeholder = { Text("Enter dataset name...") },
+                    modifier = Modifier.fillMaxWidth(),
+                    leadingIcon = {
+                        Icon(Icons.Default.Search, contentDescription = null)
+                    }
+                )
+                
+                // Sync Status Filter
+                Box {
+                    OutlinedTextField(
+                        value = syncStatus.displayName,
+                        onValueChange = { },
+                        label = { Text("Sync Status") },
+                        readOnly = true,
+                        modifier = Modifier.fillMaxWidth(),
+                        trailingIcon = {
+                            IconButton(onClick = { showSyncDropdown = !showSyncDropdown }) {
+                                Icon(Icons.Default.ArrowDropDown, contentDescription = null)
+                            }
+                        }
+                    )
+                    
+                    DropdownMenu(
+                        expanded = showSyncDropdown,
+                        onDismissRequest = { showSyncDropdown = false }
+                    ) {
+                        SyncStatus.entries.forEach { status ->
+                            DropdownMenuItem(
+                                text = { Text(status.displayName) },
+                                onClick = {
+                                    syncStatus = status
+                                    showSyncDropdown = false
+                                }
+                            )
+                        }
+                    }
+                }
+                
+                // Period Filter
+                Box {
+                    OutlinedTextField(
+                        value = when (periodType) {
+                            PeriodFilterType.ALL -> "All Periods"
+                            PeriodFilterType.RELATIVE -> relativePeriod?.displayName ?: "Select Period"
+                            PeriodFilterType.CUSTOM_RANGE -> "Custom Range"
+                        },
+                        onValueChange = { },
+                        label = { Text("Period") },
+                        readOnly = true,
+                        modifier = Modifier.fillMaxWidth(),
+                        trailingIcon = {
+                            IconButton(onClick = { showPeriodDropdown = !showPeriodDropdown }) {
+                                Icon(Icons.Default.ArrowDropDown, contentDescription = null)
+                            }
+                        }
+                    )
+                    
+                    DropdownMenu(
+                        expanded = showPeriodDropdown,
+                        onDismissRequest = { showPeriodDropdown = false }
+                    ) {
+                        DropdownMenuItem(
+                            text = { Text("All Periods") },
+                            onClick = {
+                                periodType = PeriodFilterType.ALL
+                                relativePeriod = null
+                                showPeriodDropdown = false
+                            }
+                        )
+                        
+                        // Common relative periods
+                        listOf<RelativePeriod>(
+                            RelativePeriod.THIS_MONTH,
+                            RelativePeriod.LAST_MONTH,
+                            RelativePeriod.LAST_3_MONTHS,
+                            RelativePeriod.THIS_QUARTER,
+                            RelativePeriod.LAST_QUARTER
+                        ).forEach { period ->
+                            DropdownMenuItem(
+                                text = { Text(period.displayName) },
+                                onClick = {
+                                    periodType = PeriodFilterType.RELATIVE
+                                    relativePeriod = period
+                                    showPeriodDropdown = false
+                                }
+                            )
+                        }
+                    }
+                }
+            }
+        },
+        confirmButton = {
+            Row(
+                horizontalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                OutlinedButton(
+                    onClick = {
+                        // Reset all filter values to defaults
+                        searchQuery = ""
+                        syncStatus = SyncStatus.ALL
+                        periodType = PeriodFilterType.ALL
+                        relativePeriod = null
+                        
+                        // Apply cleared filter
+                        onApplyFilter(FilterState())
+                    }
+                ) {
+                    Text("Clear")
+                }
+                
+                Button(
+                    onClick = {
+                        onApplyFilter(
+                            FilterState(
+                                searchQuery = searchQuery,
+                                syncStatus = syncStatus,
+                                periodType = periodType,
+                                relativePeriod = relativePeriod
+                            )
+                        )
+                    }
+                ) {
+                    Text("Apply")
+                }
+            }
+        },
+        dismissButton = {
+            TextButton(onClick = onDismiss) {
+                Text("Cancel")
+            }
+        }
+    )
 }

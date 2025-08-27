@@ -8,6 +8,8 @@ import com.ash.simpledataentry.domain.repository.DatasetInstancesRepository
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import com.ash.simpledataentry.data.SessionManager
+import com.ash.simpledataentry.data.local.AppDatabase
+import com.ash.simpledataentry.data.local.DraftInstanceSummary
 import org.hisp.dhis.android.core.D2
 import org.hisp.dhis.android.core.organisationunit.OrganisationUnit
 import javax.inject.Inject
@@ -15,7 +17,8 @@ import javax.inject.Inject
 private const val TAG = "DatasetInstancesRepo"
 
 class DatasetInstancesRepositoryImpl @Inject constructor(
-    private val sessionManager: SessionManager
+    private val sessionManager: SessionManager,
+    private val database: AppDatabase
 ) : DatasetInstancesRepository {
 
     private val d2 get() = sessionManager.getD2()!!
@@ -62,8 +65,8 @@ class DatasetInstancesRepositoryImpl @Inject constructor(
                 Log.d(TAG, "Found ${instances.size} instances for dataset")
 
 
-                instances.map { instance ->
-                    Log.d(TAG, "Processing instance: ${instance.id()} | datasetId: ${instance.dataSetUid()} | period: ${instance.period()} | orgUnit: ${instance.organisationUnitUid()} | attributeOptionComboUid: ${instance.attributeOptionComboUid()} | attributeOptionComboDisplayName: ${instance.attributeOptionComboDisplayName()}")
+                val sdkInstances = instances.map { instance ->
+                    Log.d(TAG, "Processing SDK instance: ${instance.id()} | datasetId: ${instance.dataSetUid()} | period: ${instance.period()} | orgUnit: ${instance.organisationUnitUid()} | attributeOptionComboUid: ${instance.attributeOptionComboUid()} | attributeOptionComboDisplayName: ${instance.attributeOptionComboDisplayName()}")
                     DatasetInstance(
                         id = instance.id().toString(),
                         datasetId = instance.dataSetUid(),
@@ -79,9 +82,48 @@ class DatasetInstancesRepositoryImpl @Inject constructor(
                         },
                         lastUpdated = instance.lastUpdated()?.toString()
                     )
-                }.also {
-                    Log.d(TAG, "Returning ${it.size} processed instances")
                 }
+                
+                // Get draft instances that don't have corresponding SDK instances
+                val draftInstances = database.dataValueDraftDao().getDistinctDraftInstances(datasetId)
+                Log.d(TAG, "Found ${draftInstances.size} draft instances")
+                
+                val sdkInstanceKeys = sdkInstances.map { "${it.period.id}-${it.organisationUnit.id}-${it.attributeOptionCombo}" }.toSet()
+                
+                val draftOnlyInstances = draftInstances.filter { draft ->
+                    val key = "${draft.period}-${draft.orgUnit}-${draft.attributeOptionCombo}"
+                    !sdkInstanceKeys.contains(key)
+                }.map { draft ->
+                    Log.d(TAG, "Processing draft-only instance: datasetId: ${draft.datasetId} | period: ${draft.period} | orgUnit: ${draft.orgUnit} | attributeOptionCombo: ${draft.attributeOptionCombo}")
+                    
+                    // Get org unit name from DHIS2 SDK
+                    val orgUnitName = try {
+                        d2.organisationUnitModule().organisationUnits()
+                            .uid(draft.orgUnit)
+                            .blockingGet()?.displayName() ?: draft.orgUnit
+                    } catch (e: Exception) {
+                        Log.w(TAG, "Could not get org unit name for ${draft.orgUnit}", e)
+                        draft.orgUnit
+                    }
+                    
+                    DatasetInstance(
+                        id = "draft-${draft.datasetId}-${draft.period}-${draft.orgUnit}-${draft.attributeOptionCombo}",
+                        datasetId = draft.datasetId,
+                        period = Period(id = draft.period),
+                        organisationUnit = com.ash.simpledataentry.domain.model.OrganisationUnit(
+                            id = draft.orgUnit,
+                            name = orgUnitName
+                        ),
+                        attributeOptionCombo = draft.attributeOptionCombo,
+                        state = DatasetInstanceState.OPEN, // Draft instances are always open
+                        lastUpdated = java.text.SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss.SSS", java.util.Locale.getDefault())
+                            .format(java.util.Date(draft.lastModified))
+                    )
+                }
+                
+                val allInstances = (sdkInstances + draftOnlyInstances).sortedByDescending { it.lastUpdated }
+                Log.d(TAG, "Returning ${allInstances.size} total instances (${sdkInstances.size} SDK + ${draftOnlyInstances.size} draft-only)")
+                allInstances
             } catch (e: Exception) {
                 Log.e(TAG, "Error fetching dataset instances", e)
                 throw e
@@ -116,6 +158,38 @@ class DatasetInstancesRepositoryImpl @Inject constructor(
             } catch (e: Exception) {
                 Log.e(TAG, "Failed to complete dataset instance", e)
                 Result.failure(e)
+            }
+        }
+    }
+    
+    override suspend fun getDatasetInstanceCount(datasetId: String): Int {
+        return withContext(Dispatchers.IO) {
+            try {
+                Log.d(TAG, "Getting instance count for dataset: $datasetId")
+                
+                // Get user's data capture org units
+                val userOrgUnits = d2.organisationUnitModule().organisationUnits()
+                    .byOrganisationUnitScope(OrganisationUnit.Scope.SCOPE_DATA_CAPTURE)
+                    .blockingGet()
+
+                val userOrgUnitUid = userOrgUnits.firstOrNull()?.uid()
+                if (userOrgUnitUid == null) {
+                    Log.e(TAG, "No organization unit found for user")
+                    return@withContext 0
+                }
+
+                // Count dataset instances
+                val count = d2.dataSetModule()
+                    .dataSetInstances()
+                    .byDataSetUid().eq(datasetId)
+                    .byOrganisationUnitUid().eq(userOrgUnitUid)
+                    .blockingCount()
+
+                Log.d(TAG, "Found $count instances for dataset $datasetId")
+                count
+            } catch (e: Exception) {
+                Log.e(TAG, "Failed to get instance count for dataset $datasetId", e)
+                0
             }
         }
     }

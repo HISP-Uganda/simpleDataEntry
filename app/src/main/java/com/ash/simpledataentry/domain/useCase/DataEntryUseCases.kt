@@ -1,6 +1,7 @@
 package com.ash.simpledataentry.domain.useCase
 
 import com.ash.simpledataentry.domain.model.DataValue
+import com.ash.simpledataentry.domain.model.DataValueValidationResult
 import com.ash.simpledataentry.domain.model.ValidationResult
 import com.ash.simpledataentry.domain.repository.DataEntryRepository
 import kotlinx.coroutines.flow.Flow
@@ -47,8 +48,21 @@ class ValidateValueUseCase @Inject constructor(
         datasetId: String,
         dataElement: String,
         value: String
-    ): ValidationResult {
+    ): DataValueValidationResult {
         return repository.validateValue(datasetId, dataElement, value)
+    }
+}
+
+class SyncDataEntryUseCase @Inject constructor(
+    private val repository: DataEntryRepository
+) {
+    suspend operator fun invoke(): Result<Unit> {
+        return try {
+            repository.syncCurrentEntryForm()
+            Result.success(Unit)
+        } catch (e: Exception) {
+            Result.failure(e)
+        }
     }
 }
 
@@ -56,6 +70,7 @@ data class DataEntryUseCases @Inject constructor(
     val getDataValues: GetDataValuesUseCase,
     val saveDataValue: SaveDataValueUseCase,
     val validateValue: ValidateValueUseCase,
+    val syncDataEntry: SyncDataEntryUseCase,
     val completeDatasetInstance: CompleteDatasetInstanceUseCase,
     val markDatasetInstanceIncomplete: MarkDatasetInstanceIncompleteUseCase
 )

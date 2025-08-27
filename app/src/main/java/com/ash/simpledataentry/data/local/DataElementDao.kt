@@ -13,6 +13,9 @@ interface DataElementDao {
     @Query("SELECT * FROM data_elements")
     suspend fun getAll(): List<DataElementEntity>
 
+    @Query("SELECT * FROM data_elements WHERE id IN (:ids)")
+    suspend fun getByIds(ids: List<String>): List<DataElementEntity>
+
     @Query("DELETE FROM data_elements")
     suspend fun clearAll()
 } 

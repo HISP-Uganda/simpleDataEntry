@@ -9,6 +9,10 @@ import com.ash.simpledataentry.data.repositoryImpl.DatasetInstancesRepositoryImp
 import com.ash.simpledataentry.data.repositoryImpl.DatasetsRepositoryImpl
 import com.ash.simpledataentry.data.repositoryImpl.SystemRepositoryImpl
 import com.ash.simpledataentry.data.repositoryImpl.LoginUrlCacheRepository
+import com.ash.simpledataentry.data.repositoryImpl.SavedAccountRepository
+import com.ash.simpledataentry.data.repositoryImpl.ValidationRepository
+import com.ash.simpledataentry.data.security.AccountEncryption
+import com.ash.simpledataentry.domain.validation.ValidationService
 import com.ash.simpledataentry.data.local.AppDatabase
 import com.ash.simpledataentry.data.local.DataValueDraftDao
 import com.ash.simpledataentry.data.local.DataElementDao
@@ -17,6 +21,7 @@ import com.ash.simpledataentry.data.local.CategoryOptionComboDao
 import com.ash.simpledataentry.data.local.DatasetDao
 import com.ash.simpledataentry.data.local.OrganisationUnitDao
 import com.ash.simpledataentry.data.local.CachedUrlDao
+import com.ash.simpledataentry.data.local.SavedAccountDao
 import com.ash.simpledataentry.domain.repository.AuthRepository
 import com.ash.simpledataentry.domain.repository.DataEntryRepository
 import com.ash.simpledataentry.domain.repository.DatasetInstancesRepository
@@ -29,6 +34,7 @@ import com.ash.simpledataentry.domain.useCase.GetDatasetInstancesUseCase
 import com.ash.simpledataentry.domain.useCase.GetDatasetsUseCase
 import com.ash.simpledataentry.domain.useCase.LogoutUseCase
 import com.ash.simpledataentry.domain.useCase.SaveDataValueUseCase
+import com.ash.simpledataentry.domain.useCase.SyncDataEntryUseCase
 import com.ash.simpledataentry.domain.useCase.SyncDatasetInstancesUseCase
 import com.ash.simpledataentry.domain.useCase.SyncDatasetsUseCase
 import com.ash.simpledataentry.domain.useCase.ValidateValueUseCase
@@ -43,6 +49,10 @@ import javax.inject.Singleton
 import androidx.room.migration.Migration
 import androidx.sqlite.db.SupportSQLiteDatabase
 import com.ash.simpledataentry.data.local.DataValueDao
+import com.ash.simpledataentry.data.cache.MetadataCacheService
+import com.ash.simpledataentry.data.sync.BackgroundDataPrefetcher
+import com.ash.simpledataentry.data.sync.NetworkStateManager
+import com.ash.simpledataentry.data.sync.SyncQueueManager
 
 @Module
 @InstallIn(SingletonComponent::class)
@@ -67,6 +77,24 @@ object AppModule {
             """)
         }
     }
+
+    val MIGRATION_4_5 = object : Migration(4, 5) {
+        override fun migrate(database: SupportSQLiteDatabase) {
+            database.execSQL("""
+                CREATE TABLE IF NOT EXISTS saved_accounts (
+                    id TEXT NOT NULL PRIMARY KEY,
+                    displayName TEXT NOT NULL,
+                    serverUrl TEXT NOT NULL,
+                    username TEXT NOT NULL,
+                    encryptedPassword TEXT NOT NULL,
+                    lastUsed INTEGER NOT NULL,
+                    isActive INTEGER NOT NULL DEFAULT 0,
+                    createdAt INTEGER NOT NULL
+                )
+            """)
+        }
+    }
+
 
     @Provides
     @Singleton
@@ -102,9 +130,10 @@ object AppModule {
     fun provideDatasetsRepository(
         sessionManager: SessionManager,
         datasetDao: DatasetDao,
-        @ApplicationContext context: Context
+        @ApplicationContext context: Context,
+        datasetInstancesRepository: DatasetInstancesRepository
     ): DatasetsRepository {
-        return DatasetsRepositoryImpl(sessionManager, datasetDao, context)
+        return DatasetsRepositoryImpl(sessionManager, datasetDao, context, datasetInstancesRepository)
     }
 
     /**
@@ -132,9 +161,10 @@ object AppModule {
     @Provides
     @Singleton
     fun provideDatasetInstancesRepository(
-        sessionManager: SessionManager
+        sessionManager: SessionManager,
+        database: AppDatabase
     ): DatasetInstancesRepository {
-        return DatasetInstancesRepositoryImpl(sessionManager)
+        return DatasetInstancesRepositoryImpl(sessionManager, database)
     }
 
 
@@ -159,6 +189,56 @@ object AppModule {
 
     @Provides
     @Singleton
+    fun provideMetadataCacheService(
+        sessionManager: SessionManager,
+        dataElementDao: DataElementDao,
+        categoryComboDao: CategoryComboDao,
+        categoryOptionComboDao: CategoryOptionComboDao,
+        organisationUnitDao: OrganisationUnitDao
+    ): MetadataCacheService {
+        return MetadataCacheService(
+            sessionManager,
+            dataElementDao,
+            categoryComboDao,
+            categoryOptionComboDao,
+            organisationUnitDao
+        )
+    }
+
+    @Provides
+    @Singleton
+    fun provideBackgroundDataPrefetcher(
+        sessionManager: SessionManager,
+        metadataCacheService: MetadataCacheService,
+        datasetDao: DatasetDao
+    ): BackgroundDataPrefetcher {
+        return BackgroundDataPrefetcher(
+            sessionManager,
+            metadataCacheService,
+            datasetDao
+        )
+    }
+
+    @Provides
+    @Singleton
+    fun provideNetworkStateManager(
+        @ApplicationContext context: Context
+    ): NetworkStateManager {
+        return NetworkStateManager(context)
+    }
+
+    @Provides
+    @Singleton
+    fun provideSyncQueueManager(
+        networkStateManager: NetworkStateManager,
+        sessionManager: SessionManager,
+        database: AppDatabase
+    ): SyncQueueManager {
+        return SyncQueueManager(networkStateManager, sessionManager, database)
+    }
+
+    @Provides
+    @Singleton
     fun provideDataEntryRepository(
         sessionManager: SessionManager,
         draftDao: DataValueDraftDao,
@@ -167,6 +247,9 @@ object AppModule {
         categoryOptionComboDao: CategoryOptionComboDao,
         organisationUnitDao: OrganisationUnitDao,
         dataValueDao: DataValueDao,
+        metadataCacheService: MetadataCacheService,
+        networkStateManager: NetworkStateManager,
+        syncQueueManager: SyncQueueManager,
         @ApplicationContext context: Context
     ): DataEntryRepository {
         return DataEntryRepositoryImpl(
@@ -177,7 +260,10 @@ object AppModule {
             categoryOptionComboDao,
             organisationUnitDao,
             context,
-            dataValueDao
+            dataValueDao,
+            metadataCacheService,
+            networkStateManager,
+            syncQueueManager
         )
     }
 
@@ -227,6 +313,7 @@ object AppModule {
             getDataValues = GetDataValuesUseCase(dataEntryRepository),
             saveDataValue = SaveDataValueUseCase(dataEntryRepository),
             validateValue = ValidateValueUseCase(dataEntryRepository),
+            syncDataEntry = SyncDataEntryUseCase(dataEntryRepository),
             completeDatasetInstance = CompleteDatasetInstanceUseCase(datasetInstancesRepository),
             markDatasetInstanceIncomplete = MarkDatasetInstanceIncompleteUseCase(datasetInstancesRepository)
         )
@@ -240,7 +327,7 @@ object AppModule {
             AppDatabase::class.java,
             "simple_data_entry_db"
         )
-        .addMigrations(MIGRATION_1_2, MIGRATION_3_4)
+        .addMigrations(MIGRATION_1_2, MIGRATION_3_4, MIGRATION_4_5)
         .build()
     }
 
@@ -272,6 +359,40 @@ object AppModule {
     @Singleton
     fun provideLoginUrlCacheRepository(db: AppDatabase): LoginUrlCacheRepository {
         return LoginUrlCacheRepository(db)
+    }
+
+    @Provides
+    fun provideSavedAccountDao(db: AppDatabase): SavedAccountDao = db.savedAccountDao()
+
+    @Provides
+    @Singleton
+    fun provideAccountEncryption(): AccountEncryption {
+        return AccountEncryption()
+    }
+
+    @Provides
+    @Singleton
+    fun provideSavedAccountRepository(
+        db: AppDatabase,
+        accountEncryption: AccountEncryption
+    ): SavedAccountRepository {
+        return SavedAccountRepository(db, accountEncryption)
+    }
+
+    @Provides
+    @Singleton
+    fun provideValidationService(
+        sessionManager: SessionManager
+    ): ValidationService {
+        return ValidationService(sessionManager)
+    }
+
+    @Provides
+    @Singleton
+    fun provideValidationRepository(
+        validationService: ValidationService
+    ): ValidationRepository {
+        return ValidationRepository(validationService)
     }
 
 }

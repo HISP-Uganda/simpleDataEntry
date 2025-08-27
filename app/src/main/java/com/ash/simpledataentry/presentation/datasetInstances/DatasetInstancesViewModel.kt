@@ -31,7 +31,9 @@ data class DatasetInstancesState(
     val isSyncing: Boolean = false,
     val error: String? = null,
     val successMessage: String? = null,
-    val attributeOptionCombos: List<Pair<String, String>> = emptyList()
+    val attributeOptionCombos: List<Pair<String, String>> = emptyList(),
+    val dataset: com.ash.simpledataentry.domain.model.Dataset? = null,
+    val localInstanceCount: Int = 0
 )
 
 @HiltViewModel
@@ -40,6 +42,7 @@ class DatasetInstancesViewModel @Inject constructor(
     private val syncDatasetInstancesUseCase: SyncDatasetInstancesUseCase,
     private val dataEntryRepository: DataEntryRepository,
     private val datasetInstacesRepository: DatasetInstancesRepository,
+    private val datasetsRepository: com.ash.simpledataentry.domain.repository.DatasetsRepository,
     private val app: Application
 ) : ViewModel() {
     private var datasetId: String = ""
@@ -66,6 +69,11 @@ class DatasetInstancesViewModel @Inject constructor(
         }
     }
 
+    fun refreshData() {
+        Log.d("DatasetInstancesVM", "Refreshing dataset instances data")
+        loadData()
+    }
+
     private fun loadData() {
         if (datasetId.isEmpty()) {
             Log.e("DatasetInstancesVM", "Cannot load data: datasetId is empty")
@@ -78,16 +86,33 @@ class DatasetInstancesViewModel @Inject constructor(
             try {
                 Log.d("DatasetInstancesVM", "Fetching dataset instances")
                 val attributeOptionCombos = dataEntryRepository.getAttributeOptionCombos(datasetId)
+                Log.d("DatasetInstancesVM", "getAttributeOptionCombos returned: $attributeOptionCombos")
+                
+                // Get dataset information
+                var dataset: com.ash.simpledataentry.domain.model.Dataset? = null
+                datasetsRepository.getDatasets().collect { datasets ->
+                    dataset = datasets.find { it.id == datasetId }
+                }
+                
                 val instancesResult = getDatasetInstancesUseCase(datasetId)
                 instancesResult.fold(
                     onSuccess = { instances ->
                         Log.d("DatasetInstancesVM", "Received "+instances.size+" instances")
+                        
+                        // Count local instances (drafts or unsynced)
+                        val localCount = instances.count { instance ->
+                            instance.id.startsWith("draft-") || 
+                            (instance.state == DatasetInstanceState.OPEN && instance.lastUpdated != null)
+                        }
+                        
                         _state.value = _state.value.copy(
                             instances = instances,
-                            filteredInstances = applyFilters(instances),
+                            filteredInstances = applyFilters(orderInstances(instances)),
                             isLoading = false,
                             error = null,
-                            attributeOptionCombos = attributeOptionCombos
+                            attributeOptionCombos = attributeOptionCombos,
+                            dataset = dataset,
+                            localInstanceCount = localCount
                         )
                     },
                     onFailure = { error ->
@@ -95,7 +120,9 @@ class DatasetInstancesViewModel @Inject constructor(
                         _state.value = _state.value.copy(
                             isLoading = false,
                             error = error.message ?: "Failed to load dataset data",
-                            attributeOptionCombos = attributeOptionCombos
+                            attributeOptionCombos = attributeOptionCombos,
+                            dataset = dataset,
+                            localInstanceCount = 0
                         )
                     }
                 )
@@ -109,13 +136,13 @@ class DatasetInstancesViewModel @Inject constructor(
         }
     }
 
-    fun syncDatasetInstances() {
+    fun syncDatasetInstances(uploadFirst: Boolean = false) {
         if (datasetId.isEmpty()) {
             Log.e("DatasetInstancesVM", "Cannot sync: datasetId is empty")
             return
         }
 
-        Log.d("DatasetInstancesVM", "Starting sync for dataset: $datasetId")
+        Log.d("DatasetInstancesVM", "Starting sync for dataset: $datasetId, uploadFirst: $uploadFirst")
         viewModelScope.launch {
             _state.value = _state.value.copy(isSyncing = true, error = null)
             try {
@@ -126,32 +153,54 @@ class DatasetInstancesViewModel @Inject constructor(
                     )
                     return@launch
                 }
-                // 1. Push all local data (drafts/unsynced) to server
-                dataEntryRepository.pushAllLocalData()
+                
+                if (uploadFirst) {
+                    Log.d("DatasetInstancesVM", "Step 1: Uploading local data")
+                    // 1. Push all local data (drafts/unsynced) to server first
+                    dataEntryRepository.pushAllLocalData()
+                    Log.d("DatasetInstancesVM", "Step 1 completed: Local data uploaded")
+                }
+                
+                Log.d("DatasetInstancesVM", "Step 2: Pulling remote updates")
                 // 2. Pull updates from server and harmonize
                 val result = syncDatasetInstancesUseCase()
                 result.fold(
                     onSuccess = {
                         loadData() // Reload all data after sync
+                        val message = if (uploadFirst) {
+                            "Local data uploaded and remote updates downloaded successfully"
+                        } else {
+                            "Dataset instances synced successfully"
+                        }
                         _state.value = _state.value.copy(
                             isSyncing = false,
-                            successMessage = "Dataset instances synced successfully"
+                            successMessage = message
                         )
                         Log.d("DatasetInstancesVM", "Sync completed successfully")
                     },
                     onFailure = { error ->
                         Log.e("DatasetInstancesVM", "Sync failed", error)
+                        val errorMessage = if (uploadFirst) {
+                            "Upload succeeded but failed to download updates: ${error.message}"
+                        } else {
+                            error.message ?: "Failed to sync dataset instances"
+                        }
                         _state.value = _state.value.copy(
                             isSyncing = false,
-                            error = error.message ?: "Failed to sync dataset instances"
+                            error = errorMessage
                         )
                     }
                 )
             } catch (e: Exception) {
                 Log.e("DatasetInstancesVM", "Sync failed", e)
+                val errorMessage = if (uploadFirst) {
+                    "Sync failed during ${if (e.message?.contains("upload") == true) "upload" else "download"}: ${e.message}"
+                } else {
+                    e.message ?: "Failed to sync dataset instances"
+                }
                 _state.value = _state.value.copy(
                     isSyncing = false,
-                    error = e.message ?: "Failed to sync dataset instances"
+                    error = errorMessage
                 )
             }
         }
@@ -295,7 +344,7 @@ class DatasetInstancesViewModel @Inject constructor(
         _filterState.value = newFilterState
         val currentInstances = _state.value.instances
         _state.value = _state.value.copy(
-            filteredInstances = applyFilters(currentInstances)
+            filteredInstances = applyFilters(orderInstances(currentInstances))
         )
     }
 
@@ -328,7 +377,12 @@ class DatasetInstancesViewModel @Inject constructor(
                 CompletionStatus.COMPLETE -> instance.state == DatasetInstanceState.COMPLETE
                 CompletionStatus.INCOMPLETE -> instance.state == DatasetInstanceState.OPEN
             }
-            periodMatches && syncStatusMatches && completionMatches
+            val attributeOptionComboMatches = if (filter.attributeOptionCombo == null) {
+                true
+            } else {
+                instance.attributeOptionCombo == filter.attributeOptionCombo
+            }
+            periodMatches && syncStatusMatches && completionMatches && attributeOptionComboMatches
         }
     }
 
@@ -336,7 +390,88 @@ class DatasetInstancesViewModel @Inject constructor(
         _filterState.value = DatasetInstanceFilterState()
         val currentInstances = _state.value.instances
         _state.value = _state.value.copy(
-            filteredInstances = currentInstances
+            filteredInstances = orderInstances(currentInstances)
         )
+    }
+
+    private fun orderInstances(instances: List<DatasetInstance>): List<DatasetInstance> {
+        val attributeOptionCombos = _state.value.attributeOptionCombos
+        
+        // Check if default is the only or primary option
+        val hasNonDefaultOptions = attributeOptionCombos.any { 
+            !it.first.equals("default", ignoreCase = true) 
+        }
+        
+        return if (hasNonDefaultOptions) {
+            // Order by period first (descending), then by attribute option combo order within each period
+            instances.sortedWith(compareByDescending<DatasetInstance> { instance ->
+                parseDhis2PeriodToDate(instance.period.id)?.time ?: 0L
+            }.thenBy { instance ->
+                val index = attributeOptionCombos.indexOfFirst { it.first == instance.attributeOptionCombo }
+                if (index >= 0) index else Int.MAX_VALUE
+            })
+        } else {
+            // Fallback to period ordering only
+            instances.sortedByDescending { instance ->
+                parseDhis2PeriodToDate(instance.period.id)?.time ?: 0L
+            }
+        }
+    }
+
+    private fun parseDhis2PeriodToDate(periodId: String): java.util.Date? {
+        return try {
+            when {
+                // Yearly: 2023
+                Regex("^\\d{4}$").matches(periodId) -> {
+                    java.text.SimpleDateFormat("yyyy", java.util.Locale.ENGLISH).parse(periodId)
+                }
+                // Monthly: 202306
+                Regex("^\\d{6}$").matches(periodId) -> {
+                    java.text.SimpleDateFormat("yyyyMM", java.util.Locale.ENGLISH).parse(periodId)
+                }
+                // Daily: 2023-06-01
+                Regex("^\\d{4}-\\d{2}-\\d{2}$").matches(periodId) -> {
+                    java.text.SimpleDateFormat("yyyy-MM-dd", java.util.Locale.ENGLISH).parse(periodId)
+                }
+                // Weekly: 2023W23
+                Regex("^\\d{4}W\\d{1,2}$").matches(periodId) -> {
+                    val year = periodId.substring(0, 4).toInt()
+                    val week = periodId.substring(5).toInt()
+                    val cal = java.util.Calendar.getInstance(java.util.Locale.ENGLISH)
+                    cal.clear()
+                    cal.set(java.util.Calendar.YEAR, year)
+                    cal.set(java.util.Calendar.WEEK_OF_YEAR, week)
+                    cal.set(java.util.Calendar.DAY_OF_WEEK, java.util.Calendar.MONDAY)
+                    cal.time
+                }
+                // Quarterly: 2023Q2
+                Regex("^\\d{4}Q[1-4]$").matches(periodId) -> {
+                    val year = periodId.substring(0, 4).toInt()
+                    val quarter = periodId.substring(5).toInt()
+                    val month = (quarter - 1) * 3
+                    val cal = java.util.Calendar.getInstance(java.util.Locale.ENGLISH)
+                    cal.clear()
+                    cal.set(java.util.Calendar.YEAR, year)
+                    cal.set(java.util.Calendar.MONTH, month)
+                    cal.set(java.util.Calendar.DAY_OF_MONTH, 1)
+                    cal.time
+                }
+                // Six-monthly: 2023S1 or 2023S2
+                Regex("^\\d{4}S[1-2]$").matches(periodId) -> {
+                    val year = periodId.substring(0, 4).toInt()
+                    val semester = periodId.substring(5).toInt()
+                    val month = if (semester == 1) 0 else 6
+                    val cal = java.util.Calendar.getInstance(java.util.Locale.ENGLISH)
+                    cal.clear()
+                    cal.set(java.util.Calendar.YEAR, year)
+                    cal.set(java.util.Calendar.MONTH, month)
+                    cal.set(java.util.Calendar.DAY_OF_MONTH, 1)
+                    cal.time
+                }
+                else -> null
+            }
+        } catch (e: Exception) {
+            null
+        }
     }
 }

@@ -11,6 +11,9 @@ import com.ash.simpledataentry.domain.useCase.GetDatasetsUseCase
 import com.ash.simpledataentry.domain.useCase.LogoutUseCase
 import com.ash.simpledataentry.domain.useCase.SyncDatasetsUseCase
 import com.ash.simpledataentry.util.PeriodHelper
+import com.ash.simpledataentry.data.sync.BackgroundDataPrefetcher
+import com.ash.simpledataentry.data.SessionManager
+import com.ash.simpledataentry.data.repositoryImpl.SavedAccountRepository
 import dagger.hilt.android.lifecycle.HiltViewModel
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -34,7 +37,10 @@ class DatasetsViewModel @Inject constructor(
     private val getDatasetsUseCase: GetDatasetsUseCase,
     private val syncDatasetsUseCase: SyncDatasetsUseCase,
     private val filterDatasetsUseCase: FilterDatasetsUseCase,
-    private val logoutUseCase: LogoutUseCase
+    private val logoutUseCase: LogoutUseCase,
+    private val backgroundDataPrefetcher: BackgroundDataPrefetcher,
+    private val sessionManager: SessionManager,
+    private val savedAccountRepository: SavedAccountRepository
 ) : ViewModel() {
 
     private val _uiState = MutableStateFlow<DatasetsState>(DatasetsState.Loading)
@@ -42,6 +48,8 @@ class DatasetsViewModel @Inject constructor(
 
     init {
         loadDatasets()
+        // Start background prefetching after datasets are loaded
+        backgroundDataPrefetcher.startPrefetching()
     }
 
     fun loadDatasets() {
@@ -160,6 +168,8 @@ class DatasetsViewModel @Inject constructor(
     fun logout() {
         viewModelScope.launch {
             try {
+                // Stop background prefetching and clear caches
+                backgroundDataPrefetcher.clearAllCaches()
                 logoutUseCase()
 
             } catch (e: Exception) {
@@ -168,8 +178,29 @@ class DatasetsViewModel @Inject constructor(
                 )
             }
         }
-
     }
 
+    fun deleteAccount(context: android.content.Context) {
+        viewModelScope.launch {
+            try {
+                // Stop background prefetching and clear caches
+                backgroundDataPrefetcher.clearAllCaches()
+                
+                // Delete all saved accounts
+                savedAccountRepository.deleteAllAccounts()
+                
+                // Wipe all DHIS2 data and local data
+                sessionManager.wipeAllData(context)
+                
+                // Logout from current session
+                logoutUseCase()
+                
+            } catch (e: Exception) {
+                _uiState.value = DatasetsState.Error(
+                    message = "Failed to delete account: ${e.message}"
+                )
+            }
+        }
+    }
 
 }

@@ -29,11 +29,14 @@ import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.input.TextFieldValue
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
 import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.lifecycle.viewmodel.compose.viewModel
 import androidx.navigation.NavController
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
+import com.ash.simpledataentry.presentation.datasetInstances.SyncConfirmationDialog
+import com.ash.simpledataentry.presentation.datasetInstances.SyncOptions
 import org.hisp.dhis.mobile.ui.designsystem.component.Button
 import org.hisp.dhis.mobile.ui.designsystem.component.ButtonStyle
 import org.hisp.dhis.mobile.ui.designsystem.component.ColorStyle
@@ -84,7 +87,13 @@ fun EditEntryScreen(
     val snackbarHostState = remember { SnackbarHostState() }
     val coroutineScope = rememberCoroutineScope()
     val showSaveDialog = remember { mutableStateOf(false) }
+    val showSyncDialog = remember { mutableStateOf(false) }
     val pendingNavAction = remember { mutableStateOf<(() -> Unit)?>(null) }
+    
+    // Debug log for showSyncDialog state changes
+    LaunchedEffect(showSyncDialog.value) {
+        Log.d("EditEntryScreen", "showSyncDialog state changed to: ${showSyncDialog.value}")
+    }
     val context = LocalContext.current
     val focusManager = LocalFocusManager.current
     val listState = rememberLazyListState()
@@ -93,17 +102,10 @@ fun EditEntryScreen(
         viewModel.updateCurrentValue(value, dataValue.dataElement, dataValue.categoryOptionCombo)
     }
 
-    // --- Robust unsaved changes detection ---
-    val hasUnsavedChanges = remember(state.dataValues) {
-        // True if any dataValue's value is different from its original (not null, not blank, and not equal to comment or original value)
-        state.dataValues.any { dataValue ->
-            val original = dataValue.comment // Replace with actual original value if available
-            val value = dataValue.value
-            value != null && value.isNotBlank() && value != original
-        }
-    }
+    // --- Proper unsaved changes detection using ViewModel's dirty tracking ---
+    val hasUnsavedChanges = viewModel.hasUnsavedChanges()
 
-    val shouldShowSaveDialog = hasUnsavedChanges && !viewModel.wasSavePressed() && !state.saveInProgress
+    val shouldShowSaveDialog = hasUnsavedChanges && !state.saveInProgress
 
     // Intercept back press: only show dialog if shouldShowSaveDialog
     BackHandler(enabled = shouldShowSaveDialog) {
@@ -114,8 +116,8 @@ fun EditEntryScreen(
     // Intercept navigation via top bar back button: only show dialog if shouldShowSaveDialog
     val baseScreenNavIcon: @Composable (() -> Unit) = {
         IconButton(onClick = {
-            if (state.saveInProgress || viewModel.wasSavePressed()) {
-                // Block navigation while saving or after save pressed
+            if (state.saveInProgress) {
+                // Only block navigation while actively saving
                 return@IconButton
             }
             if (hasUnsavedChanges) {
@@ -143,8 +145,6 @@ fun EditEntryScreen(
                     showSaveDialog.value = false
                     viewModel.saveAllDataValues(context)
                     pendingNavAction.value?.invoke()
-                    // Reset save pressed after navigation
-                    viewModel.resetSaveFeedback()
                 }) { Text("Save") }
             },
             dismissButton = {
@@ -154,13 +154,68 @@ fun EditEntryScreen(
                         // Discard: clear drafts/dirty values, then navigate
                         viewModel.clearDraftsForCurrentInstance()
                         pendingNavAction.value?.invoke()
-                        // Reset save pressed after navigation
-                        viewModel.resetSaveFeedback()
                     }) { Text("Discard") }
                     TextButton(onClick = {
                         showSaveDialog.value = false
                     }) { Text("Cancel") }
                 }
+            }
+        )
+    }
+
+    // Sync confirmation dialog - using the same one as datasetInstances
+    if (showSyncDialog.value) {
+        Log.d("EditEntryScreen", "Rendering SyncConfirmationDialog! uploadLocalData: ${state.localDraftCount > 0}, localInstanceCount: ${state.localDraftCount}")
+        SyncConfirmationDialog(
+            syncOptions = SyncOptions(
+                uploadLocalData = state.localDraftCount > 0,
+                localInstanceCount = state.localDraftCount
+            ),
+            onConfirm = { uploadFirst ->
+                Log.d("EditEntryScreen", "SyncConfirmationDialog onConfirm called with uploadFirst: $uploadFirst")
+                viewModel.syncDataEntry(uploadFirst)
+                showSyncDialog.value = false
+                Log.d("EditEntryScreen", "showSyncDialog set to false after confirm")
+            },
+            onDismiss = { 
+                Log.d("EditEntryScreen", "SyncConfirmationDialog onDismiss called")
+                showSyncDialog.value = false 
+                Log.d("EditEntryScreen", "showSyncDialog set to false after dismiss")
+            }
+        )
+    }
+
+    // Validation result dialog for completion
+    state.validationSummary?.let { validationSummary ->
+        ValidationResultDialog(
+            validationSummary = validationSummary,
+            showCompletionOption = true,
+            onComplete = {
+                viewModel.completeDatasetAfterValidation { success, message ->
+                    coroutineScope.launch {
+                        if (success) {
+                            snackbarHostState.showSnackbar(message ?: "Dataset marked as complete.")
+                        } else {
+                            snackbarHostState.showSnackbar(message ?: "Failed to mark as complete.")
+                        }
+                    }
+                }
+                viewModel.clearValidationResult()
+            },
+            onCompleteAnyway = {
+                viewModel.completeDatasetAfterValidation { success, message ->
+                    coroutineScope.launch {
+                        if (success) {
+                            snackbarHostState.showSnackbar(message ?: "Dataset marked as complete (validation warnings ignored).")
+                        } else {
+                            snackbarHostState.showSnackbar(message ?: "Failed to mark as complete.")
+                        }
+                    }
+                }
+                viewModel.clearValidationResult()
+            },
+            onDismiss = {
+                viewModel.clearValidationResult()
             }
         )
     }
@@ -223,6 +278,22 @@ fun EditEntryScreen(
         }
     }
 
+    // Handle sync success messages
+    LaunchedEffect(state.successMessage) {
+        state.successMessage?.let {
+            snackbarHostState.showSnackbar(it)
+            viewModel.clearMessages()
+        }
+    }
+
+    // Handle sync error messages
+    LaunchedEffect(state.error) {
+        state.error?.let {
+            snackbarHostState.showSnackbar(it)
+            viewModel.clearMessages()
+        }
+    }
+
     LaunchedEffect(state.currentSectionIndex, state.dataValues) {
         if (state.dataValues.isNotEmpty() && state.totalSections > 0 && state.currentSectionIndex != -1) { // Check for != -1
             coroutineScope.launch {
@@ -261,13 +332,13 @@ fun EditEntryScreen(
             // Add sync button to top bar
             IconButton(
                 onClick = {
-                    coroutineScope.launch {
-                        viewModel.syncCurrentEntryForm()
-                    }
+                    Log.d("EditEntryScreen", "Sync button clicked! Current isSyncing: ${state.isSyncing}, localDraftCount: ${state.localDraftCount}")
+                    showSyncDialog.value = true
+                    Log.d("EditEntryScreen", "showSyncDialog set to true")
                 },
-                enabled = !state.isLoading
+                enabled = !state.isSyncing
             ) {
-                if (state.isLoading) {
+                if (state.isSyncing) {
                     CircularProgressIndicator(modifier = Modifier.size(24.dp), strokeWidth = 2.dp)
                 } else {
                     Icon(
@@ -280,23 +351,19 @@ fun EditEntryScreen(
             // Add checkmark for completion
             IconButton(
                 onClick = {
-                    viewModel.markDatasetComplete { success, error ->
-                        coroutineScope.launch {
-                            if (success) {
-                                snackbarHostState.showSnackbar("Dataset marked as complete.")
-                            } else {
-                                snackbarHostState.showSnackbar(error ?: "Failed to mark as complete.")
-                            }
-                        }
-                    }
+                    viewModel.startValidationForCompletion()
                 },
-                enabled = !state.isLoading && !state.isCompleted
+                enabled = !state.isLoading && !state.isCompleted && !state.isValidating
             ) {
-                Icon(
-                    imageVector = Icons.Default.Check,
-                    contentDescription = "Mark Complete",
-                    tint = if (state.isCompleted) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurface
-                )
+                if (state.isValidating) {
+                    CircularProgressIndicator(modifier = Modifier.size(24.dp), strokeWidth = 2.dp)
+                } else {
+                    Icon(
+                        imageVector = Icons.Default.Check,
+                        contentDescription = "Mark Complete",
+                        tint = if (state.isCompleted) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurface
+                    )
+                }
             }
         }
     ) {
@@ -327,14 +394,12 @@ fun EditEntryScreen(
                 }
             } else {
 
-                val sections = remember(state.dataValues) { // Memoize to avoid recalculation
-                    state.dataValues.groupBy { it.sectionName }.toList()
-                }
                 Column(
                     modifier = Modifier
                         .fillMaxSize()
                         .background(MaterialTheme.colorScheme.background)
                 ) {
+                    
                     if (state.dataValues.isEmpty()) {
                         Text(
                             text = "No data elements found for this dataset/period/org unit.",
@@ -342,8 +407,6 @@ fun EditEntryScreen(
                             modifier = Modifier.align(Alignment.CenterHorizontally)
                         )
                     } else {
-                        val groupedValues = state.dataValues.groupBy { it.sectionName }
-                        val categoryComboStructures = state.categoryComboStructures
                         val bringIntoViewRequester = remember { BringIntoViewRequester() }
                         val coroutineScope = rememberCoroutineScope()
                         val listState = rememberLazyListState()
@@ -354,31 +417,48 @@ fun EditEntryScreen(
                             }
                         }
 
+                        // Data Element First Rendering (Default)
                         LazyColumn(
                             state = listState,
                             verticalArrangement = Arrangement.spacedBy(8.dp),
-                            modifier = Modifier.weight(1f) // Occupy available space
+                            modifier = Modifier.weight(1f)
                         ) {
-                            itemsIndexed(sections, key = { _, pair -> pair.first /* sectionName */ }) { index, (sectionName, values) ->
-                                // Section expansion is now driven by currentSectionIndex from ViewModel
-                                val sectionIsExpanded = index == state.currentSectionIndex // <-- DERIVE EXPANSION STATE
-                                val filledCount = values.count { !it.value.isNullOrBlank() }
-                                val totalCount = values.size
-                                // Section header
-
+                            // Render sections as top-level accordions with proper scrolling integration
+                            itemsIndexed(
+                                items = state.dataElementGroupedSections.entries.toList(),
+                                key = { _, (sectionName, _) -> "section_$sectionName" }
+                            ) { sectionIndex, (sectionName, elementGroups) ->
+                                // Create data element ordering map to preserve dataset section order
+                                val dataElementOrder = state.dataValues
+                                    .filter { it.sectionName == sectionName }
+                                    .groupBy { it.dataElement }
+                                    .keys
+                                    .mapIndexed { index, dataElement -> dataElement to index }
+                                    .toMap()
+                                val sectionIsExpanded = sectionIndex == state.currentSectionIndex
+                                // Count data elements that have any data entered (not individual fields)
+                                val elementsWithData = elementGroups.count { (_, dataValues) ->
+                                    dataValues.any { !it.value.isNullOrBlank() }
+                                }
+                                val totalElements = elementGroups.size
+                                val bringIntoViewRequester = remember { BringIntoViewRequester() }
                                 
+                                // Check if ALL data elements in this section have default category combinations
+                                val allElementsHaveDefaultCategories = elementGroups.values.all { dataValues ->
+                                    val firstDataValue = dataValues.firstOrNull()
+                                    val structure = firstDataValue?.let { 
+                                        state.categoryComboStructures[it.categoryOptionCombo] 
+                                    } ?: emptyList()
+                                    structure.isEmpty() || (structure.size == 1 && structure[0].first.lowercase().contains("default"))
+                                }
+                                
+                                // Section Header Accordion
                                 Surface(
                                     modifier = Modifier
                                         .fillMaxWidth()
+                                        .heightIn(min = 72.dp, max = 96.dp) // Allow some growth for long titles
                                         .clickable {
-
-                                            viewModel.setCurrentSectionIndex(index)
-                                            state.isExpandedSections.keys.forEach { key ->
-                                                if (key != sectionName && state.isExpandedSections[key] == true) {
-                                                    viewModel.toggleSection(key)
-                                                }
-                                            }
-                                            viewModel.toggleSection(sectionName)
+                                            viewModel.setCurrentSectionIndex(sectionIndex)
                                             if (!sectionIsExpanded) {
                                                 coroutineScope.launch {
                                                     bringIntoViewRequester.bringIntoView()
@@ -389,58 +469,178 @@ fun EditEntryScreen(
                                     shape = MaterialTheme.shapes.medium
                                 ) {
                                     Row(
-                                        modifier = Modifier.padding(16.dp),
+                                        modifier = Modifier
+                                            .padding(16.dp)
+                                            .bringIntoViewRequester(bringIntoViewRequester)
+                                            .fillMaxWidth(),
                                         horizontalArrangement = Arrangement.SpaceBetween,
                                         verticalAlignment = Alignment.CenterVertically
                                     ) {
-                                        Row(verticalAlignment = Alignment.CenterVertically) {
+                                        Row(
+                                            modifier = Modifier.weight(1f),
+                                            verticalAlignment = Alignment.CenterVertically
+                                        ) {
                                             Text(
                                                 text = sectionName,
                                                 style = MaterialTheme.typography.titleMedium,
-                                                fontWeight = FontWeight.Bold
+                                                fontWeight = FontWeight.Bold,
+                                                maxLines = 2,
+                                                overflow = TextOverflow.Ellipsis,
+                                                lineHeight = 20.sp, // Explicit line height for consistency
+                                                modifier = Modifier.weight(1f, fill = false)
                                             )
                                             Spacer(modifier = Modifier.width(8.dp))
                                             Text(
-                                                text = "($filledCount/$totalCount)",
+                                                text = "($elementsWithData/$totalElements elements)",
                                                 style = MaterialTheme.typography.bodyMedium,
-                                                color = MaterialTheme.colorScheme.onPrimaryContainer
+                                                color = MaterialTheme.colorScheme.onPrimaryContainer,
+                                                maxLines = 1
                                             )
                                         }
                                         Icon(
                                             imageVector = Icons.Default.KeyboardArrowDown,
                                             contentDescription = "Expand/Collapse Section",
-                                            modifier = Modifier.rotate(if (sectionIsExpanded) 180f else 0f)
+                                            modifier = Modifier
+                                                .rotate(if (sectionIsExpanded) 180f else 0f)
+                                                .size(24.dp)
                                         )
                                     }
                                 }
+                                
+                                // Section Content
                                 AnimatedVisibility(visible = sectionIsExpanded) {
-                                    Column(modifier = Modifier
-                                        .fillMaxWidth()
-                                        .bringIntoViewRequester(bringIntoViewRequester)) {
-                                        // --- STEP 2: Group by category combo structure ---
-                                        val structureGroups = values.groupBy { dataValue ->
-                                            val structure = categoryComboStructures[dataValue.categoryOptionCombo]
-                                            structure?.joinToString(", ") { cat ->
-                                                val options = cat.second.joinToString("/") { it.second }
-                                                "${cat.first}: $options"
-                                            } ?: "Default"
-                                        }
-                                        android.util.Log.d("EditEntryScreen", "Section '$sectionName' has ${structureGroups.size} structure groups: ${structureGroups.keys}")
-                                        structureGroups.forEach { (structureString, groupValues) ->
-                                            val structure = groupValues.firstOrNull()?.let { categoryComboStructures[it.categoryOptionCombo] } ?: emptyList()
-                                            val categoryOptionComboUid = groupValues.firstOrNull()?.categoryOptionCombo
-                                            val optionUidsToComboUidForGroup = state.optionUidsToComboUid[categoryOptionComboUid] ?: emptyMap()
-                                            CategoryAccordionRecursive(
-                                                categories = structure,
-                                                values = groupValues,
-                                                onValueChange = onValueChange,
-                                                optionUidsToComboUid = optionUidsToComboUidForGroup,
-                                                viewModel = viewModel,
-                                                parentPath = emptyList(),
-                                                expandedAccordions = expandedAccordions.value,
-                                                onToggle = onAccordionToggle
-                                            )
-                                            Spacer(modifier = Modifier.height(12.dp))
+                                    Column(
+                                        modifier = Modifier.fillMaxWidth(),
+                                        verticalArrangement = Arrangement.spacedBy(8.dp)
+                                    ) {
+                                        if (allElementsHaveDefaultCategories) {
+                                            // All elements have default categories - render as simple vertical list
+                                            Column(
+                                                modifier = Modifier
+                                                    .fillMaxWidth()
+                                                    .padding(horizontal = 16.dp),
+                                                verticalArrangement = Arrangement.spacedBy(8.dp)
+                                            ) {
+                                                elementGroups.entries
+                                                    .sortedBy { dataElementOrder[it.key] ?: Int.MAX_VALUE } // Sort by dataset section order
+                                                    .forEach { (_, dataValues) ->
+                                                        dataValues.forEach { dataValue ->
+                                                            DataValueField(
+                                                                dataValue = dataValue,
+                                                                onValueChange = { value -> onValueChange(value, dataValue) },
+                                                                viewModel = viewModel
+                                                            )
+                                                        }
+                                                    }
+                                            }
+                                        } else {
+                                            // Mixed or non-default categories - render data element accordions
+                                            Column(
+                                                modifier = Modifier
+                                                    .fillMaxWidth()
+                                                    .padding(horizontal = 8.dp),
+                                                verticalArrangement = Arrangement.spacedBy(8.dp)
+                                            ) {
+                                                elementGroups.entries
+                                                    .sortedBy { dataElementOrder[it.key] ?: Int.MAX_VALUE } // Sort by dataset section order
+                                                    .forEach { (dataElement, dataValues) ->
+                                                        val hasAnyData = dataValues.any { !it.value.isNullOrBlank() }
+                                                        val elementKey = "de_$sectionName$dataElement"
+                                                        val isElementExpanded = expandedAccordions.value[listOf(elementKey)] != null
+                                                        
+                                                        // Check if this data element has default category
+                                                        val firstDataValue = dataValues.firstOrNull()
+                                                        val structure = firstDataValue?.let { 
+                                                            state.categoryComboStructures[it.categoryOptionCombo] 
+                                                        } ?: emptyList()
+                                                        val isDefaultCategoryCombo = structure.isEmpty() || 
+                                                            (structure.size == 1 && structure[0].first.lowercase().contains("default"))
+                                                        
+                                                        if (isDefaultCategoryCombo) {
+                                                            // Default category - render field directly without accordion
+                                                            dataValues.forEach { dataValue ->
+                                                                DataValueField(
+                                                                    dataValue = dataValue,
+                                                                    onValueChange = { value -> onValueChange(value, dataValue) },
+                                                                    viewModel = viewModel
+                                                                )
+                                                            }
+                                                        } else {
+                                                            // Non-default category - render as data element accordion
+                                                            Surface(
+                                                                modifier = Modifier
+                                                                    .fillMaxWidth()
+                                                                    .clickable {
+                                                                        onAccordionToggle(listOf(elementKey), "toggle")
+                                                                    },
+                                                                color = MaterialTheme.colorScheme.surface,
+                                                                shape = MaterialTheme.shapes.medium,
+                                                                tonalElevation = 2.dp
+                                                            ) {
+                                                                Column {
+                                                                    // Data Element Header
+                                                                    Row(
+                                                                        modifier = Modifier
+                                                                            .fillMaxWidth()
+                                                                            .heightIn(min = 64.dp, max = 64.dp) // Fixed height for uniformity
+                                                                            .padding(16.dp),
+                                                                        horizontalArrangement = Arrangement.SpaceBetween,
+                                                                        verticalAlignment = Alignment.CenterVertically
+                                                                    ) {
+                                                                        Column(modifier = Modifier.weight(1f)) {
+                                                                            Text(
+                                                                                text = dataValues.firstOrNull()?.dataElementName ?: dataElement,
+                                                                                style = MaterialTheme.typography.titleSmall,
+                                                                                fontWeight = FontWeight.Medium,
+                                                                                maxLines = 2,
+                                                                                overflow = TextOverflow.Ellipsis
+                                                                            )
+                                                                            Text(
+                                                                                text = if (hasAnyData) "Has data" else "No data",
+                                                                                style = MaterialTheme.typography.bodySmall,
+                                                                                color = if (hasAnyData) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurface.copy(alpha = 0.7f),
+                                                                                maxLines = 1
+                                                                            )
+                                                                        }
+                                                                        Icon(
+                                                                            imageVector = Icons.Default.KeyboardArrowDown,
+                                                                            contentDescription = "Expand/Collapse Data Element",
+                                                                            modifier = Modifier
+                                                                                .rotate(if (isElementExpanded) 180f else 0f)
+                                                                                .size(20.dp)
+                                                                        )
+                                                                    }
+                                                                    
+                                                                    // Data Element Content - Category Structure or Direct Fields
+                                                                    AnimatedVisibility(visible = isElementExpanded) {
+                                                                        Column(
+                                                                            modifier = Modifier
+                                                                                .fillMaxWidth()
+                                                                                .padding(horizontal = 16.dp)
+                                                                                .padding(bottom = 16.dp),
+                                                                            verticalArrangement = Arrangement.spacedBy(8.dp)
+                                                                        ) {
+                                                                            val sortedCategories = sortCategoriesByOptionCount(structure)
+                                                                            val categoryOptionComboUid = firstDataValue?.categoryOptionCombo
+                                                                            val optionUidsToComboUidForGroup = state.optionUidsToComboUid[categoryOptionComboUid] ?: emptyMap()
+                                                                            
+                                                                            CategoryAccordionRecursiveWithFields(
+                                                                                categories = sortedCategories,
+                                                                                values = dataValues.filter { it.dataElement == dataElement },
+                                                                                onValueChange = onValueChange,
+                                                                                optionUidsToComboUid = optionUidsToComboUidForGroup,
+                                                                                viewModel = viewModel,
+                                                                                parentPath = listOf(elementKey),
+                                                                                expandedAccordions = expandedAccordions.value,
+                                                                                onToggle = onAccordionToggle
+                                                                            )
+                                                                        }
+                                                                    }
+                                                                }
+                                                            }
+                                                        }
+                                                    }
+                                            }
                                         }
                                     }
                                 }
@@ -651,6 +851,7 @@ private fun CategoryAccordion(
         Surface(
             modifier = Modifier
                 .fillMaxWidth()
+                .heightIn(min = 56.dp, max = 56.dp) // Fixed height for uniformity
                 .clickable {
                     onToggleExpand()
                     if (!expanded) {
@@ -663,19 +864,26 @@ private fun CategoryAccordion(
             shape = MaterialTheme.shapes.small
         ) {
             Row(
-                modifier = Modifier.padding(12.dp),
+                modifier = Modifier
+                    .padding(12.dp)
+                    .fillMaxHeight(),
                 horizontalArrangement = Arrangement.SpaceBetween,
                 verticalAlignment = Alignment.CenterVertically
             ) {
                 Text(
                     text = header,
                     style = MaterialTheme.typography.titleSmall,
-                    fontWeight = FontWeight.Medium
+                    fontWeight = FontWeight.Medium,
+                    maxLines = 2,
+                    overflow = TextOverflow.Ellipsis,
+                    modifier = Modifier.weight(1f)
                 )
                 Icon(
                     imageVector = Icons.Default.KeyboardArrowDown,
                     contentDescription = "Expand/Collapse Category",
-                    modifier = Modifier.rotate(if (expanded) 180f else 0f)
+                    modifier = Modifier
+                        .rotate(if (expanded) 180f else 0f)
+                        .size(20.dp)
                 )
             }
         }
@@ -942,6 +1150,7 @@ fun CategoryGroup(
         Surface(
             modifier = Modifier
                 .fillMaxWidth()
+                .heightIn(min = 56.dp, max = 56.dp) // Fixed height for uniformity
                 .clickable(
                     interactionSource = remember { MutableInteractionSource() },
                     indication = ripple(
@@ -954,19 +1163,26 @@ fun CategoryGroup(
             shape = MaterialTheme.shapes.small
         ) {
             Row(
-                modifier = Modifier.padding(12.dp),
+                modifier = Modifier
+                    .padding(12.dp)
+                    .fillMaxHeight(),
                 horizontalArrangement = Arrangement.SpaceBetween,
                 verticalAlignment = Alignment.CenterVertically
             ) {
                 Text(
                     text = categoryGroup,
                     style = MaterialTheme.typography.titleSmall,
-                    fontWeight = FontWeight.Medium
+                    fontWeight = FontWeight.Medium,
+                    maxLines = 2,
+                    overflow = TextOverflow.Ellipsis,
+                    modifier = Modifier.weight(1f)
                 )
                 Icon(
                     imageVector = Icons.Default.KeyboardArrowDown,
                     contentDescription = "Expand/Collapse Category",
-                    modifier = Modifier.rotate(categoryRotationState)
+                    modifier = Modifier
+                        .rotate(categoryRotationState)
+                        .size(20.dp)
                 )
             }
         }
@@ -995,6 +1211,7 @@ fun DataValueField(
     dataValue: DataValue,
     onValueChange: (String) -> Unit,
     viewModel: DataEntryViewModel,
+    enabled: Boolean = true
 ) {
     Log.d(
         "DataValueField",
@@ -1012,6 +1229,14 @@ fun DataValueField(
         modifier = Modifier
             .fillMaxWidth()
             .padding(horizontal = 16.dp, vertical = 4.dp)
+            .let { base ->
+                if (!enabled) {
+                    base.background(
+                        MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f),
+                        MaterialTheme.shapes.small
+                    )
+                } else base
+            }
     ) {
         when (dataValue.dataEntryType) {
             DataEntryType.YES_NO -> {
@@ -1024,14 +1249,16 @@ fun DataValueField(
                         style = if (dataValue.value == "true") ButtonStyle.FILLED else ButtonStyle.OUTLINED,
                         colorStyle = ColorStyle.DEFAULT,
                         modifier = Modifier.weight(1f),
-                        onClick = { onValueChange("true") }
+                        enabled = enabled,
+                        onClick = { if (enabled) onValueChange("true") }
                     )
                     Button(
                         text = "No",
                         style = if (dataValue.value == "false") ButtonStyle.FILLED else ButtonStyle.OUTLINED,
                         colorStyle = ColorStyle.DEFAULT,
                         modifier = Modifier.weight(1f),
-                        onClick = { onValueChange("false") }
+                        enabled = enabled,
+                        onClick = { if (enabled) onValueChange("false") }
                     )
                 }
             }
@@ -1041,14 +1268,15 @@ fun DataValueField(
             DataEntryType.NEGATIVE_INTEGER -> {
                 InputNumber(
                     title = dataValue.dataElementName,
-                    state = when (dataValue.validationState) {
-                        ValidationState.ERROR -> InputShellState.ERROR
-                        ValidationState.WARNING -> InputShellState.WARNING
-                        ValidationState.VALID -> InputShellState.UNFOCUSED
+                    state = when {
+                        !enabled -> InputShellState.DISABLED
+                        dataValue.validationState == ValidationState.ERROR -> InputShellState.ERROR
+                        dataValue.validationState == ValidationState.WARNING -> InputShellState.WARNING
+                        else -> InputShellState.UNFOCUSED
                     },
                     inputTextFieldValue = fieldState,
                     onValueChanged = { newValue -> 
-                        if (newValue != null) viewModel.onFieldValueChange(newValue, dataValue)
+                        if (newValue != null && enabled) viewModel.onFieldValueChange(newValue, dataValue)
                     },
                     modifier = Modifier
                         .fillMaxWidth()
@@ -1058,14 +1286,15 @@ fun DataValueField(
             DataEntryType.PERCENTAGE -> {
                 InputText(
                     title = dataValue.dataElementName,
-                    state = when (dataValue.validationState) {
-                        ValidationState.ERROR -> InputShellState.ERROR
-                        ValidationState.WARNING -> InputShellState.WARNING
-                        ValidationState.VALID -> InputShellState.UNFOCUSED
+                    state = when {
+                        !enabled -> InputShellState.DISABLED
+                        dataValue.validationState == ValidationState.ERROR -> InputShellState.ERROR
+                        dataValue.validationState == ValidationState.WARNING -> InputShellState.WARNING
+                        else -> InputShellState.UNFOCUSED
                     },
                     inputTextFieldValue = fieldState,
                     onValueChanged = { newValue -> 
-                        if (newValue != null) viewModel.onFieldValueChange(newValue, dataValue)
+                        if (newValue != null && enabled) viewModel.onFieldValueChange(newValue, dataValue)
                     },
                     modifier = Modifier
                         .fillMaxWidth()
@@ -1075,14 +1304,15 @@ fun DataValueField(
             else -> {
                 InputText(
                     title = dataValue.dataElementName,
-                    state = when (dataValue.validationState) {
-                        ValidationState.ERROR -> InputShellState.ERROR
-                        ValidationState.WARNING -> InputShellState.WARNING
-                        ValidationState.VALID -> InputShellState.UNFOCUSED
+                    state = when {
+                        !enabled -> InputShellState.DISABLED
+                        dataValue.validationState == ValidationState.ERROR -> InputShellState.ERROR
+                        dataValue.validationState == ValidationState.WARNING -> InputShellState.WARNING
+                        else -> InputShellState.UNFOCUSED
                     },
                     inputTextFieldValue = fieldState,
                     onValueChanged = { newValue -> 
-                        if (newValue != null) viewModel.onFieldValueChange(newValue, dataValue)
+                        if (newValue != null && enabled) viewModel.onFieldValueChange(newValue, dataValue)
                     },
                     modifier = Modifier
                         .fillMaxWidth()
@@ -1611,3 +1841,193 @@ fun CategoryAccordionRecursive(
         }
     }
 }
+
+
+/**
+ * Enhanced recursive accordion component that renders actual data value fields at the final category level.
+ * This ensures entry fields are displayed when category accordions are opened.
+ */
+@Composable
+fun CategoryAccordionRecursiveWithFields(
+    categories: List<Pair<String, List<Pair<String, String>>>>,
+    values: List<DataValue>,
+    onValueChange: (String, DataValue) -> Unit,
+    optionUidsToComboUid: Map<Set<String>, String>,
+    viewModel: DataEntryViewModel,
+    parentPath: List<String> = emptyList(),
+    expandedAccordions: Map<List<String>, String?>,
+    onToggle: (List<String>, String) -> Unit,
+    selectedOptions: Set<String> = emptySet()
+) {
+    if (categories.isEmpty()) {
+        // Base case: no more categories, render data value fields directly
+        Column(
+            modifier = Modifier.fillMaxWidth(),
+            verticalArrangement = Arrangement.spacedBy(4.dp)
+        ) {
+            values.forEach { dataValue ->
+                DataValueField(
+                    dataValue = dataValue,
+                    onValueChange = { value -> onValueChange(value, dataValue) },
+                    viewModel = viewModel
+                )
+            }
+        }
+        return
+    }
+    
+    val currentCategory = categories.first()
+    val restCategories = categories.drop(1)
+    
+    if (restCategories.isEmpty()) {
+        // FINAL CATEGORY LEVEL: Render data value fields for each option
+        if (currentCategory.second.size <= 3) {
+            // Few options: render side by side with fields
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(vertical = 8.dp),
+                horizontalArrangement = Arrangement.spacedBy(12.dp)
+            ) {
+                currentCategory.second.forEach { (optionUid, optionName) ->
+                    Column(modifier = Modifier.weight(1f)) {
+                        // Find matching data values for EXACT option combination
+                        val currentSelectionWithThisOption = selectedOptions + optionUid
+                        val expectedComboUid = optionUidsToComboUid[currentSelectionWithThisOption]
+                        val matchingValues = values.filter { dataValue ->
+                            // Use the exact combo mapping to find values for this specific combination
+                            dataValue.categoryOptionCombo == expectedComboUid
+                        }
+                        
+                        android.util.Log.d("CategoryAccordion", "Final level - Option: $optionName, Selected: $currentSelectionWithThisOption, Expected combo: $expectedComboUid, Matching: ${matchingValues.size}/${values.size}")
+                        
+                        Text(
+                            text = optionName,
+                            style = MaterialTheme.typography.labelLarge,
+                            fontWeight = FontWeight.SemiBold,
+                            modifier = Modifier.padding(bottom = 4.dp)
+                        )
+                        
+                        Column(
+                            modifier = Modifier.fillMaxWidth(),
+                            verticalArrangement = Arrangement.spacedBy(4.dp)
+                        ) {
+                            matchingValues.forEach { dataValue ->
+                                DataValueField(
+                                    dataValue = dataValue,
+                                    onValueChange = { value -> onValueChange(value, dataValue) },
+                                    viewModel = viewModel
+                                )
+                            }
+                        }
+                    }
+                }
+            }
+        } else {
+            // Many options: render as accordion with fields inside
+            Column(
+                modifier = Modifier.fillMaxWidth(),
+                verticalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                currentCategory.second.forEach { (optionUid, optionName) ->
+                    val currentPath = parentPath + listOf("cat_${currentCategory.first}_$optionUid")
+                    val expanded = expandedAccordions[currentPath] != null
+                    
+                    // Find matching data values for EXACT option combination
+                    val currentSelectionWithThisOption = selectedOptions + optionUid
+                    val expectedComboUid = optionUidsToComboUid[currentSelectionWithThisOption]
+                    val matchingValues = values.filter { dataValue ->
+                        // Use the exact combo mapping to find values for this specific combination
+                        dataValue.categoryOptionCombo == expectedComboUid
+                    }
+                    
+                    android.util.Log.d("CategoryAccordion", "Final accordion - Option: $optionName, Selected: $currentSelectionWithThisOption, Expected combo: $expectedComboUid, Matching: ${matchingValues.size}/${values.size}")
+                    
+                    CategoryAccordion(
+                        header = optionName,
+                        expanded = expanded,
+                        onToggleExpand = { onToggle(currentPath, "expanded") }
+                    ) {
+                        Column(
+                            modifier = Modifier.fillMaxWidth(),
+                            verticalArrangement = Arrangement.spacedBy(4.dp)
+                        ) {
+                            matchingValues.forEach { dataValue ->
+                                DataValueField(
+                                    dataValue = dataValue,
+                                    onValueChange = { value -> onValueChange(value, dataValue) },
+                                    viewModel = viewModel
+                                )
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    } else {
+        // INTERMEDIATE CATEGORY LEVELS: Continue recursion with nested accordions
+        Column(
+            modifier = Modifier.fillMaxWidth(),
+            verticalArrangement = Arrangement.spacedBy(8.dp)
+        ) {
+            currentCategory.second.forEach { (optionUid, optionName) ->
+                val currentPath = parentPath + listOf("cat_${currentCategory.first}_$optionUid")
+                val expanded = expandedAccordions[currentPath] != null
+                
+                // Filter values using consistent logic for N-category robustness
+                val currentSelectionWithThisOption = selectedOptions + optionUid
+                val filteredValues = values.filter { dataValue ->
+                    // Use the same exact matching approach as final level for consistency
+                    // This ensures the filtering is mathematically correct for any number of categories
+                    val comboStructure = viewModel.state.value.categoryComboStructures[dataValue.categoryOptionCombo]
+                    val comboOptions = comboStructure?.flatMap { it.second.map { option -> option.first } }?.toSet() ?: emptySet()
+                    
+                    // For intermediate levels: keep combinations that contain ALL our selected options
+                    // This will progressively filter down until final level has exact matches
+                    currentSelectionWithThisOption.all { it in comboOptions }
+                }
+                
+                android.util.Log.d("CategoryAccordion", "Intermediate level - Option: $optionName, Selected: $currentSelectionWithThisOption, Filtered: ${filteredValues.size}/${values.size}, Remaining categories: ${restCategories.size}")
+                
+                // Remove count as requested - just show option name
+                val headerText = optionName
+                
+                CategoryAccordion(
+                    header = headerText,
+                    expanded = expanded,
+                    onToggleExpand = { onToggle(currentPath, "expanded") }
+                ) {
+                    Column(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(vertical = 8.dp),
+                        verticalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        CategoryAccordionRecursiveWithFields(
+                            categories = restCategories,
+                            values = filteredValues,
+                            onValueChange = onValueChange,
+                            optionUidsToComboUid = optionUidsToComboUid,
+                            viewModel = viewModel,
+                            parentPath = currentPath,
+                            expandedAccordions = expandedAccordions,
+                            onToggle = onToggle,
+                            selectedOptions = currentSelectionWithThisOption
+                        )
+                    }
+                }
+            }
+        }
+    }
+}
+
+/**
+ * Sorts categories by option count (descending) to determine precedence.
+ * Categories with more options take precedence over position in combination definition.
+ */
+private fun sortCategoriesByOptionCount(
+    categories: List<Pair<String, List<Pair<String, String>>>>
+): List<Pair<String, List<Pair<String, String>>>> {
+    return categories.sortedByDescending { it.second.size }
+}
+

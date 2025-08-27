@@ -25,7 +25,8 @@ import kotlinx.coroutines.withContext
 class DatasetsRepositoryImpl(
     private val sessionManager: SessionManager,
     private val datasetDao: DatasetDao,
-    private val context: android.content.Context
+    private val context: android.content.Context,
+    private val datasetInstancesRepository: com.ash.simpledataentry.domain.repository.DatasetInstancesRepository
 ) : DatasetsRepository {
 
     private val TAG = "DatasetsRepositoryImpl"
@@ -37,7 +38,11 @@ class DatasetsRepositoryImpl(
     override fun getDatasets(): Flow<List<Dataset>> = flow {
         val local = withContext(Dispatchers.IO) { datasetDao.getAll() }
         if (local.isNotEmpty()) {
-            emit(local.map { it.toDomainModel() })
+            val datasetsWithCounts = local.map { entity ->
+                val instanceCount = datasetInstancesRepository.getDatasetInstanceCount(entity.id)
+                entity.toDomainModel().copy(instanceCount = instanceCount)
+            }
+            emit(datasetsWithCounts)
             return@flow
         }
         // If Room is empty, try to fetch from SDK if online
@@ -54,7 +59,9 @@ class DatasetsRepositoryImpl(
                     .blockingGet()
                     .map { dataSet ->
                         Log.d(TAG, "Processing dataset: ${dataSet.uid()}")
-                        dataSet.toDomainModel()
+                        val dataset = dataSet.toDomainModel()
+                        val instanceCount = datasetInstancesRepository.getDatasetInstanceCount(dataset.id)
+                        dataset.copy(instanceCount = instanceCount)
                     }
                 // Update Room
                 withContext(Dispatchers.IO) {
@@ -90,7 +97,11 @@ class DatasetsRepositoryImpl(
             val datasets = d2.dataSetModule()
                 .dataSets()
                 .blockingGet()
-                .map { it.toDomainModel() }
+                .map { dataSet ->
+                    val dataset = dataSet.toDomainModel()
+                    val instanceCount = datasetInstancesRepository.getDatasetInstanceCount(dataset.id)
+                    dataset.copy(instanceCount = instanceCount)
+                }
 
             Log.d(TAG, "Found ${datasets.size} datasets after filtering")
             Result.success(datasets)

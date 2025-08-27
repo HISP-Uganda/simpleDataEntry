@@ -28,4 +28,16 @@ interface DataValueDraftDao {
 
     @Query("SELECT * FROM data_value_drafts")
     suspend fun getAllDrafts(): List<DataValueDraftEntity>
+    
+    @Query("""
+        SELECT DISTINCT datasetId, period, orgUnit, attributeOptionCombo, 
+               MAX(lastModified) as lastModified
+        FROM data_value_drafts 
+        WHERE datasetId = :datasetId
+        GROUP BY datasetId, period, orgUnit, attributeOptionCombo
+    """)
+    suspend fun getDistinctDraftInstances(datasetId: String): List<DraftInstanceSummary>
+    
+    @Query("SELECT COUNT(*) FROM data_value_drafts WHERE datasetId = :datasetId AND period = :period AND orgUnit = :orgUnit AND attributeOptionCombo = :attributeOptionCombo")
+    suspend fun getDraftCountForInstance(datasetId: String, period: String, orgUnit: String, attributeOptionCombo: String): Int
 }

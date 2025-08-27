@@ -3,7 +3,7 @@ package com.ash.simpledataentry.domain.repository
 import com.ash.simpledataentry.domain.model.DataValue
 import com.ash.simpledataentry.domain.model.OrganisationUnit
 import com.ash.simpledataentry.domain.model.Period
-import com.ash.simpledataentry.domain.model.ValidationResult
+import com.ash.simpledataentry.domain.model.DataValueValidationResult
 import kotlinx.coroutines.flow.Flow
 
 interface DataEntryRepository {
@@ -29,10 +29,11 @@ interface DataEntryRepository {
         datasetId: String,
         dataElement: String,
         value: String
-    ): ValidationResult
+    ): DataValueValidationResult
 
     suspend fun getAvailablePeriods(datasetId: String): List<Period>
     suspend fun getUserOrgUnit(datasetId: String): OrganisationUnit
+    suspend fun getUserOrgUnits(datasetId: String): List<OrganisationUnit>
     suspend fun getDefaultAttributeOptionCombo(): String
     suspend fun getAttributeOptionCombos(datasetId: String): List<Pair<String, String>>
     suspend fun getCategoryComboStructure(categoryComboUid: String): List<Pair<String, List<Pair<String, String>>>>

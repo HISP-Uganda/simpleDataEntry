@@ -6,7 +6,7 @@ enum class ValidationState {
     WARNING
 }
 
-data class ValidationResult(
+data class DataValueValidationResult(
     val isValid: Boolean,
     val state: ValidationState,
     val message: String?
@@ -39,7 +39,7 @@ sealed class DataEntryValidation {
     data class MinValue(val value: Double, val message: String) : DataEntryValidation()
     data class MaxValue(val value: Double, val message: String) : DataEntryValidation()
     data class Pattern(val regex: String, val message: String) : DataEntryValidation()
-    data class Custom(val validator: (String?) -> ValidationResult) : DataEntryValidation()
+    data class Custom(val validator: (String?) -> DataValueValidationResult) : DataEntryValidation()
 }
 
 fun DataEntryType.getDefaultValidation(): Array<DataEntryValidation> {

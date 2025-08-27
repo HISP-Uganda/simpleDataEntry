@@ -24,12 +24,14 @@ import com.ash.simpledataentry.presentation.datasetInstances.DatasetInstancesScr
 import com.ash.simpledataentry.presentation.datasets.DatasetsScreen
 import com.ash.simpledataentry.presentation.issues.ReportIssuesScreen
 import com.ash.simpledataentry.presentation.login.LoginScreen
+import com.ash.simpledataentry.presentation.settings.SettingsScreen
 
 sealed class Screen(val route: String) {
 
     data object LoginScreen : Screen("login")  // Added login screen
     data object DatasetsScreen : Screen("datasets")
     data class DatasetInstanceScreen(val datasetId: String, val datasetName: String) : Screen("instances")
+    data object SettingsScreen : Screen("settings")
     data object AboutScreen : Screen("about")
     data object ReportIssuesScreen : Screen("report_issues")
 //    data object CreateNewEntryScreen : Screen("createnewinstance")
@@ -124,6 +126,10 @@ fun AppNavigation(
                 orgUnit = orgUnit,
                 attributeOptionCombo = attributeOptionCombo
             )
+        }
+
+        composable(Screen.SettingsScreen.route) {
+            SettingsScreen(navController = navController)
         }
 
         composable(Screen.AboutScreen.route) {

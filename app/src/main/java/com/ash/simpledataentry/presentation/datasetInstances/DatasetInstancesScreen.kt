@@ -40,7 +40,16 @@ import org.hisp.dhis.mobile.ui.designsystem.theme.TextColor
 import androidx.compose.ui.graphics.Color
 import kotlinx.coroutines.coroutineScope
 import androidx.compose.material.icons.filled.CheckCircle
+import androidx.compose.material.icons.filled.Edit
 import androidx.compose.runtime.rememberCoroutineScope
+
+// Status information for better UI presentation
+data class StatusInfo(
+    val text: String,
+    val icon: androidx.compose.ui.graphics.vector.ImageVector,
+    val color: androidx.compose.ui.graphics.Color,
+    val backgroundColor: androidx.compose.ui.graphics.Color
+)
 
 @SuppressLint("SuspiciousIndentation")
 @OptIn(ExperimentalMaterial3Api::class)
@@ -60,9 +69,15 @@ fun DatasetInstancesScreen(
     var bulkActionMessage by remember { mutableStateOf<String?>(null) }
     var bulkActionSuccess by remember { mutableStateOf<Boolean?>(null) }
     var showFilterDialog by remember { mutableStateOf(false) }
+    var showSyncDialog by remember { mutableStateOf(false) }
 
     LaunchedEffect(datasetId) {
         viewModel.setDatasetId(datasetId)
+    }
+
+    // Refresh data when the screen is resumed (e.g., coming back from EditEntryScreen)
+    LaunchedEffect(Unit) {
+        viewModel.refreshData()
     }
 
     LaunchedEffect(state.error) {
@@ -94,11 +109,11 @@ fun DatasetInstancesScreen(
                 Icon(
                     imageVector = Icons.Default.FilterList,
                     contentDescription = "Filter",
-                    tint = if (filterState != DatasetInstanceFilterState()) MaterialTheme.colorScheme.primary else TextColor.OnSurface
+                    tint = if (filterState.hasActiveFilters()) MaterialTheme.colorScheme.primary else TextColor.OnSurface
                 )
             }
             IconButton(
-                onClick = { viewModel.manualRefresh() },
+                onClick = { showSyncDialog = true },
                 enabled = !state.isLoading && !state.isSyncing && !bulkMode
             ) {
                 Icon(
@@ -148,10 +163,7 @@ fun DatasetInstancesScreen(
                     contentPadding = PaddingValues(16.dp),
                     verticalArrangement = Arrangement.spacedBy(8.dp)
                 ) {
-                    val sortedInstances = state.filteredInstances.sortedByDescending { instance ->
-                        parseDhis2PeriodToDate(instance.period.id)?.time ?: 0L
-                    }
-                    items(sortedInstances) { instance ->
+                    items(state.filteredInstances) { instance ->
                         var isLoading by remember { mutableStateOf(false) }
                         val formattedDate = try {
                             instance.lastUpdated?.let { dateStr ->
@@ -171,19 +183,39 @@ fun DatasetInstancesScreen(
                         val periodText = instance.period.toString().replace("Period(id=", "").replace(")", "")
                         val attrComboName = state.attributeOptionCombos.find { it.first == instance.attributeOptionCombo }?.second ?: instance.attributeOptionCombo
                         val showAttrCombo = !attrComboName.equals("default", ignoreCase = true)
+                        val isDraftInstance = instance.id.startsWith("draft-")
+                        val isComplete = instance.state == DatasetInstanceState.COMPLETE
+                        val isSynced = isComplete && !isDraftInstance
+                        
+                        // Build status text
+                        val statusText = buildString {
+                            if (isDraftInstance) {
+                                append("Draft - not yet synced")
+                            } else if (isComplete) {
+                                append("Complete")
+                                if (isSynced) append(" • Synced")
+                            } else {
+                                append("Incomplete")
+                                if (!isSynced) append(" • Not synced")
+                            }
+                        }
                         Row(
                             verticalAlignment = Alignment.CenterVertically,
                             modifier = Modifier.fillMaxWidth()
                         ) {
                             if (bulkMode) {
                                 Checkbox(
-                                    checked = selectedInstances.contains(instance.id) || instance.state == DatasetInstanceState.COMPLETE,
+                                    checked = selectedInstances.contains(instance.id) || isComplete,
                                     onCheckedChange = { checked ->
-                                        if (!state.isLoading && !state.isSyncing) {
+                                        if (!state.isLoading && !state.isSyncing && !isComplete) {
                                             viewModel.toggleInstanceSelection(instance.id)
                                         }
                                     },
-                                    enabled = !state.isLoading && !state.isSyncing
+                                    enabled = !state.isLoading && !state.isSyncing && !isComplete,
+                                    colors = CheckboxDefaults.colors(
+                                        checkedColor = if (isComplete) MaterialTheme.colorScheme.onSurface.copy(alpha = 0.38f) else MaterialTheme.colorScheme.primary,
+                                        uncheckedColor = if (isComplete) MaterialTheme.colorScheme.onSurface.copy(alpha = 0.38f) else MaterialTheme.colorScheme.onSurface
+                                    )
                                 )
                             }
                             Box(modifier = Modifier.weight(1f)) {
@@ -199,7 +231,7 @@ fun DatasetInstancesScreen(
                                                 modifier = Modifier.padding(0.dp)
                                             ),
                                             description = ListCardDescriptionModel(
-                                                text = if (isLoading) "Loading..." else "",
+                                                text = if (isLoading) "Loading..." else statusText,
                                                 modifier = Modifier
                                             ),
                                             additionalInfoColumnState = rememberAdditionalInfoColumnState(
@@ -235,15 +267,29 @@ fun DatasetInstancesScreen(
                                             }
                                         }
                                     )
-                                    if (!bulkMode && instance.state == DatasetInstanceState.COMPLETE) {
-                                        Icon(
-                                            imageVector = Icons.Default.CheckCircle,
-                                            contentDescription = "Completed",
-                                            tint = MaterialTheme.colorScheme.primary,
-                                            modifier = Modifier
-                                                .padding(start = 8.dp, end = 8.dp)
-                                                .size(28.dp)
-                                        )
+                                    if (!bulkMode) {
+                                        when {
+                                            instance.state == DatasetInstanceState.COMPLETE -> {
+                                                Icon(
+                                                    imageVector = Icons.Default.CheckCircle,
+                                                    contentDescription = "Completed",
+                                                    tint = MaterialTheme.colorScheme.primary,
+                                                    modifier = Modifier
+                                                        .padding(start = 8.dp, end = 8.dp)
+                                                        .size(28.dp)
+                                                )
+                                            }
+                                            isDraftInstance -> {
+                                                Icon(
+                                                    imageVector = Icons.Default.Edit,
+                                                    contentDescription = "Draft",
+                                                    tint = MaterialTheme.colorScheme.secondary,
+                                                    modifier = Modifier
+                                                        .padding(start = 8.dp, end = 8.dp)
+                                                        .size(24.dp)
+                                                )
+                                            }
+                                        }
                                     }
                                 }
                             }
@@ -321,14 +367,34 @@ fun DatasetInstancesScreen(
             }
         }
         
-        // Filter Dialog
-        if (showFilterDialog) {
+        // Filter Dialog - only show when data is loaded
+        if (showFilterDialog && !state.isLoading) {
             DatasetInstanceFilterDialog(
                 currentFilter = filterState,
+                attributeOptionCombos = state.attributeOptionCombos,
+                dataset = state.dataset,
                 onFilterChanged = { newFilter ->
                     viewModel.updateFilterState(newFilter)
                 },
+                onClearFilters = {
+                    viewModel.clearFilters()
+                },
                 onDismiss = { showFilterDialog = false }
+            )
+        }
+        
+        // Sync Dialog
+        if (showSyncDialog) {
+            SyncConfirmationDialog(
+                syncOptions = SyncOptions(
+                    uploadLocalData = state.localInstanceCount > 0,
+                    localInstanceCount = state.localInstanceCount
+                ),
+                onConfirm = { uploadFirst ->
+                    viewModel.syncDatasetInstances(uploadFirst)
+                    showSyncDialog = false
+                },
+                onDismiss = { showSyncDialog = false }
             )
         }
     }

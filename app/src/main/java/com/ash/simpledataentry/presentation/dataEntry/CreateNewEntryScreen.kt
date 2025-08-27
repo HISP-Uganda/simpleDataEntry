@@ -46,9 +46,11 @@ fun CreateNewEntryScreen(
 ) {
     var periods by remember { mutableStateOf<List<Period>>(emptyList()) }
     var selectedPeriod by remember { mutableStateOf("") }
-    var orgUnit by remember { mutableStateOf<OrganisationUnit?>(null) }
+    var orgUnits by remember { mutableStateOf<List<OrganisationUnit>>(emptyList()) }
+    var selectedOrgUnit by remember { mutableStateOf<OrganisationUnit?>(null) }
     var defaultAttributeOptionCombo by remember { mutableStateOf("") }
     var expandedPeriod by remember { mutableStateOf(false) }
+    var expandedOrgUnit by remember { mutableStateOf(false) }
     var isLoading by remember { mutableStateOf(true) }
     var error by remember { mutableStateOf<String?>(null) }
     var attributeOptionCombos by remember { mutableStateOf<List<Pair<String, String>>>(emptyList()) }
@@ -62,7 +64,8 @@ fun CreateNewEntryScreen(
             error = null
             viewModel.loadDataValues(datasetId, datasetName, "", "", "", isEditMode = false)
             periods = viewModel.getAvailablePeriods(datasetId)
-            orgUnit = viewModel.getUserOrgUnit(datasetId)
+            orgUnits = viewModel.getUserOrgUnits(datasetId) // Get multiple org units
+            selectedOrgUnit = orgUnits.firstOrNull() // Select first org unit by default
             defaultAttributeOptionCombo = viewModel.getDefaultAttributeOptionCombo()
             attributeOptionCombos = viewModel.getAttributeOptionCombos(datasetId)
             selectedAttributeOptionCombo = attributeOptionCombos.firstOrNull()?.first ?: ""
@@ -104,13 +107,36 @@ fun CreateNewEntryScreen(
                     modifier = Modifier.size(48.dp)
                 )
 
-                OutlinedTextField(
-                    value = orgUnit?.name ?: "No organization unit available",
-                    onValueChange = {},
-                    readOnly = true,
-                    label = { Text("Organization Unit") },
-                    modifier = Modifier.fillMaxWidth()
-                )
+                // Organization Unit Dropdown
+                ExposedDropdownMenuBox(
+                    expanded = expandedOrgUnit,
+                    onExpandedChange = { expandedOrgUnit = !expandedOrgUnit }
+                ) {
+                    OutlinedTextField(
+                        value = selectedOrgUnit?.name ?: "Select Organization Unit",
+                        onValueChange = {},
+                        readOnly = true,
+                        label = { Text("Organization Unit") },
+                        trailingIcon = { ExposedDropdownMenuDefaults.TrailingIcon(expanded = expandedOrgUnit) },
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .menuAnchor()
+                    )
+                    ExposedDropdownMenu(
+                        expanded = expandedOrgUnit,
+                        onDismissRequest = { expandedOrgUnit = false }
+                    ) {
+                        orgUnits.forEach { orgUnit ->
+                            DropdownMenuItem(
+                                text = { Text(orgUnit.name) },
+                                onClick = {
+                                    selectedOrgUnit = orgUnit
+                                    expandedOrgUnit = false
+                                }
+                            )
+                        }
+                    }
+                }
 
                 ExposedDropdownMenuBox(
                     expanded = expandedPeriod,
@@ -174,7 +200,7 @@ fun CreateNewEntryScreen(
                 }
             }
 
-            if (orgUnit != null && selectedPeriod.isNotEmpty() && selectedAttributeOptionCombo.isNotEmpty()) {
+            if (selectedOrgUnit != null && selectedPeriod.isNotEmpty() && selectedAttributeOptionCombo.isNotEmpty()) {
                 Box(
                     modifier = Modifier.fillMaxSize(),
                     contentAlignment = Alignment.BottomEnd
@@ -183,7 +209,7 @@ fun CreateNewEntryScreen(
                         onClick = {
                             val encodedDatasetName = java.net.URLEncoder.encode(datasetName, "UTF-8")
                             val encodedPeriod = java.net.URLEncoder.encode(selectedPeriod, "UTF-8")
-                            val encodedOrgUnit = java.net.URLEncoder.encode(orgUnit!!.id, "UTF-8")
+                            val encodedOrgUnit = java.net.URLEncoder.encode(selectedOrgUnit!!.id, "UTF-8")
                             val encodedAttributeOptionCombo = java.net.URLEncoder.encode(selectedAttributeOptionCombo, "UTF-8")
                             navController.navigate(
                                 "EditEntry/$datasetId/$encodedPeriod/$encodedOrgUnit/$encodedAttributeOptionCombo/$encodedDatasetName"

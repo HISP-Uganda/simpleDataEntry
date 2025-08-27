@@ -24,6 +24,8 @@ import androidx.compose.material3.IconButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Snackbar
 import androidx.compose.material3.Text
+import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.TextButton
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.ArrowDropDown
 import androidx.compose.material.icons.filled.Clear
@@ -73,8 +75,8 @@ fun LoginScreen(
     val snackbarHostState = remember { SnackbarHostState() }
     val coroutineScope = rememberCoroutineScope()
 
-    LaunchedEffect(state.isLoggedIn) {
-        if (state.isLoggedIn) {
+    LaunchedEffect(state.isLoggedIn, state.saveAccountOffered) {
+        if (state.isLoggedIn && !state.saveAccountOffered) {
             navController.navigate("datasets") {
                 popUpTo("login") { inclusive = true }
             }
@@ -120,6 +122,7 @@ fun LoginScreen(
         var username by rememberSaveable { mutableStateOf("") }
         var password by rememberSaveable { mutableStateOf("") }
         var showUrlDropdown by remember { mutableStateOf(false) }
+        var showAccountDropdown by remember { mutableStateOf(false) }
         var passwordVisible by remember { mutableStateOf(false) }
 
         val context = LocalContext.current
@@ -154,6 +157,64 @@ fun LoginScreen(
                 horizontalAlignment = Alignment.CenterHorizontally,
                 verticalArrangement = Arrangement.Center
             ) {
+                // Saved Account Selection (if any accounts exist)
+                if (state.savedAccounts.isNotEmpty()) {
+                    Box {
+                        OutlinedTextField(
+                            value = "", 
+                            onValueChange = { }, 
+                            label = { Text("Select Saved Account") },
+                            placeholder = { Text("Choose an account or enter manually") },
+                            readOnly = true,
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(bottom = 8.dp),
+                            trailingIcon = {
+                                IconButton(
+                                    onClick = { showAccountDropdown = !showAccountDropdown }
+                                ) {
+                                    Icon(
+                                        imageVector = Icons.Default.ArrowDropDown,
+                                        contentDescription = "Show saved accounts"
+                                    )
+                                }
+                            }
+                        )
+                        
+                        DropdownMenu(
+                            expanded = showAccountDropdown,
+                            onDismissRequest = { showAccountDropdown = false },
+                            modifier = Modifier.fillMaxWidth() // Make dropdown match field width
+                        ) {
+                            state.savedAccounts.forEach { account ->
+                                DropdownMenuItem(
+                                    text = { 
+                                        Column {
+                                            Text(
+                                                text = account.displayName,
+                                                style = MaterialTheme.typography.bodyMedium
+                                            )
+                                            Text(
+                                                text = "${account.username}@${account.serverUrl}",
+                                                style = MaterialTheme.typography.bodySmall,
+                                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                                            )
+                                        }
+                                    },
+                                    onClick = {
+                                        val (url, user, _) = viewModel.selectAccount(account)
+                                        serverUrl = url
+                                        username = user
+                                        showAccountDropdown = false
+                                    }
+                                )
+                            }
+                        }
+                    }
+                    
+                    Spacer(modifier = Modifier.height(8.dp))
+                }
+                
                 Box {
                     OutlinedTextField(
                         value = serverUrl,
@@ -330,6 +391,59 @@ fun LoginScreen(
                     }
                 }
             )
+            
         }
+    }
+
+    // Save Account Dialog (moved outside if/else)
+    if (state.saveAccountOffered && state.pendingCredentials != null) {
+        android.util.Log.d("LoginDebug", "About to show save account dialog")
+        
+        var displayName by remember { mutableStateOf("") }
+        
+        AlertDialog(
+            onDismissRequest = { 
+                android.util.Log.d("LoginDebug", "Dialog dismissed")
+                viewModel.dismissSaveAccountOffer() 
+            },
+            title = { Text("Save Account") },
+            text = {
+                Column {
+                    Text("Would you like to save these login credentials for quick access?")
+                    Spacer(modifier = Modifier.height(16.dp))
+                    OutlinedTextField(
+                        value = displayName,
+                        onValueChange = { displayName = it },
+                        label = { Text("Display Name") },
+                        placeholder = { Text("e.g., Work Account, Personal") },
+                        modifier = Modifier.fillMaxWidth()
+                    )
+                }
+            },
+            confirmButton = {
+                Button(
+                    onClick = {
+                        if (displayName.isNotBlank()) {
+                            val (serverUrl, username, password) = state.pendingCredentials!!
+                            android.util.Log.d("LoginDebug", "Saving account: $displayName")
+                            viewModel.saveAccount(displayName, serverUrl, username, password)
+                        }
+                    },
+                    enabled = displayName.isNotBlank()
+                ) {
+                    Text("Save")
+                }
+            },
+            dismissButton = {
+                TextButton(
+                    onClick = { 
+                        android.util.Log.d("LoginDebug", "Skip clicked")
+                        viewModel.dismissSaveAccountOffer() 
+                    }
+                ) {
+                    Text("Skip")
+                }
+            }
+        )
     }
 }

@@ -19,8 +19,17 @@ data class DatasetInstanceFilterState(
     val customToDate: Date? = null,
     val syncStatus: SyncStatus = SyncStatus.ALL,
     val completionStatus: CompletionStatus = CompletionStatus.ALL,
+    val attributeOptionCombo: String? = null,
     val searchQuery: String = ""
-)
+) {
+    fun hasActiveFilters(): Boolean {
+        return periodType != PeriodFilterType.ALL ||
+                syncStatus != SyncStatus.ALL ||
+                completionStatus != CompletionStatus.ALL ||
+                attributeOptionCombo != null ||
+                searchQuery.isNotBlank()
+    }
+}
 
 enum class PeriodFilterType {
     ALL,

@@ -21,6 +21,9 @@ import com.ash.simpledataentry.util.NetworkUtils
 import com.ash.simpledataentry.data.local.DataValueEntity
 import com.ash.simpledataentry.data.local.DataValueDao
 import com.ash.simpledataentry.presentation.datasets.DatasetsState.Success
+import com.ash.simpledataentry.data.cache.MetadataCacheService
+import com.ash.simpledataentry.data.sync.NetworkStateManager
+import com.ash.simpledataentry.data.sync.SyncQueueManager
 import javax.inject.Inject
 import kotlin.Pair
 import kotlin.Result
@@ -37,7 +40,10 @@ class DataEntryRepositoryImpl @Inject constructor(
     private val categoryOptionComboDao: CategoryOptionComboDao,
     private val organisationUnitDao: OrganisationUnitDao,
     private val context: android.content.Context,
-    private val dataValueDao: DataValueDao
+    private val dataValueDao: DataValueDao,
+    private val metadataCacheService: MetadataCacheService,
+    private val networkStateManager: NetworkStateManager,
+    private val syncQueueManager: SyncQueueManager
 ) : DataEntryRepository {
 
     private val d2 get() = sessionManager.getD2()!!
@@ -89,6 +95,57 @@ class DataEntryRepositoryImpl @Inject constructor(
 
         return rules
     }
+    
+    /**
+     * Convert string value type to DataEntryType enum
+     */
+    private fun getDataEntryTypeFromString(valueTypeString: String): DataEntryType {
+        return when (valueTypeString.uppercase()) {
+            "TEXT" -> DataEntryType.TEXT
+            "LONG_TEXT" -> DataEntryType.TEXT
+            "NUMBER" -> DataEntryType.NUMBER
+            "INTEGER" -> DataEntryType.INTEGER
+            "INTEGER_POSITIVE" -> DataEntryType.POSITIVE_INTEGER
+            "INTEGER_NEGATIVE" -> DataEntryType.NEGATIVE_INTEGER
+            "INTEGER_ZERO_OR_POSITIVE" -> DataEntryType.POSITIVE_INTEGER
+            "PERCENTAGE" -> DataEntryType.PERCENTAGE
+            "DATE" -> DataEntryType.DATE
+            "BOOLEAN" -> DataEntryType.YES_NO
+            "COORDINATE" -> DataEntryType.COORDINATES
+            else -> DataEntryType.TEXT
+        }
+    }
+    
+    /**
+     * Get validation rules from string value type
+     */
+    private fun getValidationRulesFromString(valueTypeString: String): List<ValidationRule> {
+        val rules = mutableListOf<ValidationRule>()
+        
+        when (valueTypeString.uppercase()) {
+            "NUMBER",
+            "INTEGER",
+            "INTEGER_POSITIVE",
+            "INTEGER_NEGATIVE", 
+            "INTEGER_ZERO_OR_POSITIVE",
+            "PERCENTAGE" -> {
+                rules.add(ValidationRule(
+                    rule = "number",
+                    message = "Please enter a valid number",
+                    severity = ValidationState.ERROR
+                ))
+            }
+            "COORDINATE" -> {
+                rules.add(ValidationRule(
+                    rule = "coordinates", 
+                    message = "Please enter valid coordinates",
+                    severity = ValidationState.ERROR
+                ))
+            }
+        }
+        
+        return rules
+    }
 
     @SuppressLint("SuspiciousIndentation")
     override suspend fun getDataValues(
@@ -97,172 +154,173 @@ class DataEntryRepositoryImpl @Inject constructor(
         orgUnit: String,
         attributeOptionCombo: String
     ): Flow<List<DataValue>> = flow {
-        val dataElements = withContext(Dispatchers.IO) { dataElementDao.getAll() }
-        val categoryCombos = withContext(Dispatchers.IO) { categoryComboDao.getAll() }
-        val categoryOptionCombos = withContext(Dispatchers.IO) { categoryOptionComboDao.getAll() }
-        val orgUnits = withContext(Dispatchers.IO) { organisationUnitDao.getAll() }
+        Log.d("DataEntryRepositoryImpl", "Starting optimized getDataValues for dataset: $datasetId")
+        
         val isOffline = !NetworkUtils.isNetworkAvailable(context)
-        if (dataElements.isNotEmpty() && categoryCombos.isNotEmpty() && categoryOptionCombos.isNotEmpty() && orgUnits.isNotEmpty()) {
+        
+        // Check if we have basic metadata in Room (hydrated during login)
+        val hasBasicMetadata = withContext(Dispatchers.IO) {
+            dataElementDao.getAll().isNotEmpty() && 
+            categoryComboDao.getAll().isNotEmpty() && 
+            categoryOptionComboDao.getAll().isNotEmpty() && 
+            organisationUnitDao.getAll().isNotEmpty()
+        }
+        
+        if (!hasBasicMetadata) {
             if (isOffline) {
-                // Load drafts for this instance
-                val drafts = withContext(Dispatchers.IO) {
-                    draftDao.getDraftsForInstance(datasetId, period, orgUnit, attributeOptionCombo)
-                }
-                val draftMap = drafts.associateBy { it.dataElement to it.categoryOptionCombo }
-                // Merge drafts with metadata
-                val merged = dataElements.flatMap { de ->
-                    val comboId = de.categoryComboId ?: ""
-                    val combos = categoryOptionCombos.filter { it.categoryComboId == comboId }
+                emit(emptyList())
+                return@flow
+            }
+            // This shouldn't happen if login properly hydrated Room, but fallback to original logic
+            Log.w("DataEntryRepositoryImpl", "Basic metadata missing from Room, this indicates login hydration failed")
+            emit(emptyList())
+            return@flow
+        }
+        
+        if (isOffline) {
+            // Offline mode: Use cached metadata + drafts
+            Log.d("DataEntryRepositoryImpl", "Using offline mode with cached metadata")
+            
+            val drafts = withContext(Dispatchers.IO) {
+                draftDao.getDraftsForInstance(datasetId, period, orgUnit, attributeOptionCombo)
+            }
+            val draftMap = drafts.associateBy { it.dataElement to it.categoryOptionCombo }
+            
+            // Use optimized cache service for offline mode
+            val optimizedData = metadataCacheService.getOptimizedDataForEntry(datasetId, period, orgUnit, attributeOptionCombo)
+            
+            val merged = optimizedData.sections.flatMap { section ->
+                section.dataElementUids.flatMap { deUid ->
+                    val dataElement = optimizedData.dataElements[deUid]
+                    val comboId = dataElement?.categoryComboId ?: ""
+                    val combos = optimizedData.categoryOptionCombos.values.filter { it.categoryComboId == comboId }
+                    
+                    // Get display name with proper fallback hierarchy
+                    val dataElementName = getDataElementDisplayName(deUid) ?: dataElement?.name ?: deUid
+                    
                     if (combos.isEmpty()) {
-                        // No category option combos, treat as default
-                        val draft = draftMap[de.id to ""]
-                            listOf(DataValue(
-                            dataElement = de.id,
-                            dataElementName = de.name,
-                            sectionName = "Unassigned",
-                                categoryOptionCombo = "",
-                                categoryOptionComboName = "Default",
+                        val draft = draftMap[deUid to ""]
+                        listOf(DataValue(
+                            dataElement = deUid,
+                            dataElementName = dataElementName,
+                            sectionName = section.name,
+                            categoryOptionCombo = "",
+                            categoryOptionComboName = "Default",
                             value = draft?.value,
                             comment = draft?.comment,
                             storedBy = null,
                             validationState = ValidationState.VALID,
-                            dataEntryType = DataEntryType.TEXT, // Could be mapped from valueType
+                            dataEntryType = DataEntryType.TEXT,
                             lastModified = draft?.lastModified ?: System.currentTimeMillis(),
                             validationRules = emptyList()
                         ))
                     } else {
                         combos.map { coc ->
-                            val draft = draftMap[de.id to coc.id]
+                            val draft = draftMap[deUid to coc.id]
                             DataValue(
-                                dataElement = de.id,
-                                dataElementName = de.name,
-                                sectionName = "Unassigned",
+                                dataElement = deUid,
+                                dataElementName = dataElementName,
+                                sectionName = section.name,
                                 categoryOptionCombo = coc.id,
                                 categoryOptionComboName = coc.name,
                                 value = draft?.value,
                                 comment = draft?.comment,
                                 storedBy = null,
                                 validationState = ValidationState.VALID,
-                                dataEntryType = DataEntryType.TEXT, // Could be mapped from valueType
+                                dataEntryType = DataEntryType.TEXT,
                                 lastModified = draft?.lastModified ?: System.currentTimeMillis(),
                                 validationRules = emptyList()
                             )
                         }
                     }
                 }
-                emit(merged)
-                return@flow
             }
-            // 1. Fetch all sections for the dataset and build a map from dataElement UID to section name
-            val sections = d2.dataSetModule().sections()
-                .withDataElements()
-                .byDataSetUid().eq(datasetId)
-                .blockingGet()
-            Log.d("DataEntryRepositoryImpl", "Fetched sections: ${sections.map { it.displayName() to it.dataElements()?.map { de -> de.uid() } }}")
-            val sectionDataElements = sections.flatMap { section ->
-                section.dataElements()?.map { deRef -> (section.displayName() ?: "Unassigned") to deRef.uid() } ?: emptyList()
-            }
-            val allDataElementUids = sectionDataElements.map { it.second }.distinct()
-
-            // 2. Fetch all data elements metadata
-            val allDataElements = d2.dataElementModule().dataElements()
-                .byUid().`in`(allDataElementUids)
-                .blockingGet()
-                .associateBy { it.uid() }
-
-            // 3. Fetch all data values for this instance
-            val sdkDataValues = d2.dataValueModule().dataValues()
-                .byDataSetUid(datasetId)
-                .byPeriod().eq(period)
-                .byOrganisationUnitUid().eq(orgUnit)
-                .byAttributeOptionComboUid().eq(attributeOptionCombo)
-                .blockingGet()
-                .associateBy { it.dataElement() to it.categoryOptionCombo() }
-
-            Log.d("DataEntryRepositoryImpl", "Fetched sdkDataValues: ${sdkDataValues.map { it.key to it.value.value() }}")
-
-            // 4. For each (section, dataElement) in sectionDataElements, build DataValue for every possible category option combo
-            val mappedDataValues = sectionDataElements.flatMap { (sectionName, deUid) ->
-                val dataElement = allDataElements[deUid]
-                val comboId = dataElement?.categoryCombo()?.uid() ?: "default"
-                // Fetch all possible category option combos for this data element's category combo
-                val allCombos = d2.categoryModule().categoryOptionCombos()
-                    .byCategoryComboUid().eq(comboId)
-                    .blockingGet()
-                if (allCombos.isEmpty()) {
-                    // No combos, just default
-                    val valueObj = sdkDataValues[deUid to ""]
-                    Log.d("DataEntryRepositoryImpl", "DataElement: " + dataElement?.uid() + ", formName=" + dataElement?.formName() + ", shortName=" + dataElement?.shortName() + ", displayName=" + dataElement?.displayName())
-                    val dataElementName = dataElement?.formName()
-                        ?: dataElement?.shortName()
-                        ?: dataElement?.displayName()
-                        ?: deUid
-                    listOf(DataValue(
-                        dataElement = deUid,
-                        dataElementName = dataElementName,
-                        sectionName = sectionName,
-                        categoryOptionCombo = "",
-                        categoryOptionComboName = "Default",
-                        value = valueObj?.value(),
-                        comment = valueObj?.comment(),
-                        storedBy = valueObj?.storedBy(),
-                        validationState = ValidationState.VALID,
-                        dataEntryType = dataElement?.let { getDataEntryType(it) } ?: DataEntryType.TEXT,
-                        lastModified = valueObj?.lastUpdated()?.time ?: System.currentTimeMillis(),
-                        validationRules = dataElement?.let { getValidationRules(it) } ?: emptyList()
-                    ))
+            emit(merged)
+            return@flow
+        }
+        
+        // Online mode: Use optimized cache service
+        Log.d("DataEntryRepositoryImpl", "Using online mode with optimized cache service")
+        
+        val optimizedData = metadataCacheService.getOptimizedDataForEntry(datasetId, period, orgUnit, attributeOptionCombo)
+        
+        Log.d("DataEntryRepositoryImpl", "Optimized data loaded: ${optimizedData.sections.size} sections, ${optimizedData.sdkDataValues.size} data values")
+        
+        // Build DataValue objects using cached metadata and fresh data values
+        val mappedDataValues = optimizedData.sections.flatMap { section ->
+            section.dataElementUids.flatMap { deUid ->
+                val cachedDataElement = optimizedData.dataElements[deUid]
+                
+                if (cachedDataElement == null) {
+                    Log.w("DataEntryRepositoryImpl", "Data element $deUid not found in cache")
+                    emptyList()
                 } else {
-                    allCombos.map { coc ->
-                        val valueObj = sdkDataValues[deUid to coc.uid()]
-                        Log.d("DataEntryRepositoryImpl", "DataElement: " + dataElement?.uid() + ", formName=" + dataElement?.formName() + ", shortName=" + dataElement?.shortName() + ", displayName=" + dataElement?.displayName())
-                        val dataElementName = dataElement?.formName()
-                            ?: dataElement?.shortName()
-                            ?: dataElement?.displayName()
-                            ?: deUid
-                        DataValue(
+                    val comboId = cachedDataElement.categoryComboId ?: "default"
+                    val allCombos = optimizedData.categoryOptionCombos.values.filter { it.categoryComboId == comboId }
+                    
+                    if (allCombos.isEmpty()) {
+                        // No combos, just default
+                        val valueObj = optimizedData.sdkDataValues[deUid to ""]
+                        val dataElementName = getDataElementDisplayName(deUid) ?: cachedDataElement.name
+                        
+                        listOf(DataValue(
                             dataElement = deUid,
                             dataElementName = dataElementName,
-                            sectionName = sectionName,
-                            categoryOptionCombo = coc.uid(),
-                            categoryOptionComboName = coc.displayName() ?: coc.uid(),
+                            sectionName = section.name,
+                            categoryOptionCombo = "",
+                            categoryOptionComboName = "Default",
                             value = valueObj?.value(),
                             comment = valueObj?.comment(),
                             storedBy = valueObj?.storedBy(),
                             validationState = ValidationState.VALID,
-                            dataEntryType = dataElement?.let { getDataEntryType(it) } ?: DataEntryType.TEXT,
+                            dataEntryType = getDataEntryTypeFromString(cachedDataElement.valueType),
                             lastModified = valueObj?.lastUpdated()?.time ?: System.currentTimeMillis(),
-                            validationRules = dataElement?.let { getValidationRules(it) } ?: emptyList()
-                        )
+                            validationRules = getValidationRulesFromString(cachedDataElement.valueType)
+                        ))
+                    } else {
+                        allCombos.map { coc ->
+                            val valueObj = optimizedData.sdkDataValues[deUid to coc.id]
+                            val dataElementName = getDataElementDisplayName(deUid) ?: cachedDataElement.name
+                            
+                            DataValue(
+                                dataElement = deUid,
+                                dataElementName = dataElementName,
+                                sectionName = section.name,
+                                categoryOptionCombo = coc.id,
+                                categoryOptionComboName = coc.name,
+                                value = valueObj?.value(),
+                                comment = valueObj?.comment(),
+                                storedBy = valueObj?.storedBy(),
+                                validationState = ValidationState.VALID,
+                                dataEntryType = getDataEntryTypeFromString(cachedDataElement.valueType),
+                                lastModified = valueObj?.lastUpdated()?.time ?: System.currentTimeMillis(),
+                                validationRules = getValidationRulesFromString(cachedDataElement.valueType)
+                            )
+                        }
                     }
                 }
             }
-            Log.d("DataEntryRepositoryImpl", "mappedDataValues: $mappedDataValues")
-
-            // 5. Save to Room (for caching as finalized values)
-            val valueEntities = mappedDataValues.map { dataValue ->
-                DataValueEntity(
-                    datasetId = datasetId,
-                    period = period,
-                    orgUnit = orgUnit,
-                    attributeOptionCombo = attributeOptionCombo,
-                    dataElement = dataValue.dataElement,
-                    categoryOptionCombo = dataValue.categoryOptionCombo,
-                    value = dataValue.value,
-                    comment = dataValue.comment,
-                    lastModified = dataValue.lastModified
-                )
-            }
-            dataValueDao.insertAll(valueEntities)
-
-            // 6. Emit the mapped data values
-            emit(mappedDataValues)
-        } else if (!isOffline) {
-            // If Room is empty and online, fetch from SDK, update Room, and return
-            // ... existing SDK fetch logic ...
-        } else {
-            // Offline and Room is empty
-            emit(emptyList())
         }
+        
+        Log.d("DataEntryRepositoryImpl", "Mapped ${mappedDataValues.size} data values")
+        
+        // Save to Room for caching
+        val valueEntities = mappedDataValues.map { dataValue ->
+            DataValueEntity(
+                datasetId = datasetId,
+                period = period,
+                orgUnit = orgUnit,
+                attributeOptionCombo = attributeOptionCombo,
+                dataElement = dataValue.dataElement,
+                categoryOptionCombo = dataValue.categoryOptionCombo,
+                value = dataValue.value,
+                comment = dataValue.comment,
+                lastModified = dataValue.lastModified
+            )
+        }
+        dataValueDao.insertAll(valueEntities)
+        
+        emit(mappedDataValues)
     }
 
     override suspend fun saveDataValue(
@@ -369,16 +427,16 @@ class DataEntryRepositoryImpl @Inject constructor(
         datasetId: String,
         dataElement: String,
         value: String
-    ): ValidationResult {
+    ): DataValueValidationResult {
         return try {
             val dataElementObj = d2.dataElementModule().dataElements()
                 .uid(dataElement)
-                .blockingGet() ?: return ValidationResult(false, ValidationState.ERROR, "Unknown data element type")
+                .blockingGet() ?: return DataValueValidationResult(false, ValidationState.ERROR, "Unknown data element type")
 
             // Check if value is required
             if (value.isBlank() && dataElementObj.optionSet() == null && 
                 dataElementObj.valueType() != org.hisp.dhis.android.core.common.ValueType.BOOLEAN) {
-                return ValidationResult(false, ValidationState.ERROR, "This field is required")
+                return DataValueValidationResult(false, ValidationState.ERROR, "This field is required")
             }
 
             // Explicit validation for each value type
@@ -391,22 +449,22 @@ class DataEntryRepositoryImpl @Inject constructor(
                 org.hisp.dhis.android.core.common.ValueType.INTEGER_ZERO_OR_POSITIVE,
                 org.hisp.dhis.android.core.common.ValueType.PERCENTAGE -> {
                     if (value.toDoubleOrNull() == null) {
-                        ValidationResult(false, ValidationState.ERROR, "Please enter a valid number")
+                        DataValueValidationResult(false, ValidationState.ERROR, "Please enter a valid number")
                     } else {
-                        ValidationResult(true, ValidationState.VALID, null)
+                        DataValueValidationResult(true, ValidationState.VALID, null)
                     }
                 }
                 org.hisp.dhis.android.core.common.ValueType.BOOLEAN -> {
                     if (value != "true" && value != "false") {
-                        ValidationResult(false, ValidationState.ERROR, "Please enter true or false")
+                        DataValueValidationResult(false, ValidationState.ERROR, "Please enter true or false")
                     } else {
-                        ValidationResult(true, ValidationState.VALID, null)
+                        DataValueValidationResult(true, ValidationState.VALID, null)
                     }
                 }
-                else -> ValidationResult(true, ValidationState.VALID, null)
+                else -> DataValueValidationResult(true, ValidationState.VALID, null)
             }
         } catch (e: Exception) {
-            ValidationResult(false, ValidationState.ERROR, e.message)
+            DataValueValidationResult(false, ValidationState.ERROR, e.message)
         }
     }
 
@@ -431,6 +489,19 @@ class DataEntryRepositoryImpl @Inject constructor(
         )
     }
 
+    override suspend fun getUserOrgUnits(datasetId: String): List<OrganisationUnit> {
+        val orgUnits = d2.organisationUnitModule().organisationUnits()
+            .byOrganisationUnitScope(org.hisp.dhis.android.core.organisationunit.OrganisationUnit.Scope.SCOPE_DATA_CAPTURE)
+            .blockingGet()
+        
+        return orgUnits.map { orgUnit ->
+            OrganisationUnit(
+                id = orgUnit.uid(),
+                name = orgUnit.displayName() ?: orgUnit.uid()
+            )
+        }
+    }
+
     override suspend fun getDefaultAttributeOptionCombo(): String {
         return d2.categoryModule().categoryOptionCombos()
             .byCategoryComboUid().eq("default")
@@ -450,112 +521,67 @@ class DataEntryRepositoryImpl @Inject constructor(
     }
 
     override suspend fun getCategoryComboStructure(categoryComboUid: String): List<Pair<String, List<Pair<String, String>>>> {
-        try {
-            // Get the category option combo to find its category combo
-            val categoryOptionCombo = d2.categoryModule().categoryOptionCombos()
-                .uid(categoryComboUid)
-                .blockingGet() ?: return emptyList()
-
-            val actualCategoryComboUid = categoryOptionCombo.categoryCombo()
-            
-            // Get the category combo with its categories
-            val categoryCombo = d2.categoryModule().categoryCombos()
-                .withCategories()
-                .uid(actualCategoryComboUid!!.uid())
-                .blockingGet() ?: return emptyList()
-
-            val categories = categoryCombo.categories() ?: emptyList()
-            if (categories.isEmpty()) return emptyList()
-
-            return categories.mapNotNull { catRef ->
-                // Get category with its options
-                val category = d2.categoryModule().categories()
-                    .withCategoryOptions()
-                    .uid(catRef.uid())
-                    .blockingGet() ?: return@mapNotNull null
-
-                val options = category.categoryOptions() ?: emptyList()
-                val optionPairs = options.map { optRef ->
-                    optRef.uid() to (optRef.displayName() ?: optRef.uid())
-                }
-
-                (category.displayName() ?: category.uid()) to optionPairs
-            }
-        } catch (e: Exception) {
-            return emptyList()
-        }
+        return metadataCacheService.getCategoryComboStructure(categoryComboUid)
     }
 
     override suspend fun getCategoryOptionCombos(categoryComboUid: String): List<Pair<String, List<String>>> {
-        try {
-            // Get the category option combo to find its category combo
-            val categoryOptionCombo = d2.categoryModule().categoryOptionCombos()
-                .uid(categoryComboUid)
-                .blockingGet() ?: return emptyList()
-
-            val actualCategoryComboUid = categoryOptionCombo.categoryCombo()
-            
-            val combos = d2.categoryModule().categoryOptionCombos()
-                .byCategoryComboUid().eq(actualCategoryComboUid!!.uid())
-                .withCategoryOptions()
-                .blockingGet()
-            
-            return combos.map { coc ->
-                val optionUids = coc.categoryOptions()?.map { it.uid() } ?: emptyList()
-                coc.uid() to optionUids
-            }
-        } catch (e: Exception) {
-            return emptyList()
-        }
+        return metadataCacheService.getCategoryOptionCombos(categoryComboUid)
     }
 
     override suspend fun pushAllLocalData() {
-        try {
-            val drafts = draftDao.getAllDrafts()
-            for (draft in drafts) {
-                try {
-                    val result = saveDataValue(
-                        datasetId = draft.datasetId,
-                        period = draft.period,
-                        orgUnit = draft.orgUnit,
-                        attributeOptionCombo = draft.attributeOptionCombo,
-                        dataElement = draft.dataElement,
-                        categoryOptionCombo = draft.categoryOptionCombo,
-                        value = draft.value,
-                        comment = draft.comment
-                    )
-                    if (result.isSuccess) {
-                        draftDao.deleteDraft(draft)
-                    }
-                } catch (e: Exception) {
-                    Log.e("DataEntryRepositoryImpl", "Exception uploading draft: ${draft.dataElement}", e)
-                }
-            }
-            // Upload all local data values
-            val uploadResult = d2.dataValueModule().dataValues().blockingUpload()
-            Log.d("DataEntryRepositoryImpl", "blockingUpload result: $uploadResult")
-            // Only delete drafts if uploadResult is not null/empty (basic check)
-            if (uploadResult != null && uploadResult.toString().isNotBlank()) {
-                // Download/sync all data values from server
-                d2.dataValueModule().dataValues().get()
-            } else {
-                Log.e("DataEntryRepositoryImpl", "Upload failed or returned empty result: $uploadResult")
-            }
-        } catch (e: Exception) {
-            Log.e("DataEntryRepositoryImpl", "Error pushing local drafts", e)
+        if (!networkStateManager.isOnline()) {
+            Log.i("DataEntryRepositoryImpl", "Offline - queuing data for sync when connection available")
+            syncQueueManager.queueForSync()
+            return
+        }
+        
+        val syncResult = syncQueueManager.startSync()
+        if (syncResult.isFailure) {
+            Log.e("DataEntryRepositoryImpl", "Sync failed: ${syncResult.exceptionOrNull()?.message}")
+            throw syncResult.exceptionOrNull() ?: Exception("Sync failed")
         }
     }
 
     override suspend fun syncCurrentEntryForm() {
         withContext(Dispatchers.IO) {
-            try {
-                val uploadResult = d2.dataValueModule().dataValues().blockingUpload()
-                Log.d("DataEntryRepositoryImpl", "blockingUpload result: $uploadResult")
-                // Download all aggregated data values
-                d2.aggregatedModule().data().blockingDownload()
-            } catch (e: Exception) {
-                Log.e("DataEntryRepositoryImpl", "Error uploading data values", e)
+            if (!networkStateManager.isOnline()) {
+                Log.i("DataEntryRepositoryImpl", "Offline - queuing current form for sync when connection available")
+                syncQueueManager.queueForSync()
+                return@withContext
             }
+            
+            try {
+                val syncResult = syncQueueManager.startSync()
+                if (syncResult.isFailure) {
+                    throw syncResult.exceptionOrNull() ?: Exception("Sync failed")
+                }
+                
+                // Download aggregated data after successful sync
+                d2.aggregatedModule().data().blockingDownload()
+                Log.d("DataEntryRepositoryImpl", "Current entry form synced successfully")
+            } catch (e: Exception) {
+                Log.e("DataEntryRepositoryImpl", "Error syncing current entry form", e)
+                throw e
+            }
+        }
+    }
+
+    /**
+     * Get display name for data element with proper fallback hierarchy.
+     * Uses DHIS2 SDK to fetch: formName > shortName > displayName > technical name
+     */
+    private suspend fun getDataElementDisplayName(dataElementUid: String): String? {
+        return try {
+            val dataElementObj = d2.dataElementModule().dataElements()
+                .uid(dataElementUid)
+                .blockingGet()
+            
+            dataElementObj?.formName()
+                ?: dataElementObj?.shortName()
+                ?: dataElementObj?.displayName()
+        } catch (e: Exception) {
+            Log.w("DataEntryRepositoryImpl", "Failed to fetch display name for data element $dataElementUid: ${e.message}")
+            null
         }
     }
 }
