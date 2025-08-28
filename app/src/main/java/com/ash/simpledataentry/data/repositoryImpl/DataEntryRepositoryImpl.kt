@@ -156,6 +156,9 @@ class DataEntryRepositoryImpl @Inject constructor(
     ): Flow<List<DataValue>> = flow {
         Log.d("DataEntryRepositoryImpl", "Starting optimized getDataValues for dataset: $datasetId")
         
+        // PERFORMANCE OPTIMIZATION: Always use cached data for faster loading
+        // Only fall back to online mode if cache is missing or explicitly requested
+        val preferCachedData = true // Always prefer cached data for performance
         val isOffline = !NetworkUtils.isNetworkAvailable(context)
         
         // Check if we have basic metadata in Room (hydrated during login)
@@ -177,9 +180,9 @@ class DataEntryRepositoryImpl @Inject constructor(
             return@flow
         }
         
-        if (isOffline) {
-            // Offline mode: Use cached metadata + drafts
-            Log.d("DataEntryRepositoryImpl", "Using offline mode with cached metadata")
+        if (preferCachedData || isOffline) {
+            // PERFORMANCE: Always use cached data first for fast loading
+            Log.d("DataEntryRepositoryImpl", if (isOffline) "Using offline mode with cached metadata" else "Using cached data for performance (online)")
             
             val drafts = withContext(Dispatchers.IO) {
                 draftDao.getDraftsForInstance(datasetId, period, orgUnit, attributeOptionCombo)

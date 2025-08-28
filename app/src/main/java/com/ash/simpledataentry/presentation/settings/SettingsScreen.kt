@@ -67,10 +67,39 @@ fun SettingsScreen(
                     title = "Sync Configuration",
                     icon = Icons.Default.Settings
                 ) {
-                    SyncFrequencySelector(
-                        currentFrequency = state.syncFrequency,
-                        onFrequencyChanged = viewModel::setSyncFrequency
-                    )
+                    Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                        SyncFrequencySelector(
+                            currentFrequency = state.syncFrequency,
+                            onFrequencyChanged = viewModel::setSyncFrequency,
+                            enabled = true // ENABLED: Now has persistence
+                        )
+                        
+                        // Status notice
+                        Card(
+                            modifier = Modifier.fillMaxWidth(),
+                            colors = CardDefaults.cardColors(
+                                containerColor = MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.3f)
+                            )
+                        ) {
+                            Row(
+                                modifier = Modifier.padding(12.dp),
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.spacedBy(8.dp)
+                            ) {
+                                Icon(
+                                    Icons.Default.CheckCircle,
+                                    contentDescription = null,
+                                    tint = MaterialTheme.colorScheme.onPrimaryContainer,
+                                    modifier = Modifier.size(16.dp)
+                                )
+                                Text(
+                                    text = "✅ Settings persist! WorkManager integration ready (needs Java compatibility fix)",
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = MaterialTheme.colorScheme.onPrimaryContainer
+                                )
+                            }
+                        }
+                    }
                 }
             }
             
@@ -80,19 +109,48 @@ fun SettingsScreen(
                     title = "Data Management",
                     icon = Icons.Default.Security
                 ) {
-                    DataManagementActions(
-                        isExporting = state.isExporting,
-                        exportProgress = state.exportProgress,
-                        isDeleting = state.isDeleting,
-                        onExportData = {
-                            haptic.performHapticFeedback(HapticFeedbackType.LongPress)
-                            viewModel.exportData()
-                        },
-                        onDeleteData = {
-                            haptic.performHapticFeedback(HapticFeedbackType.LongPress)
-                            viewModel.deleteAllData()
+                    Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                        DataManagementActions(
+                            isExporting = state.isExporting,
+                            exportProgress = state.exportProgress,
+                            isDeleting = state.isDeleting,
+                            onExportData = {
+                                haptic.performHapticFeedback(HapticFeedbackType.LongPress)
+                                viewModel.exportData()
+                            },
+                            onDeleteData = {
+                                haptic.performHapticFeedback(HapticFeedbackType.LongPress)
+                                viewModel.deleteAllData()
+                            },
+                            enabled = true // ENABLED: Data deletion is now fully implemented
+                        )
+                        
+                        // Coming soon notice
+                        Card(
+                            modifier = Modifier.fillMaxWidth(),
+                            colors = CardDefaults.cardColors(
+                                containerColor = MaterialTheme.colorScheme.secondaryContainer.copy(alpha = 0.3f)
+                            )
+                        ) {
+                            Row(
+                                modifier = Modifier.padding(12.dp),
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.spacedBy(8.dp)
+                            ) {
+                                Icon(
+                                    Icons.Default.Notifications,
+                                    contentDescription = null,
+                                    tint = MaterialTheme.colorScheme.onSecondaryContainer,
+                                    modifier = Modifier.size(16.dp)
+                                )
+                                Text(
+                                    text = "✅ Data deletion ready • Data export coming soon",
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = MaterialTheme.colorScheme.onSecondaryContainer
+                                )
+                            }
                         }
-                    )
+                    }
                 }
             }
             
@@ -102,12 +160,41 @@ fun SettingsScreen(
                     title = "App Updates",
                     icon = Icons.Default.Settings
                 ) {
-                    UpdateSection(
-                        isChecking = state.updateCheckInProgress,
-                        updateAvailable = state.updateAvailable,
-                        latestVersion = state.latestVersion,
-                        onCheckForUpdates = viewModel::checkForUpdates
-                    )
+                    Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                        UpdateSection(
+                            isChecking = state.updateCheckInProgress,
+                            updateAvailable = state.updateAvailable,
+                            latestVersion = state.latestVersion,
+                            onCheckForUpdates = viewModel::checkForUpdates,
+                            enabled = true // ENABLED: Update checking is now fully implemented
+                        )
+                        
+                        // Coming soon notice
+                        Card(
+                            modifier = Modifier.fillMaxWidth(),
+                            colors = CardDefaults.cardColors(
+                                containerColor = MaterialTheme.colorScheme.secondaryContainer.copy(alpha = 0.3f)
+                            )
+                        ) {
+                            Row(
+                                modifier = Modifier.padding(12.dp),
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.spacedBy(8.dp)
+                            ) {
+                                Icon(
+                                    Icons.Default.Notifications,
+                                    contentDescription = null,
+                                    tint = MaterialTheme.colorScheme.onSecondaryContainer,
+                                    modifier = Modifier.size(16.dp)
+                                )
+                                Text(
+                                    text = "✅ Update checking ready • Automatic checking coming soon",
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = MaterialTheme.colorScheme.onSecondaryContainer
+                                )
+                            }
+                        }
+                    }
                 }
             }
             
@@ -641,7 +728,8 @@ private fun SettingsSection(
 @Composable 
 private fun SyncFrequencySelector(
     currentFrequency: SyncFrequency,
-    onFrequencyChanged: (SyncFrequency) -> Unit
+    onFrequencyChanged: (SyncFrequency) -> Unit,
+    enabled: Boolean = true
 ) {
     var expanded by remember { mutableStateOf(false) }
     
@@ -653,8 +741,8 @@ private fun SyncFrequencySelector(
         )
         
         ExposedDropdownMenuBox(
-            expanded = expanded,
-            onExpandedChange = { expanded = !expanded }
+            expanded = expanded && enabled,
+            onExpandedChange = { if (enabled) expanded = !expanded }
         ) {
             OutlinedTextField(
                 readOnly = true,
@@ -662,8 +750,9 @@ private fun SyncFrequencySelector(
                 onValueChange = { },
                 label = { Text("Sync Frequency") },
                 trailingIcon = {
-                    ExposedDropdownMenuDefaults.TrailingIcon(expanded = expanded)
+                    ExposedDropdownMenuDefaults.TrailingIcon(expanded = expanded && enabled)
                 },
+                enabled = enabled,
                 modifier = Modifier
                     .menuAnchor()
                     .fillMaxWidth()
@@ -677,9 +766,12 @@ private fun SyncFrequencySelector(
                     DropdownMenuItem(
                         text = { Text(frequency.displayName) },
                         onClick = {
-                            onFrequencyChanged(frequency)
-                            expanded = false
-                        }
+                            if (enabled) {
+                                onFrequencyChanged(frequency)
+                                expanded = false
+                            }
+                        },
+                        enabled = enabled
                     )
                 }
             }
@@ -693,7 +785,8 @@ private fun DataManagementActions(
     exportProgress: Float,
     isDeleting: Boolean,
     onExportData: () -> Unit,
-    onDeleteData: () -> Unit
+    onDeleteData: () -> Unit,
+    enabled: Boolean = true
 ) {
     var showDeleteConfirmation by remember { mutableStateOf(false) }
     
@@ -701,7 +794,7 @@ private fun DataManagementActions(
         // Export Data Button
         Button(
             onClick = onExportData,
-            enabled = !isExporting && !isDeleting,
+            enabled = enabled && !isExporting && !isDeleting,
             modifier = Modifier.fillMaxWidth()
         ) {
             if (isExporting) {
@@ -726,8 +819,8 @@ private fun DataManagementActions(
         
         // Delete Data Button  
         OutlinedButton(
-            onClick = { showDeleteConfirmation = true },
-            enabled = !isExporting && !isDeleting,
+            onClick = { if (enabled) showDeleteConfirmation = true },
+            enabled = enabled && !isExporting && !isDeleting,
             modifier = Modifier.fillMaxWidth(),
             colors = ButtonDefaults.outlinedButtonColors(
                 contentColor = MaterialTheme.colorScheme.error
@@ -783,7 +876,8 @@ private fun UpdateSection(
     isChecking: Boolean,
     updateAvailable: Boolean,
     latestVersion: String?,
-    onCheckForUpdates: () -> Unit
+    onCheckForUpdates: () -> Unit,
+    enabled: Boolean = true
 ) {
     Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
         Text(
@@ -819,7 +913,7 @@ private fun UpdateSection(
         
         Button(
             onClick = onCheckForUpdates,
-            enabled = !isChecking,
+            enabled = enabled && !isChecking,
             modifier = Modifier.fillMaxWidth()
         ) {
             if (isChecking) {

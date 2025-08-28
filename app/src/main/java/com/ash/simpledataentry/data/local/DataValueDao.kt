@@ -15,4 +15,7 @@ interface DataValueDao {
 
     @Query("DELETE FROM data_values WHERE datasetId = :datasetId AND period = :period AND orgUnit = :orgUnit AND attributeOptionCombo = :attributeOptionCombo")
     suspend fun deleteValuesForInstance(datasetId: String, period: String, orgUnit: String, attributeOptionCombo: String)
+    
+    @Query("DELETE FROM data_values")
+    suspend fun deleteAllDataValues()
 } 

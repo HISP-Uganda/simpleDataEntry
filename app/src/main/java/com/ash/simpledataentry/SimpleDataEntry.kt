@@ -2,6 +2,8 @@ package com.ash.simpledataentry
 
 import android.app.Application
 import android.util.Log
+import androidx.hilt.work.HiltWorkerFactory
+import androidx.work.Configuration
 import com.ash.simpledataentry.domain.repository.SystemRepository
 import dagger.hilt.android.HiltAndroidApp
 import kotlinx.coroutines.CoroutineScope
@@ -11,15 +13,20 @@ import kotlinx.coroutines.runBlocking
 import javax.inject.Inject
 
 @HiltAndroidApp
-class SimpleDataEntry : Application() {
-
+class SimpleDataEntry : Application(), Configuration.Provider {
 
     @Inject lateinit var systemRepository: SystemRepository
-    // Application level setup can go here if needed
+    @Inject lateinit var workerFactory: HiltWorkerFactory
+    
     override fun onCreate() {
         super.onCreate()
         initializeApp()
     }
+    
+    override val workManagerConfiguration: Configuration
+        get() = Configuration.Builder()
+            .setWorkerFactory(workerFactory)
+            .build()
 
     private fun initializeApp() {
 

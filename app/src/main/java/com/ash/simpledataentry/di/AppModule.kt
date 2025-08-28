@@ -11,6 +11,7 @@ import com.ash.simpledataentry.data.repositoryImpl.SystemRepositoryImpl
 import com.ash.simpledataentry.data.repositoryImpl.LoginUrlCacheRepository
 import com.ash.simpledataentry.data.repositoryImpl.SavedAccountRepository
 import com.ash.simpledataentry.data.repositoryImpl.ValidationRepository
+import com.ash.simpledataentry.data.repositoryImpl.SettingsRepositoryImpl
 import com.ash.simpledataentry.data.security.AccountEncryption
 import com.ash.simpledataentry.domain.validation.ValidationService
 import com.ash.simpledataentry.data.local.AppDatabase
@@ -27,6 +28,7 @@ import com.ash.simpledataentry.domain.repository.DataEntryRepository
 import com.ash.simpledataentry.domain.repository.DatasetInstancesRepository
 import com.ash.simpledataentry.domain.repository.DatasetsRepository
 import com.ash.simpledataentry.domain.repository.SystemRepository
+import com.ash.simpledataentry.domain.repository.SettingsRepository
 import com.ash.simpledataentry.domain.useCase.DataEntryUseCases
 import com.ash.simpledataentry.domain.useCase.FilterDatasetsUseCase
 import com.ash.simpledataentry.domain.useCase.GetDataValuesUseCase
@@ -53,6 +55,7 @@ import com.ash.simpledataentry.data.cache.MetadataCacheService
 import com.ash.simpledataentry.data.sync.BackgroundDataPrefetcher
 import com.ash.simpledataentry.data.sync.NetworkStateManager
 import com.ash.simpledataentry.data.sync.SyncQueueManager
+import com.ash.simpledataentry.data.sync.BackgroundSyncManager
 
 @Module
 @InstallIn(SingletonComponent::class)
@@ -317,6 +320,22 @@ object AppModule {
             completeDatasetInstance = CompleteDatasetInstanceUseCase(datasetInstancesRepository),
             markDatasetInstanceIncomplete = MarkDatasetInstanceIncompleteUseCase(datasetInstancesRepository)
         )
+    }
+
+    @Provides
+    @Singleton
+    fun provideSettingsRepository(
+        @ApplicationContext context: Context
+    ): SettingsRepository {
+        return SettingsRepositoryImpl(context)
+    }
+    
+    @Provides
+    @Singleton
+    fun provideBackgroundSyncManager(
+        @ApplicationContext context: Context
+    ): BackgroundSyncManager {
+        return BackgroundSyncManager(context)
     }
 
     @Provides

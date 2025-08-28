@@ -66,14 +66,12 @@ class MetadataCacheService @Inject constructor(
         // 5. Get org units from Room (already hydrated during login)
         val orgUnits = organisationUnitDao.getAll().associateBy { it.id }
         
-        // 6. Get data values from SDK (this still needs to be fetched)
-        val sdkDataValues = d2.dataValueModule().dataValues()
-            .byDataSetUid(datasetId)
-            .byPeriod().eq(period)
-            .byOrganisationUnitUid().eq(orgUnit)
-            .byAttributeOptionComboUid().eq(attributeOptionCombo)
-            .blockingGet()
-            .associateBy { (it.dataElement() ?: "") to (it.categoryOptionCombo() ?: "") }
+        // 6. Get data values - prefer cached/local data for performance
+        // For performance optimization, we'll let the caller handle data values from drafts
+        // This eliminates the SDK call that was causing slow loading
+        val sdkDataValues = emptyMap<Pair<String, String>, org.hisp.dhis.android.core.datavalue.DataValue>()
+        
+        Log.d("MetadataCacheService", "Optimized cache load complete: ${sections.size} sections, ${dataElements.size} data elements")
         
         OptimizedEntryData(
             sections = sections,
@@ -83,6 +81,36 @@ class MetadataCacheService @Inject constructor(
             orgUnits = orgUnits,
             sdkDataValues = sdkDataValues
         )
+    }
+    
+    /**
+     * Get optimized data with fresh SDK data values for sync operations
+     * Use this when you need the latest server data, not for regular data entry
+     */
+    suspend fun getOptimizedDataWithFreshValues(
+        datasetId: String,
+        period: String,
+        orgUnit: String,
+        attributeOptionCombo: String
+    ): OptimizedEntryData = withContext(Dispatchers.IO) {
+        
+        Log.d("MetadataCacheService", "Getting optimized data with fresh values for dataset: $datasetId")
+        
+        // Get cached metadata (fast)
+        val baseData = getOptimizedDataForEntry(datasetId, period, orgUnit, attributeOptionCombo)
+        
+        // Get fresh data values from SDK (slower, only when needed)
+        val sdkDataValues = d2.dataValueModule().dataValues()
+            .byDataSetUid(datasetId)
+            .byPeriod().eq(period)
+            .byOrganisationUnitUid().eq(orgUnit)
+            .byAttributeOptionComboUid().eq(attributeOptionCombo)
+            .blockingGet()
+            .associateBy { (it.dataElement() ?: "") to (it.categoryOptionCombo() ?: "") }
+        
+        Log.d("MetadataCacheService", "Fresh data loaded: ${sdkDataValues.size} data values from server")
+            
+        baseData.copy(sdkDataValues = sdkDataValues)
     }
     
     /**

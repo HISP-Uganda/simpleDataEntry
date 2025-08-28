@@ -40,4 +40,7 @@ interface DataValueDraftDao {
     
     @Query("SELECT COUNT(*) FROM data_value_drafts WHERE datasetId = :datasetId AND period = :period AND orgUnit = :orgUnit AND attributeOptionCombo = :attributeOptionCombo")
     suspend fun getDraftCountForInstance(datasetId: String, period: String, orgUnit: String, attributeOptionCombo: String): Int
+    
+    @Query("DELETE FROM data_value_drafts")
+    suspend fun deleteAllDrafts()
 }

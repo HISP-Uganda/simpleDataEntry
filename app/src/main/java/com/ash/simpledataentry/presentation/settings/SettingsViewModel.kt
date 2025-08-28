@@ -5,11 +5,21 @@ import androidx.lifecycle.viewModelScope
 import com.ash.simpledataentry.data.repositoryImpl.SavedAccountRepository
 import com.ash.simpledataentry.data.security.AccountEncryption
 import com.ash.simpledataentry.domain.model.SavedAccount
+import com.ash.simpledataentry.domain.repository.SettingsRepository
+import com.ash.simpledataentry.data.sync.BackgroundSyncManager
+import com.ash.simpledataentry.data.local.AppDatabase
+import com.ash.simpledataentry.data.SessionManager
+import com.ash.simpledataentry.BuildConfig
 import dagger.hilt.android.lifecycle.HiltViewModel
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
+import org.json.JSONObject
+import java.net.HttpURLConnection
+import java.net.URL
 import javax.inject.Inject
 
 data class SettingsState(
@@ -38,7 +48,11 @@ enum class SyncFrequency(val displayName: String, val intervalMinutes: Int) {
 @HiltViewModel
 class SettingsViewModel @Inject constructor(
     private val savedAccountRepository: SavedAccountRepository,
-    private val accountEncryption: AccountEncryption
+    private val accountEncryption: AccountEncryption,
+    private val settingsRepository: SettingsRepository,
+    private val backgroundSyncManager: BackgroundSyncManager,
+    private val database: AppDatabase,
+    private val sessionManager: SessionManager
 ) : ViewModel() {
     
     private val _state = MutableStateFlow(SettingsState())
@@ -46,6 +60,7 @@ class SettingsViewModel @Inject constructor(
     
     init {
         checkEncryptionAvailability()
+        loadSyncFrequency()
     }
     
     fun loadAccounts() {
@@ -148,8 +163,35 @@ class SettingsViewModel @Inject constructor(
     // === NEW SETTINGS FEATURES ===
     
     fun setSyncFrequency(frequency: SyncFrequency) {
-        _state.value = _state.value.copy(syncFrequency = frequency)
-        // TODO: Persist this setting and configure background sync
+        viewModelScope.launch {
+            try {
+                // Persist the setting
+                settingsRepository.setSyncFrequency(frequency)
+                
+                // Update UI state
+                _state.value = _state.value.copy(syncFrequency = frequency)
+                
+                // Configure background sync with WorkManager
+                backgroundSyncManager.configureSyncSchedule(frequency)
+                
+            } catch (e: Exception) {
+                _state.value = _state.value.copy(
+                    error = "Failed to save sync frequency: ${e.message}"
+                )
+            }
+        }
+    }
+    
+    private fun loadSyncFrequency() {
+        viewModelScope.launch {
+            try {
+                val savedFrequency = settingsRepository.getSyncFrequency()
+                _state.value = _state.value.copy(syncFrequency = savedFrequency)
+            } catch (e: Exception) {
+                // Use default frequency if loading fails
+                _state.value = _state.value.copy(syncFrequency = SyncFrequency.DAILY)
+            }
+        }
     }
     
     fun exportData() {
@@ -196,17 +238,42 @@ class SettingsViewModel @Inject constructor(
                     error = null
                 )
                 
-                // TODO: Implement secure data deletion
-                // This should:
                 // 1. Clear all Room database tables
-                // 2. Clear SharedPreferences
-                // 3. Clear cached files
-                // 4. Clear saved accounts (with confirmation)
-                // 5. Reset app to initial state
+                database.dataValueDraftDao().deleteAllDrafts()
+                database.dataValueDao().deleteAllDataValues() 
+                database.datasetDao().clearAll()
+                database.dataElementDao().clearAll()
+                database.categoryComboDao().clearAll()
+                database.categoryOptionComboDao().clearAll()
+                database.organisationUnitDao().clearAll()
+                database.cachedUrlDao().clearAll()
                 
-                kotlinx.coroutines.delay(2000) // Simulate deletion time
+                // 2. Clear saved accounts
+                savedAccountRepository.deleteAllAccounts()
                 
-                _state.value = _state.value.copy(isDeleting = false)
+                // 3. Clear all settings
+                settingsRepository.clearAllSettings()
+                
+                // 4. Cancel any background sync
+                backgroundSyncManager.cancelBackgroundSync()
+                
+                // 5. Clear DHIS2 session if active
+                try {
+                    if (sessionManager.isUserLoggedIn()) {
+                        sessionManager.logOut()
+                    }
+                } catch (e: Exception) {
+                    // Log but don't fail the deletion for session issues
+                    android.util.Log.w("SettingsViewModel", "Failed to clear DHIS2 session", e)
+                }
+                
+                _state.value = _state.value.copy(
+                    isDeleting = false,
+                    // Reset local state after deletion
+                    accounts = emptyList(),
+                    syncFrequency = SyncFrequency.DAILY // Reset to default
+                )
+                
             } catch (e: Exception) {
                 _state.value = _state.value.copy(
                     isDeleting = false,
@@ -224,18 +291,12 @@ class SettingsViewModel @Inject constructor(
                     error = null
                 )
                 
-                // Simulate update check
-                kotlinx.coroutines.delay(1500)
+                val currentVersion = BuildConfig.VERSION_NAME // Current app version
+                val latestVersion = fetchLatestVersionFromGitHub()
                 
-                // TODO: Implement actual update checking
-                // This should:
-                // 1. Query app version endpoint or GitHub releases
-                // 2. Compare with current app version
-                // 3. Show update availability and download link
-                
-                val currentVersion = "1.0.0" // Get from BuildConfig
-                val latestVersion = "1.1.0" // From remote check
-                val updateAvailable = latestVersion != currentVersion
+                val updateAvailable = if (latestVersion != null) {
+                    compareVersions(currentVersion, latestVersion) < 0
+                } else false
                 
                 _state.value = _state.value.copy(
                     updateCheckInProgress = false,
@@ -249,5 +310,65 @@ class SettingsViewModel @Inject constructor(
                 )
             }
         }
+    }
+    
+    /**
+     * Fetch the latest version from GitHub Releases API
+     */
+    private suspend fun fetchLatestVersionFromGitHub(): String? = withContext(Dispatchers.IO) {
+        try {
+            // Note: Replace with actual GitHub repository URL
+            val githubApiUrl = "https://api.github.com/repos/username/simpleDataEntry/releases/latest"
+            val url = URL(githubApiUrl)
+            val connection = url.openConnection() as HttpURLConnection
+            
+            connection.requestMethod = "GET"
+            connection.setRequestProperty("Accept", "application/vnd.github.v3+json")
+            connection.connectTimeout = 10000
+            connection.readTimeout = 10000
+            
+            val responseCode = connection.responseCode
+            if (responseCode == HttpURLConnection.HTTP_OK) {
+                val response = connection.inputStream.bufferedReader().use { it.readText() }
+                val jsonObject = JSONObject(response)
+                val tagName = jsonObject.getString("tag_name")
+                
+                // Remove 'v' prefix if present (e.g., "v1.2.0" -> "1.2.0")
+                return@withContext if (tagName.startsWith("v")) {
+                    tagName.substring(1)
+                } else {
+                    tagName
+                }
+            } else {
+                android.util.Log.w("SettingsViewModel", "GitHub API returned $responseCode")
+                return@withContext null
+            }
+        } catch (e: Exception) {
+            android.util.Log.w("SettingsViewModel", "Failed to fetch latest version", e)
+            return@withContext null
+        }
+    }
+    
+    /**
+     * Compare two semantic versions (e.g., "1.0.0" vs "1.1.0")
+     * Returns: -1 if version1 < version2, 0 if equal, 1 if version1 > version2
+     */
+    private fun compareVersions(version1: String, version2: String): Int {
+        val parts1 = version1.split(".").map { it.toIntOrNull() ?: 0 }
+        val parts2 = version2.split(".").map { it.toIntOrNull() ?: 0 }
+        
+        val maxLength = maxOf(parts1.size, parts2.size)
+        
+        for (i in 0 until maxLength) {
+            val v1 = parts1.getOrElse(i) { 0 }
+            val v2 = parts2.getOrElse(i) { 0 }
+            
+            when {
+                v1 < v2 -> return -1
+                v1 > v2 -> return 1
+            }
+        }
+        
+        return 0
     }
 }

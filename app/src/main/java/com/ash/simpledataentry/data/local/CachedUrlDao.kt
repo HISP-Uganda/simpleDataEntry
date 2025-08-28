@@ -31,4 +31,7 @@ interface CachedUrlDao {
     
     @Query("DELETE FROM cached_urls WHERE url NOT IN (SELECT url FROM cached_urls ORDER BY frequency DESC, lastUsed DESC LIMIT 20)")
     suspend fun cleanupOldUrls()
+    
+    @Query("DELETE FROM cached_urls")
+    suspend fun clearAll()
 }
