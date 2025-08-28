@@ -285,8 +285,8 @@ fun DatasetsScreen(
                         items(datasets) { dataset ->
                             // Create entry count info for this specific dataset
                             val entryCountItem = AdditionalInfoItem(
-                                key = "${dataset.instanceCount} entries",
-                                value = "",
+                                key = "",
+                                value = "${dataset.instanceCount} entries",
                                 icon = null,
                                 color = org.hisp.dhis.mobile.ui.designsystem.theme.SurfaceColor.Primary
                             )

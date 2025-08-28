@@ -33,6 +33,8 @@ import androidx.compose.material.icons.filled.Clear
 import androidx.compose.material.icons.filled.Visibility
 import androidx.compose.material.icons.filled.VisibilityOff
 import androidx.compose.runtime.Composable
+import androidx.compose.ui.res.painterResource
+import com.ash.simpledataentry.R
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
@@ -161,10 +163,10 @@ fun LoginScreen(
                 horizontalAlignment = Alignment.CenterHorizontally,
                 verticalArrangement = Arrangement.Center
             ) {
-                // TODO: Replace with custom app icon - modify this Icon() composable
+                // DHIS2 Official Logo Icon
                 Icon(
-                    imageVector = Icons.Default.AccountCircle,
-                    contentDescription = "App Icon",
+                    painter = painterResource(id = R.drawable.dhis2_logo),
+                    contentDescription = "DHIS2 Logo",
                     modifier = Modifier
                         .size(80.dp)
                         .padding(bottom = 32.dp),

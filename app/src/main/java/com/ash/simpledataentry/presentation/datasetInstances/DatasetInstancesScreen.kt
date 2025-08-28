@@ -9,6 +9,7 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Add
+import androidx.compose.material.icons.filled.ArrowDropDown
 import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.FilterList
 import androidx.compose.material.icons.filled.Sync
@@ -21,6 +22,8 @@ import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.navigation.NavController
 import com.ash.simpledataentry.domain.model.DatasetInstance
 import com.ash.simpledataentry.domain.model.DatasetInstanceFilterState
+import com.ash.simpledataentry.domain.model.SyncStatus
+import com.ash.simpledataentry.domain.model.CompletionStatus
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.delay
 import java.net.URLEncoder
@@ -38,10 +41,19 @@ import org.hisp.dhis.mobile.ui.designsystem.component.state.rememberListCardStat
 import org.hisp.dhis.mobile.ui.designsystem.theme.DHIS2Theme
 import org.hisp.dhis.mobile.ui.designsystem.theme.TextColor
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.text.font.FontWeight
 import kotlinx.coroutines.coroutineScope
 import androidx.compose.material.icons.filled.CheckCircle
 import androidx.compose.material.icons.filled.Edit
 import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.slideInVertically
+import androidx.compose.animation.slideOutVertically
+import androidx.compose.material3.Card
+import androidx.compose.material3.CardDefaults
+import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.width
 
 // Status information for better UI presentation
 data class StatusInfo(
@@ -70,6 +82,7 @@ fun DatasetInstancesScreen(
     var bulkActionSuccess by remember { mutableStateOf<Boolean?>(null) }
     var showFilterDialog by remember { mutableStateOf(false) }
     var showSyncDialog by remember { mutableStateOf(false) }
+    var showFilterSection by remember { mutableStateOf(false) }
 
     LaunchedEffect(datasetId) {
         viewModel.setDatasetId(datasetId)
@@ -102,14 +115,15 @@ fun DatasetInstancesScreen(
         title = datasetName,
         navController = navController,
         actions = {
+            // Keep icons visible during loading - just disable them
             IconButton(
-                onClick = { showFilterDialog = true },
-                enabled = !state.isLoading && !state.isSyncing && !bulkMode
+                onClick = { showFilterSection = !showFilterSection },
+                enabled = !state.isSyncing && !bulkMode
             ) {
                 Icon(
                     imageVector = Icons.Default.FilterList,
                     contentDescription = "Filter",
-                    tint = if (filterState.hasActiveFilters()) MaterialTheme.colorScheme.primary else TextColor.OnSurface
+                    tint = if (filterState.hasActiveFilters() || showFilterSection) MaterialTheme.colorScheme.primary else TextColor.OnSurface
                 )
             }
             IconButton(
@@ -134,8 +148,32 @@ fun DatasetInstancesScreen(
             }
         }
     ) {
-        Box(modifier = Modifier.fillMaxSize()) {
-            if (state.isLoading || state.isSyncing) {
+        Column {
+            // Pull-down filter section
+            AnimatedVisibility(
+                visible = showFilterSection,
+                enter = slideInVertically(initialOffsetY = { -it }),
+                exit = slideOutVertically(targetOffsetY = { -it })
+            ) {
+                Card(
+                    modifier = Modifier.fillMaxWidth(),
+                    colors = CardDefaults.cardColors(
+                        containerColor = MaterialTheme.colorScheme.surface
+                    ),
+                    elevation = CardDefaults.cardElevation(defaultElevation = 2.dp)
+                ) {
+                    DatasetInstancesPullDownFilter(
+                        currentFilter = filterState,
+                        onApplyFilter = { newFilter ->
+                            viewModel.updateFilterState(newFilter)
+                        }
+                    )
+                }
+            }
+            
+            // Main content
+            Box(modifier = Modifier.fillMaxSize()) {
+                if (state.isLoading || state.isSyncing) {
                 Box(
                     modifier = Modifier.fillMaxSize(),
                     contentAlignment = Alignment.Center
@@ -187,18 +225,11 @@ fun DatasetInstancesScreen(
                         val isComplete = instance.state == DatasetInstanceState.COMPLETE
                         val isSynced = isComplete && !isDraftInstance
                         
-                        // Build status text
-                        val statusText = buildString {
-                            if (isDraftInstance) {
-                                append("Draft - not yet synced")
-                            } else if (isComplete) {
-                                append("Complete")
-                                if (isSynced) append(" • Synced")
-                            } else {
-                                append("Incomplete")
-                                if (!isSynced) append(" • Not synced")
-                            }
-                        }
+                        // Fix sync status logic - check actual sync state, not just completion
+                        val hasBeenSynced = !isDraftInstance // If it's not a draft, it has been synced
+                        
+                        // For the top-right date, we'll use the ListCard's lastUpdated parameter
+                        val dateForTopRight = if (instance.lastUpdated != null) formattedDate else null
                         Row(
                             verticalAlignment = Alignment.CenterVertically,
                             modifier = Modifier.fillMaxWidth()
@@ -219,102 +250,80 @@ fun DatasetInstancesScreen(
                                 )
                             }
                             Box(modifier = Modifier.weight(1f)) {
-                                Row(
-                                    modifier = Modifier.fillMaxWidth(),
-                                    horizontalArrangement = Arrangement.SpaceBetween,
-                                    verticalAlignment = Alignment.CenterVertically
-                                ) {
-                                    ListCard(
-                                        listCardState = rememberListCardState(
-                                            title = ListCardTitleModel(
-                                                text = if (showAttrCombo) "$periodText $attrComboName" else periodText,
-                                                modifier = Modifier.padding(0.dp)
-                                            ),
-                                            description = ListCardDescriptionModel(
-                                                text = if (isLoading) "Loading..." else statusText,
-                                                modifier = Modifier
-                                            ),
-                                            additionalInfoColumnState = rememberAdditionalInfoColumnState(
-                                                additionalInfoList = listOf(
-                                                    AdditionalInfoItem(
-                                                        key = "Last Updated",
-                                                        value = formattedDate,
-                                                        isConstantItem = true
-                                                    )
-                                                ),
-                                                syncProgressItem = AdditionalInfoItem(
+                                // Create additional info items for status indicators
+                                val additionalInfoItems = mutableListOf<AdditionalInfoItem>()
+                                
+                                if (!bulkMode) {
+                                    when {
+                                        // For completed datasets: green "Complete" text + checkmarks
+                                        isComplete -> {
+                                            additionalInfoItems.add(
+                                                AdditionalInfoItem(
+                                                    key = "",
+                                                    value = "Complete ✓✓",
+                                                    color = org.hisp.dhis.mobile.ui.designsystem.theme.SurfaceColor.Primary
+                                                )
+                                            )
+                                        }
+                                        // For datasets that haven't been synced: sync indicator
+                                        !hasBeenSynced -> {
+                                            additionalInfoItems.add(
+                                                AdditionalInfoItem(
+                                                    key = "",
+                                                    value = "Not synced ⟳",
+                                                    color = org.hisp.dhis.mobile.ui.designsystem.theme.SurfaceColor.Primary
+                                                )
+                                            )
+                                        }
+                                        // For incomplete datasets: ensure consistent card sizing
+                                        else -> {
+                                            // Add empty placeholder to maintain consistent height
+                                            additionalInfoItems.add(
+                                                AdditionalInfoItem(
                                                     key = "",
                                                     value = "",
                                                     isConstantItem = true
-                                                ),
-                                                expandLabelText = "Show more",
-                                                shrinkLabelText = "Show Less",
-                                                minItemsToShow = 1,
-                                                scrollableContent = false
-                                            ),
-                                            shadow = true
-                                        ),
-                                        onCardClick = {
-                                            if (!isLoading && !bulkMode) {
-                                                val encodedDatasetId = URLEncoder.encode(datasetId, "UTF-8")
-                                                val encodedDatasetName = URLEncoder.encode(datasetName, "UTF-8")
-                                                navController.navigate("EditEntry/$encodedDatasetId/${instance.period.id}/${instance.organisationUnit.id}/${instance.attributeOptionCombo}/$encodedDatasetName") {
-                                                    launchSingleTop = true
-                                                    popUpTo("DatasetInstances/{datasetId}/{datasetName}") {
-                                                        saveState = true
-                                                    }
-                                                }
-                                            }
-                                        }
-                                    )
-                                    if (!bulkMode) {
-                                        // Use StatusInfo for better status organization
-                                        val statusInfo = when {
-                                            isDraftInstance -> StatusInfo(
-                                                text = "Draft",
-                                                icon = Icons.Default.Edit,
-                                                color = MaterialTheme.colorScheme.secondary,
-                                                backgroundColor = MaterialTheme.colorScheme.secondaryContainer
-                                            )
-                                            isComplete -> StatusInfo(
-                                                text = "Complete",
-                                                icon = Icons.Default.CheckCircle,
-                                                color = MaterialTheme.colorScheme.primary,
-                                                backgroundColor = MaterialTheme.colorScheme.primaryContainer
-                                            )
-                                            else -> StatusInfo(
-                                                text = "Incomplete",
-                                                icon = Icons.Default.CheckCircle,
-                                                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                                backgroundColor = MaterialTheme.colorScheme.surfaceVariant
-                                            )
-                                        }
-                                        
-                                        // Keep same visual structure but use StatusInfo
-                                        when {
-                                            instance.state == DatasetInstanceState.COMPLETE -> {
-                                                Icon(
-                                                    imageVector = statusInfo.icon,
-                                                    contentDescription = statusInfo.text,
-                                                    tint = statusInfo.color,
-                                                    modifier = Modifier
-                                                        .padding(start = 8.dp, end = 8.dp)
-                                                        .size(28.dp)
                                                 )
-                                            }
-                                            isDraftInstance -> {
-                                                Icon(
-                                                    imageVector = statusInfo.icon,
-                                                    contentDescription = statusInfo.text,
-                                                    tint = statusInfo.color,
-                                                    modifier = Modifier
-                                                        .padding(start = 8.dp, end = 8.dp)
-                                                        .size(24.dp)
-                                                )
-                                            }
+                                            )
                                         }
                                     }
                                 }
+                                
+                                ListCard(
+                                    modifier = Modifier.fillMaxWidth(),
+                                    listCardState = rememberListCardState(
+                                        title = ListCardTitleModel(
+                                            text = "${instance.organisationUnit.name} • $periodText", // Org unit and period in title
+                                            modifier = Modifier.padding(0.dp)
+                                        ),
+                                        description = if (showAttrCombo) ListCardDescriptionModel(
+                                            text = attrComboName, // Attribute option combo in second row as requested
+                                            modifier = Modifier
+                                        ) else null,
+                                        lastUpdated = dateForTopRight, // Date in top right corner, no colon
+                                        additionalInfoColumnState = rememberAdditionalInfoColumnState(
+                                            additionalInfoList = additionalInfoItems,
+                                            syncProgressItem = AdditionalInfoItem(
+                                                key = "",
+                                                value = "",
+                                                isConstantItem = true
+                                            )
+                                        ),
+                                        shadow = true
+                                    ),
+                                    onCardClick = {
+                                        if (!isLoading && !bulkMode) {
+                                            val encodedDatasetId = URLEncoder.encode(datasetId, "UTF-8")
+                                            val encodedDatasetName = URLEncoder.encode(datasetName, "UTF-8")
+                                            navController.navigate("EditEntry/$encodedDatasetId/${instance.period.id}/${instance.organisationUnit.id}/${instance.attributeOptionCombo}/$encodedDatasetName") {
+                                                launchSingleTop = true
+                                                popUpTo("DatasetInstances/{datasetId}/{datasetName}") {
+                                                    saveState = true
+                                                }
+                                            }
+                                        }
+                                    }
+                                )
                             }
                         }
                     }
@@ -389,6 +398,7 @@ fun DatasetInstancesScreen(
                 }
             }
         }
+    }
         
         // Filter Dialog - only show when data is loaded
         if (showFilterDialog && !state.isLoading) {
@@ -490,5 +500,127 @@ fun parseDhis2PeriodToDate(periodId: String): Date? {
         }
     } catch (e: Exception) {
         null
+    }
+}
+
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+fun DatasetInstancesPullDownFilter(
+    currentFilter: DatasetInstanceFilterState,
+    onApplyFilter: (DatasetInstanceFilterState) -> Unit
+) {
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(16.dp),
+        verticalArrangement = Arrangement.spacedBy(12.dp)
+    ) {
+        var searchQuery by remember { mutableStateOf(currentFilter.searchQuery) }
+        var syncStatus by remember { mutableStateOf(currentFilter.syncStatus) }
+        var completionStatus by remember { mutableStateOf(currentFilter.completionStatus) }
+        
+        var showSyncDropdown by remember { mutableStateOf(false) }
+        var showCompletionDropdown by remember { mutableStateOf(false) }
+        
+        // Search field
+        OutlinedTextField(
+            value = searchQuery,
+            onValueChange = { 
+                searchQuery = it
+                onApplyFilter(
+                    currentFilter.copy(searchQuery = searchQuery)
+                )
+            },
+            label = { Text("Search dataset instances") },
+            placeholder = { Text("Enter org unit, period...") },
+            modifier = Modifier.fillMaxWidth(),
+            leadingIcon = {
+                Icon(Icons.Default.FilterList, contentDescription = null)
+            }
+        )
+        
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.spacedBy(8.dp)
+        ) {
+            // Sync Status Filter
+            Box(modifier = Modifier.weight(1f)) {
+                OutlinedTextField(
+                    value = syncStatus.displayName,
+                    onValueChange = { },
+                    label = { Text("Sync Status") },
+                    readOnly = true,
+                    modifier = Modifier.fillMaxWidth(),
+                    trailingIcon = {
+                        IconButton(onClick = { showSyncDropdown = !showSyncDropdown }) {
+                            Icon(Icons.Default.ArrowDropDown, contentDescription = null)
+                        }
+                    }
+                )
+                
+                DropdownMenu(
+                    expanded = showSyncDropdown,
+                    onDismissRequest = { showSyncDropdown = false }
+                ) {
+                    SyncStatus.entries.forEach { status ->
+                        DropdownMenuItem(
+                            text = { Text(status.displayName) },
+                            onClick = {
+                                syncStatus = status
+                                showSyncDropdown = false
+                                onApplyFilter(currentFilter.copy(syncStatus = syncStatus))
+                            }
+                        )
+                    }
+                }
+            }
+            
+            // Completion Status Filter  
+            Box(modifier = Modifier.weight(1f)) {
+                OutlinedTextField(
+                    value = completionStatus.displayName,
+                    onValueChange = { },
+                    label = { Text("Completion") },
+                    readOnly = true,
+                    modifier = Modifier.fillMaxWidth(),
+                    trailingIcon = {
+                        IconButton(onClick = { showCompletionDropdown = !showCompletionDropdown }) {
+                            Icon(Icons.Default.ArrowDropDown, contentDescription = null)
+                        }
+                    }
+                )
+                
+                DropdownMenu(
+                    expanded = showCompletionDropdown,
+                    onDismissRequest = { showCompletionDropdown = false }
+                ) {
+                    CompletionStatus.entries.forEach { status ->
+                        DropdownMenuItem(
+                            text = { Text(status.displayName) },
+                            onClick = {
+                                completionStatus = status
+                                showCompletionDropdown = false
+                                onApplyFilter(currentFilter.copy(completionStatus = completionStatus))
+                            }
+                        )
+                    }
+                }
+            }
+        }
+        
+        // Clear button
+        if (searchQuery.isNotBlank() || syncStatus != SyncStatus.ALL || completionStatus != CompletionStatus.ALL) {
+            OutlinedButton(
+                onClick = {
+                    searchQuery = ""
+                    syncStatus = SyncStatus.ALL
+                    completionStatus = CompletionStatus.ALL
+                    onApplyFilter(DatasetInstanceFilterState())
+                },
+                modifier = Modifier.align(Alignment.CenterHorizontally)
+            ) {
+                Text("Clear Filters")
+            }
+        }
     }
 }

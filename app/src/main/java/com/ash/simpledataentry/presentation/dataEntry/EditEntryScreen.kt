@@ -5,7 +5,8 @@ package com.ash.simpledataentry.presentation.dataEntry
 import android.annotation.SuppressLint
 import android.util.Log
 import androidx.compose.animation.AnimatedVisibility
-import androidx.compose.animation.core.animateFloatAsState
+import androidx.compose.animation.core.*
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.interaction.MutableInteractionSource
@@ -24,6 +25,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.rotate
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.input.TextFieldValue
@@ -86,6 +88,7 @@ fun EditEntryScreen(
     val currentParams = Quadruple(datasetId, period, orgUnit, attributeOptionCombo)
     val snackbarHostState = remember { SnackbarHostState() }
     val coroutineScope = rememberCoroutineScope()
+    var isUIReady by remember { mutableStateOf(false) }
     val showSaveDialog = remember { mutableStateOf(false) }
     val showSyncDialog = remember { mutableStateOf(false) }
     val pendingNavAction = remember { mutableStateOf<(() -> Unit)?>(null) }
@@ -244,6 +247,7 @@ fun EditEntryScreen(
 
     LaunchedEffect(currentParams) {
         if (state.dataValues.isEmpty() || lastLoadedParams != currentParams) {
+            isUIReady = false
             viewModel.loadDataValues(
                 datasetId = datasetId,
                 datasetName = datasetName,
@@ -253,6 +257,13 @@ fun EditEntryScreen(
                 isEditMode = true
             )
             lastLoadedParams = currentParams
+        }
+    }
+    
+    LaunchedEffect(state.isLoading, state.dataValues) {
+        if (!state.isLoading && state.dataValues.isNotEmpty()) {
+            delay(300)
+            isUIReady = true
         }
     }
     fun manualRefresh() {
@@ -368,7 +379,7 @@ fun EditEntryScreen(
         }
     ) {
         Box(modifier = Modifier.fillMaxSize()) {
-            if (state.isLoading) {
+            if (state.isLoading || !isUIReady) {
                 Box(
                     modifier = Modifier
                         .fillMaxSize()
@@ -379,15 +390,11 @@ fun EditEntryScreen(
                         horizontalAlignment = Alignment.CenterHorizontally,
                         verticalArrangement = Arrangement.Center
                     ) {
-                        CircularProgressIndicator(
-                            modifier = Modifier.size(48.dp),
-                            strokeWidth = 4.dp,
-                            color = MaterialTheme.colorScheme.primary
-                        )
-                        Spacer(modifier = Modifier.height(16.dp))
+                        Dhis2PulsingLoader()
+                        Spacer(modifier = Modifier.height(24.dp))
                         Text(
                             text = "Loading form...",
-                            style = MaterialTheme.typography.bodyLarge,
+                            style = MaterialTheme.typography.headlineSmall,
                             color = MaterialTheme.colorScheme.onSurface
                         )
                     }
@@ -2029,5 +2036,56 @@ private fun sortCategoriesByOptionCount(
     categories: List<Pair<String, List<Pair<String, String>>>>
 ): List<Pair<String, List<Pair<String, String>>>> {
     return categories.sortedByDescending { it.second.size }
+}
+
+@Composable
+private fun Dhis2PulsingLoader() {
+    Row(
+        horizontalArrangement = Arrangement.spacedBy(12.dp),
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        repeat(3) { index ->
+            val infiniteTransition = rememberInfiniteTransition(label = "pulseTransition")
+            val scale by infiniteTransition.animateFloat(
+                initialValue = 0.8f,
+                targetValue = 1.3f,
+                animationSpec = infiniteRepeatable(
+                    animation = tween(
+                        durationMillis = 800,
+                        delayMillis = index * 200,
+                        easing = EaseInOut
+                    ),
+                    repeatMode = RepeatMode.Reverse
+                ),
+                label = "scaleAnimation"
+            )
+            
+            val alpha by infiniteTransition.animateFloat(
+                initialValue = 0.5f,
+                targetValue = 1.0f,
+                animationSpec = infiniteRepeatable(
+                    animation = tween(
+                        durationMillis = 800,
+                        delayMillis = index * 200,
+                        easing = EaseInOut
+                    ),
+                    repeatMode = RepeatMode.Reverse
+                ),
+                label = "alphaAnimation"
+            )
+            
+            Surface(
+                modifier = Modifier
+                    .size(16.dp)
+                    .graphicsLayer {
+                        scaleX = scale
+                        scaleY = scale
+                        this.alpha = alpha
+                    },
+                shape = CircleShape,
+                color = MaterialTheme.colorScheme.primary
+            ) {}
+        }
+    }
 }
 

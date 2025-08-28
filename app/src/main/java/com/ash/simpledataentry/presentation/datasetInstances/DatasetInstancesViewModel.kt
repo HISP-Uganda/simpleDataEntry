@@ -382,7 +382,14 @@ class DatasetInstancesViewModel @Inject constructor(
             } else {
                 instance.attributeOptionCombo == filter.attributeOptionCombo
             }
-            periodMatches && syncStatusMatches && completionMatches && attributeOptionComboMatches
+            val searchMatches = if (filter.searchQuery.isBlank()) {
+                true
+            } else {
+                val query = filter.searchQuery.lowercase()
+                instance.organisationUnit.name.lowercase().contains(query) ||
+                        instance.period.id.lowercase().contains(query)
+            }
+            periodMatches && syncStatusMatches && completionMatches && attributeOptionComboMatches && searchMatches
         }
     }
 
