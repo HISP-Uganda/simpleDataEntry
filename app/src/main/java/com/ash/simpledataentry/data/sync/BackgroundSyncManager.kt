@@ -55,7 +55,7 @@ class BackgroundSyncManager @Inject constructor(
      */
     private fun schedulePeriodicSync(frequency: SyncFrequency) {
         val constraints = Constraints.Builder()
-            .setRequiredNetworkType(NetworkType.CONNECTED)
+            .setRequiredNetworkType(androidx.work.NetworkType.CONNECTED)
             .setRequiresBatteryNotLow(true)
             .build()
             
@@ -94,7 +94,7 @@ class BackgroundSyncManager @Inject constructor(
      */
     fun triggerImmediateSync() {
         val constraints = Constraints.Builder()
-            .setRequiredNetworkType(NetworkType.CONNECTED)
+            .setRequiredNetworkType(androidx.work.NetworkType.CONNECTED)
             .build()
             
         val oneTimeWorkRequest = OneTimeWorkRequestBuilder<BackgroundSyncWorker>()

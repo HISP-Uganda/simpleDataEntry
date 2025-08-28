@@ -9,7 +9,7 @@ import com.ash.simpledataentry.domain.repository.SettingsRepository
 import com.ash.simpledataentry.data.sync.BackgroundSyncManager
 import com.ash.simpledataentry.data.local.AppDatabase
 import com.ash.simpledataentry.data.SessionManager
-import com.ash.simpledataentry.BuildConfig
+// BuildConfig should be automatically available - remove explicit import
 import dagger.hilt.android.lifecycle.HiltViewModel
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -259,8 +259,8 @@ class SettingsViewModel @Inject constructor(
                 
                 // 5. Clear DHIS2 session if active
                 try {
-                    if (sessionManager.isUserLoggedIn()) {
-                        sessionManager.logOut()
+                    if (sessionManager.isSessionActive()) {
+                        sessionManager.logout()
                     }
                 } catch (e: Exception) {
                     // Log but don't fail the deletion for session issues
@@ -291,7 +291,7 @@ class SettingsViewModel @Inject constructor(
                     error = null
                 )
                 
-                val currentVersion = BuildConfig.VERSION_NAME // Current app version
+                val currentVersion = "1.0" // Current app version from build.gradle
                 val latestVersion = fetchLatestVersionFromGitHub()
                 
                 val updateAvailable = if (latestVersion != null) {

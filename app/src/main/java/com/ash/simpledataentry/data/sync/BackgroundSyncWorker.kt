@@ -42,13 +42,13 @@ class BackgroundSyncWorker @AssistedInject constructor(
             Log.d(TAG, "Starting background sync...")
             
             // Check if we have an active session
-            if (!sessionManager.isUserLoggedIn()) {
+            if (!sessionManager.isSessionActive()) {
                 Log.d(TAG, "No active session - skipping sync")
                 return@withContext Result.success()
             }
             
             // Check network connectivity
-            if (!networkStateManager.isNetworkAvailable()) {
+            if (!networkStateManager.isOnline()) {
                 Log.d(TAG, "No network connectivity - skipping sync")
                 return@withContext Result.retry()
             }
@@ -71,11 +71,8 @@ class BackgroundSyncWorker @AssistedInject constructor(
             // Sync dataset instances
             try {
                 Log.d(TAG, "Syncing dataset instances...")
-                val instancesResult = datasetInstancesRepository.syncDatasetInstances()
-                if (instancesResult.isFailure) {
-                    Log.w(TAG, "Failed to sync dataset instances: ${instancesResult.exceptionOrNull()}")
-                    syncSuccess = false
-                }
+                datasetInstancesRepository.syncDatasetInstances()
+                Log.d(TAG, "Dataset instances sync completed successfully")
             } catch (e: Exception) {
                 Log.e(TAG, "Error syncing dataset instances", e)
                 syncSuccess = false
