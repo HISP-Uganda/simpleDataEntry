@@ -156,9 +156,8 @@ class DataEntryRepositoryImpl @Inject constructor(
     ): Flow<List<DataValue>> = flow {
         Log.d("DataEntryRepositoryImpl", "Starting optimized getDataValues for dataset: $datasetId")
         
-        // PERFORMANCE OPTIMIZATION: Always use cached data for faster loading
-        // Only fall back to online mode if cache is missing or explicitly requested
-        val preferCachedData = true // Always prefer cached data for performance
+        // OFFLINE-FIRST APPROACH: Always use cached data for instant loading
+        // Only fetch fresh data during explicit sync operations, not on screen loads
         val isOffline = !NetworkUtils.isNetworkAvailable(context)
         
         // Check if we have basic metadata in Room (hydrated during login)
@@ -170,159 +169,83 @@ class DataEntryRepositoryImpl @Inject constructor(
         }
         
         if (!hasBasicMetadata) {
-            if (isOffline) {
-                emit(emptyList())
-                return@flow
-            }
-            // This shouldn't happen if login properly hydrated Room, but fallback to original logic
-            Log.w("DataEntryRepositoryImpl", "Basic metadata missing from Room, this indicates login hydration failed")
+            // If no metadata cached, user needs to go online and login first
+            Log.w("DataEntryRepositoryImpl", "No metadata cached - requires initial online login and sync")
             emit(emptyList())
             return@flow
         }
         
-        if (preferCachedData || isOffline) {
-            // PERFORMANCE: Always use cached data first for fast loading
-            Log.d("DataEntryRepositoryImpl", if (isOffline) "Using offline mode with cached metadata" else "Using cached data for performance (online)")
-            
-            val drafts = withContext(Dispatchers.IO) {
-                draftDao.getDraftsForInstance(datasetId, period, orgUnit, attributeOptionCombo)
-            }
-            val draftMap = drafts.associateBy { it.dataElement to it.categoryOptionCombo }
-            
-            // Use optimized cache service for offline mode
-            val optimizedData = metadataCacheService.getOptimizedDataForEntry(datasetId, period, orgUnit, attributeOptionCombo)
-            
-            val merged = optimizedData.sections.flatMap { section ->
-                section.dataElementUids.flatMap { deUid ->
-                    val dataElement = optimizedData.dataElements[deUid]
-                    val comboId = dataElement?.categoryComboId ?: ""
-                    val combos = optimizedData.categoryOptionCombos.values.filter { it.categoryComboId == comboId }
-                    
-                    // Get display name with proper fallback hierarchy
-                    val dataElementName = getDataElementDisplayName(deUid) ?: dataElement?.name ?: deUid
-                    
-                    if (combos.isEmpty()) {
-                        val draft = draftMap[deUid to ""]
-                        listOf(DataValue(
-                            dataElement = deUid,
-                            dataElementName = dataElementName,
-                            sectionName = section.name,
-                            categoryOptionCombo = "",
-                            categoryOptionComboName = "Default",
-                            value = draft?.value,
-                            comment = draft?.comment,
-                            storedBy = null,
-                            validationState = ValidationState.VALID,
-                            dataEntryType = DataEntryType.TEXT,
-                            lastModified = draft?.lastModified ?: System.currentTimeMillis(),
-                            validationRules = emptyList()
-                        ))
-                    } else {
-                        combos.map { coc ->
-                            val draft = draftMap[deUid to coc.id]
-                            DataValue(
-                                dataElement = deUid,
-                                dataElementName = dataElementName,
-                                sectionName = section.name,
-                                categoryOptionCombo = coc.id,
-                                categoryOptionComboName = coc.name,
-                                value = draft?.value,
-                                comment = draft?.comment,
-                                storedBy = null,
-                                validationState = ValidationState.VALID,
-                                dataEntryType = DataEntryType.TEXT,
-                                lastModified = draft?.lastModified ?: System.currentTimeMillis(),
-                                validationRules = emptyList()
-                            )
-                        }
-                    }
-                }
-            }
-            emit(merged)
-            return@flow
+        // OFFLINE-FIRST: Always use cached data for instant loading (both online and offline)
+        Log.d("DataEntryRepositoryImpl", "Using cached data for instant loading (offline-first approach)")
+        
+        // Get drafts (unsaved user changes) 
+        val drafts = withContext(Dispatchers.IO) {
+            draftDao.getDraftsForInstance(datasetId, period, orgUnit, attributeOptionCombo)
+        }
+        val draftMap = drafts.associateBy { it.dataElement to it.categoryOptionCombo }
+        
+        // Get cached data values (from previous sync/login)
+        val cachedDataValues = withContext(Dispatchers.IO) {
+            dataValueDao.getValuesForInstance(datasetId, period, orgUnit, attributeOptionCombo)
+                .associateBy { it.dataElement to it.categoryOptionCombo }
         }
         
-        // Online mode: Use optimized cache service
-        Log.d("DataEntryRepositoryImpl", "Using online mode with optimized cache service")
-        
+        // Get metadata from cache (fast)
         val optimizedData = metadataCacheService.getOptimizedDataForEntry(datasetId, period, orgUnit, attributeOptionCombo)
         
-        Log.d("DataEntryRepositoryImpl", "Optimized data loaded: ${optimizedData.sections.size} sections, ${optimizedData.sdkDataValues.size} data values")
-        
-        // Build DataValue objects using cached metadata and fresh data values
+        // Build DataValue objects using cached metadata and data, prioritizing drafts
         val mappedDataValues = optimizedData.sections.flatMap { section ->
             section.dataElementUids.flatMap { deUid ->
-                val cachedDataElement = optimizedData.dataElements[deUid]
+                val dataElement = optimizedData.dataElements[deUid]
+                val comboId = dataElement?.categoryComboId ?: ""
+                val combos = optimizedData.categoryOptionCombos.values.filter { it.categoryComboId == comboId }
                 
-                if (cachedDataElement == null) {
-                    Log.w("DataEntryRepositoryImpl", "Data element $deUid not found in cache")
-                    emptyList()
-                } else {
-                    val comboId = cachedDataElement.categoryComboId ?: "default"
-                    val allCombos = optimizedData.categoryOptionCombos.values.filter { it.categoryComboId == comboId }
+                // Get display name with proper fallback hierarchy
+                val dataElementName = getDataElementDisplayName(deUid) ?: dataElement?.name ?: deUid
+                
+                if (combos.isEmpty()) {
+                    val draft = draftMap[deUid to ""]
+                    val cached = cachedDataValues[deUid to ""]
                     
-                    if (allCombos.isEmpty()) {
-                        // No combos, just default
-                        val valueObj = optimizedData.sdkDataValues[deUid to ""]
-                        val dataElementName = getDataElementDisplayName(deUid) ?: cachedDataElement.name
+                    listOf(DataValue(
+                        dataElement = deUid,
+                        dataElementName = dataElementName,
+                        sectionName = section.name,
+                        categoryOptionCombo = "",
+                        categoryOptionComboName = "Default",
+                        value = draft?.value ?: cached?.value, // Draft takes priority over cached
+                        comment = draft?.comment ?: cached?.comment,
+                        storedBy = null, // Cached data doesn't store storedBy info
+                        validationState = ValidationState.VALID,
+                        dataEntryType = getDataEntryTypeFromString(dataElement?.valueType ?: "TEXT"),
+                        lastModified = draft?.lastModified ?: cached?.lastModified ?: System.currentTimeMillis(),
+                        validationRules = getValidationRulesFromString(dataElement?.valueType ?: "TEXT")
+                    ))
+                } else {
+                    combos.map { coc ->
+                        val draft = draftMap[deUid to coc.id]
+                        val cached = cachedDataValues[deUid to coc.id]
                         
-                        listOf(DataValue(
+                        DataValue(
                             dataElement = deUid,
                             dataElementName = dataElementName,
                             sectionName = section.name,
-                            categoryOptionCombo = "",
-                            categoryOptionComboName = "Default",
-                            value = valueObj?.value(),
-                            comment = valueObj?.comment(),
-                            storedBy = valueObj?.storedBy(),
+                            categoryOptionCombo = coc.id,
+                            categoryOptionComboName = coc.name,
+                            value = draft?.value ?: cached?.value, // Draft takes priority over cached
+                            comment = draft?.comment ?: cached?.comment,
+                            storedBy = null, // Cached data doesn't store storedBy info
                             validationState = ValidationState.VALID,
-                            dataEntryType = getDataEntryTypeFromString(cachedDataElement.valueType),
-                            lastModified = valueObj?.lastUpdated()?.time ?: System.currentTimeMillis(),
-                            validationRules = getValidationRulesFromString(cachedDataElement.valueType)
-                        ))
-                    } else {
-                        allCombos.map { coc ->
-                            val valueObj = optimizedData.sdkDataValues[deUid to coc.id]
-                            val dataElementName = getDataElementDisplayName(deUid) ?: cachedDataElement.name
-                            
-                            DataValue(
-                                dataElement = deUid,
-                                dataElementName = dataElementName,
-                                sectionName = section.name,
-                                categoryOptionCombo = coc.id,
-                                categoryOptionComboName = coc.name,
-                                value = valueObj?.value(),
-                                comment = valueObj?.comment(),
-                                storedBy = valueObj?.storedBy(),
-                                validationState = ValidationState.VALID,
-                                dataEntryType = getDataEntryTypeFromString(cachedDataElement.valueType),
-                                lastModified = valueObj?.lastUpdated()?.time ?: System.currentTimeMillis(),
-                                validationRules = getValidationRulesFromString(cachedDataElement.valueType)
-                            )
-                        }
+                            dataEntryType = getDataEntryTypeFromString(dataElement?.valueType ?: "TEXT"),
+                            lastModified = draft?.lastModified ?: cached?.lastModified ?: System.currentTimeMillis(),
+                            validationRules = getValidationRulesFromString(dataElement?.valueType ?: "TEXT")
+                        )
                     }
                 }
             }
         }
         
-        Log.d("DataEntryRepositoryImpl", "Mapped ${mappedDataValues.size} data values")
-        
-        // Save to Room for caching
-        val valueEntities = mappedDataValues.map { dataValue ->
-            DataValueEntity(
-                datasetId = datasetId,
-                period = period,
-                orgUnit = orgUnit,
-                attributeOptionCombo = attributeOptionCombo,
-                dataElement = dataValue.dataElement,
-                categoryOptionCombo = dataValue.categoryOptionCombo,
-                value = dataValue.value,
-                comment = dataValue.comment,
-                lastModified = dataValue.lastModified
-            )
-        }
-        dataValueDao.insertAll(valueEntities)
-        
+        Log.d("DataEntryRepositoryImpl", "Loaded ${mappedDataValues.size} data values from cache (instant loading)")
         emit(mappedDataValues)
     }
 

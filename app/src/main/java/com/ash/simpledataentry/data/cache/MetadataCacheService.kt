@@ -66,9 +66,8 @@ class MetadataCacheService @Inject constructor(
         // 5. Get org units from Room (already hydrated during login)
         val orgUnits = organisationUnitDao.getAll().associateBy { it.id }
         
-        // 6. Get data values - prefer cached/local data for performance
-        // For performance optimization, we'll let the caller handle data values from drafts
-        // This eliminates the SDK call that was causing slow loading
+        // 6. For offline-first approach, we don't fetch SDK data values here
+        // Data values are retrieved from Room cache in the repository for instant loading
         val sdkDataValues = emptyMap<Pair<String, String>, org.hisp.dhis.android.core.datavalue.DataValue>()
         
         Log.d("MetadataCacheService", "Optimized cache load complete: ${sections.size} sections, ${dataElements.size} data elements")
