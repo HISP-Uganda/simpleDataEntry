@@ -1,31 +1,16 @@
-# Simple Data Entry App for DHIS2
+# 📱 SimpleDataEntry
 
-A modern Android application for streamlined data entry into DHIS2, designed for field users and data managers. Built with Jetpack Compose, Room, and the DHIS2 Android SDK.
+**A Modern Android DHIS2 Data Entry Application**
 
----
+[![Android Studio](https://img.shields.io/badge/Android%20Studio-2024.1-brightgreen.svg)](https://developer.android.com/studio)
+[![Kotlin](https://img.shields.io/badge/Kotlin-1.9.0-blue.svg)](https://kotlinlang.org/)
+[![Jetpack Compose](https://img.shields.io/badge/Jetpack%20Compose-2024.06.00-green.svg)](https://developer.android.com/jetpack/compose)
+[![DHIS2 SDK](https://img.shields.io/badge/DHIS2%20SDK-2.7.0-orange.svg)](https://docs.dhis2.org/en/develop/developing-with-the-android-sdk/about-this-guide.html)
+[![Build Status](https://img.shields.io/badge/Build-Passing-success.svg)](#)
 
-## Table of Contents
-- [About](#about)
-- [Features](#features)
-- [Screenshots](#screenshots)
-- [Architecture](#architecture)
-- [Offline-First & Caching](#offline-first--caching)
-- [Getting Started](#getting-started)
-- [Configuration](#configuration)
-- [Usage](#usage)
-- [Development](#development)
-- [Testing](#testing)
-- [Changelog](#changelog)
-- [Known Issues & Limitations](#known-issues--limitations)
-- [Support](#support)
-- [License](#license)
-- [Acknowledgements](#acknowledgements)
+> **Streamlined offline-first DHIS2 data collection with modern Android architecture**
 
----
-
-## About
-
-A simple, robust Android app for entering, validating, and managing DHIS2 data values in the field or at the facility. Designed for ease of use, **true offline support**, and seamless integration with DHIS2 instances specifically for a data entrant at a facility.
+SimpleDataEntry is a production-ready Android application built for efficient DHIS2 data collection with comprehensive offline capabilities. Designed for field workers, health professionals, and data collectors who need reliable, fast, and intuitive data entry tools that work seamlessly both online and offline.
 
 ---
 

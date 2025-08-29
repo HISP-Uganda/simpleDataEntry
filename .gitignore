@@ -128,12 +128,7 @@ temp_icons/
 # Reports
 build/reports/
 
+# Documentation and analysis files
+docs/
+
 # Ignore everything in .taskmaster except .gitignore
-
-/app/src/main/java/com.ash.simpledataentry/presentation/dataEntry/RENDERING_RULES.md
-
-/sclaude.md
-
-/README.md
-
-/accordionLogic.md
