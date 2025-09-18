@@ -41,6 +41,15 @@ interface DataEntryRepository {
 
     // Push all local drafts/unsynced data to the server
     suspend fun pushAllLocalData()
+
+    // Push data for specific dataset instance only
+    suspend fun pushDataForInstance(
+        datasetId: String,
+        period: String,
+        orgUnit: String,
+        attributeOptionCombo: String
+    )
+
     suspend fun syncCurrentEntryForm()
 }
 

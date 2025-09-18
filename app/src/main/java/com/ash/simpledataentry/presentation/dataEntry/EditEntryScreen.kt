@@ -59,6 +59,7 @@ import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.ArrowBack
 import androidx.compose.material.icons.filled.Sync
 import androidx.compose.material.icons.filled.Check
+import androidx.compose.material.icons.filled.CheckCircle
 import androidx.compose.ui.platform.LocalContext
 import kotlin.Pair
 import androidx.compose.runtime.Composable
@@ -69,6 +70,9 @@ import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalFocusManager
 import com.ash.simpledataentry.presentation.dataEntry.components.FrozenHeaderGrid
 import com.ash.simpledataentry.presentation.dataEntry.components.SectionNavigator
+import com.ash.simpledataentry.presentation.core.FullScreenLoader
+import com.ash.simpledataentry.presentation.core.CompactLoader
+import com.ash.simpledataentry.presentation.core.OverlayLoader
 
 data class Quadruple<A, B, C, D>(val first: A, val second: B, val third: C, val fourth: D)
 
@@ -91,6 +95,7 @@ fun EditEntryScreen(
     var isUIReady by remember { mutableStateOf(false) }
     val showSaveDialog = remember { mutableStateOf(false) }
     val showSyncDialog = remember { mutableStateOf(false) }
+    var showCompleteDialog by remember { mutableStateOf(false) }
     val pendingNavAction = remember { mutableStateOf<(() -> Unit)?>(null) }
     
     // Debug log for showSyncDialog state changes
@@ -154,8 +159,8 @@ fun EditEntryScreen(
                 Row {
                     TextButton(onClick = {
                         showSaveDialog.value = false
-                        // Discard: clear drafts/dirty values, then navigate
-                        viewModel.clearDraftsForCurrentInstance()
+                        // Discard: clear only current session changes, preserve existing drafts
+                        viewModel.clearCurrentSessionChanges()
                         pendingNavAction.value?.invoke()
                     }) { Text("Discard") }
                     TextButton(onClick = {
@@ -172,7 +177,8 @@ fun EditEntryScreen(
         SyncConfirmationDialog(
             syncOptions = SyncOptions(
                 uploadLocalData = state.localDraftCount > 0,
-                localInstanceCount = state.localDraftCount
+                localInstanceCount = state.localDraftCount,
+                isEditEntryContext = true
             ),
             onConfirm = { uploadFirst ->
                 Log.d("EditEntryScreen", "SyncConfirmationDialog onConfirm called with uploadFirst: $uploadFirst")
@@ -188,11 +194,39 @@ fun EditEntryScreen(
         )
     }
 
+    // Mark incomplete dialog - shown when dataset is already completed
+    if (showCompleteDialog) {
+        AlertDialog(
+            onDismissRequest = { showCompleteDialog = false },
+            title = { Text("Dataset Already Complete") },
+            text = { Text("This dataset is already marked as complete. Do you want to mark it as incomplete so you can edit it?") },
+            confirmButton = {
+                TextButton(onClick = {
+                    showCompleteDialog = false
+                    viewModel.markDatasetIncomplete { success, message ->
+                        coroutineScope.launch {
+                            if (success) {
+                                snackbarHostState.showSnackbar(message ?: "Dataset marked as incomplete.")
+                            } else {
+                                snackbarHostState.showSnackbar(message ?: "Failed to mark as incomplete.")
+                            }
+                        }
+                    }
+                }) { Text("Mark Incomplete") }
+            },
+            dismissButton = {
+                TextButton(onClick = {
+                    showCompleteDialog = false
+                }) { Text("Cancel") }
+            }
+        )
+    }
+
     // Validation result dialog for completion
     state.validationSummary?.let { validationSummary ->
         ValidationResultDialog(
             validationSummary = validationSummary,
-            showCompletionOption = true,
+            showCompletionOption = !state.isCompleted, // Only show completion options if not already completed
             onComplete = {
                 viewModel.completeDatasetAfterValidation { success, message ->
                     coroutineScope.launch {
@@ -350,7 +384,11 @@ fun EditEntryScreen(
                 enabled = !state.isSyncing
             ) {
                 if (state.isSyncing) {
-                    CircularProgressIndicator(modifier = Modifier.size(24.dp), strokeWidth = 2.dp)
+                    CircularProgressIndicator(
+                        modifier = Modifier.size(24.dp),
+                        strokeWidth = 2.dp,
+                        color = MaterialTheme.colorScheme.primary
+                    )
                 } else {
                     Icon(
                         imageVector = Icons.Default.Sync,
@@ -359,61 +397,61 @@ fun EditEntryScreen(
                     )
                 }
             }
-            // Add checkmark for completion
+            // Complete button with improved behavior
             IconButton(
                 onClick = {
-                    viewModel.startValidationForCompletion()
+                    if (state.isCompleted) {
+                        // Show dialog asking whether to run validation or mark as incomplete
+                        showCompleteDialog = true
+                    } else {
+                        viewModel.startValidationForCompletion()
+                    }
                 },
-                enabled = !state.isLoading && !state.isCompleted && !state.isValidating
+                enabled = !state.isLoading && !state.isValidating
             ) {
                 if (state.isValidating) {
-                    CircularProgressIndicator(modifier = Modifier.size(24.dp), strokeWidth = 2.dp)
+                    CircularProgressIndicator(
+                        modifier = Modifier.size(24.dp),
+                        strokeWidth = 2.dp,
+                        color = MaterialTheme.colorScheme.primary
+                    )
                 } else {
                     Icon(
-                        imageVector = Icons.Default.Check,
-                        contentDescription = "Mark Complete",
+                        imageVector = if (state.isCompleted) Icons.Default.CheckCircle else Icons.Default.Check,
+                        contentDescription = if (state.isCompleted) "Already Complete" else "Mark Complete",
                         tint = if (state.isCompleted) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurface
                     )
                 }
             }
         }
     ) {
-        Box(modifier = Modifier.fillMaxSize()) {
+        // Use OverlayLoader for sync operations (header actions)
+        OverlayLoader(
+            message = "Syncing...",
+            isVisible = state.isSyncing,
+            modifier = Modifier.fillMaxSize()
+        ) {
             if (state.isLoading || !isUIReady) {
-                Box(
-                    modifier = Modifier
-                        .fillMaxSize()
-                        .background(MaterialTheme.colorScheme.surface),
-                    contentAlignment = Alignment.Center
-                ) {
-                    Column(
-                        horizontalAlignment = Alignment.CenterHorizontally,
-                        verticalArrangement = Arrangement.Center
-                    ) {
-                        Dhis2PulsingLoader()
-                        Spacer(modifier = Modifier.height(24.dp))
-                        Text(
-                            text = "Loading form...",
-                            style = MaterialTheme.typography.headlineSmall,
-                            color = MaterialTheme.colorScheme.onSurface
-                        )
-                    }
-                }
+                // Use FullScreenLoader for navigation loading
+                FullScreenLoader(
+                    message = "Loading form...",
+                    isVisible = true
+                )
             } else {
+                Box(modifier = Modifier.fillMaxSize()) {
+                    Column(
+                        modifier = Modifier
+                            .fillMaxSize()
+                            .background(MaterialTheme.colorScheme.background)
+                    ) {
 
-                Column(
-                    modifier = Modifier
-                        .fillMaxSize()
-                        .background(MaterialTheme.colorScheme.background)
-                ) {
-                    
-                    if (state.dataValues.isEmpty()) {
-                        Text(
-                            text = "No data elements found for this dataset/period/org unit.",
-                            color = MaterialTheme.colorScheme.error,
-                            modifier = Modifier.align(Alignment.CenterHorizontally)
-                        )
-                    } else {
+                        if (state.dataValues.isEmpty()) {
+                            Text(
+                                text = "No data elements found for this dataset/period/org unit.",
+                                color = MaterialTheme.colorScheme.error,
+                                modifier = Modifier.align(Alignment.CenterHorizontally)
+                            )
+                        } else {
                         val bringIntoViewRequester = remember { BringIntoViewRequester() }
                         val coroutineScope = rememberCoroutineScope()
                         val listState = rememberLazyListState()
@@ -711,6 +749,7 @@ fun EditEntryScreen(
                             }
                         }
                     )
+                }
                 }
             }
         }
@@ -2038,54 +2077,4 @@ private fun sortCategoriesByOptionCount(
     return categories.sortedByDescending { it.second.size }
 }
 
-@Composable
-private fun Dhis2PulsingLoader() {
-    Row(
-        horizontalArrangement = Arrangement.spacedBy(12.dp),
-        verticalAlignment = Alignment.CenterVertically
-    ) {
-        repeat(3) { index ->
-            val infiniteTransition = rememberInfiniteTransition(label = "pulseTransition")
-            val scale by infiniteTransition.animateFloat(
-                initialValue = 0.8f,
-                targetValue = 1.3f,
-                animationSpec = infiniteRepeatable(
-                    animation = tween(
-                        durationMillis = 800,
-                        delayMillis = index * 200,
-                        easing = EaseInOut
-                    ),
-                    repeatMode = RepeatMode.Reverse
-                ),
-                label = "scaleAnimation"
-            )
-            
-            val alpha by infiniteTransition.animateFloat(
-                initialValue = 0.5f,
-                targetValue = 1.0f,
-                animationSpec = infiniteRepeatable(
-                    animation = tween(
-                        durationMillis = 800,
-                        delayMillis = index * 200,
-                        easing = EaseInOut
-                    ),
-                    repeatMode = RepeatMode.Reverse
-                ),
-                label = "alphaAnimation"
-            )
-            
-            Surface(
-                modifier = Modifier
-                    .size(16.dp)
-                    .graphicsLayer {
-                        scaleX = scale
-                        scaleY = scale
-                        this.alpha = alpha
-                    },
-                shape = CircleShape,
-                color = MaterialTheme.colorScheme.primary
-            ) {}
-        }
-    }
-}
 

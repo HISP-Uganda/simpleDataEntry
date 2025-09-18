@@ -13,7 +13,8 @@ import androidx.compose.ui.unit.dp
 
 data class SyncOptions(
     val uploadLocalData: Boolean = false,
-    val localInstanceCount: Int = 0
+    val localInstanceCount: Int = 0,
+    val isEditEntryContext: Boolean = false // true when called from edit entry screen
 )
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -38,7 +39,7 @@ fun SyncConfirmationDialog(
                         imageVector = Icons.Default.Sync,
                         contentDescription = null
                     )
-                    Text("Sync Dataset Instances")
+                    Text(if (syncOptions.isEditEntryContext) "Sync Data Values" else "Sync Dataset Instances")
                 }
             },
             text = {
@@ -79,7 +80,11 @@ fun SyncConfirmationDialog(
                                     )
                                 }
                                 Text(
-                                    text = "You have ${syncOptions.localInstanceCount} local dataset instance(s) that haven't been uploaded to the server.",
+                                    text = if (syncOptions.isEditEntryContext) {
+                                        "You have ${syncOptions.localInstanceCount} data value(s) for this dataset instance that haven't been uploaded to the server."
+                                    } else {
+                                        "You have ${syncOptions.localInstanceCount} local dataset instance(s) that haven't been uploaded to the server."
+                                    },
                                     style = MaterialTheme.typography.bodyMedium,
                                     color = MaterialTheme.colorScheme.onPrimaryContainer
                                 )
@@ -89,9 +94,17 @@ fun SyncConfirmationDialog(
                     
                     Text(
                         text = if (syncOptions.localInstanceCount > 0) {
-                            "Would you like to upload your local data first before downloading updates from the server?"
+                            if (syncOptions.isEditEntryContext) {
+                                "Would you like to upload your data values first before downloading updates from the server?"
+                            } else {
+                                "Would you like to upload your local data first before downloading updates from the server?"
+                            }
                         } else {
-                            "This will download the latest dataset instances from the server."
+                            if (syncOptions.isEditEntryContext) {
+                                "This will download the latest data for this dataset instance from the server."
+                            } else {
+                                "This will download the latest dataset instances from the server."
+                            }
                         },
                         style = MaterialTheme.typography.bodyMedium
                     )
@@ -169,7 +182,11 @@ fun SyncConfirmationDialog(
                             verticalArrangement = Arrangement.spacedBy(4.dp)
                         ) {
                             Text(
-                                text = "• ${syncOptions.localInstanceCount} dataset instance(s) will be uploaded",
+                                text = if (syncOptions.isEditEntryContext) {
+                                    "• ${syncOptions.localInstanceCount} data value(s) from this dataset instance will be uploaded"
+                                } else {
+                                    "• ${syncOptions.localInstanceCount} dataset instance(s) will be uploaded"
+                                },
                                 style = MaterialTheme.typography.bodyMedium
                             )
                             Text(

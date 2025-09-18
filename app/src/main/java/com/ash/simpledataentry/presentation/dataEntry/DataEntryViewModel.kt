@@ -483,10 +483,18 @@ class DataEntryViewModel @Inject constructor(
                 }
                 
                 if (uploadFirst) {
-                    Log.d("DataEntryViewModel", "Step 1: Uploading local data")
-                    // 1. Push all local data (drafts/unsynced) to server first
-                    repository.pushAllLocalData()
-                    Log.d("DataEntryViewModel", "Step 1 completed: Local data uploaded")
+                    Log.d("DataEntryViewModel", "Step 1: Uploading local data for current dataset instance")
+                    // 1. Push only this dataset instance's data to server first
+                    repository.pushDataForInstance(
+                        datasetId = stateSnapshot.datasetId,
+                        period = stateSnapshot.period,
+                        orgUnit = stateSnapshot.orgUnit,
+                        attributeOptionCombo = stateSnapshot.attributeOptionCombo
+                    )
+                    Log.d("DataEntryViewModel", "Step 1 completed: Instance data uploaded")
+
+                    // Immediately update draft count after successful upload
+                    loadDraftCount()
                 }
                 
                 Log.d("DataEntryViewModel", "Step 2: Pulling remote updates")
@@ -720,6 +728,28 @@ class DataEntryViewModel @Inject constructor(
         }
     }
 
+    /**
+     * Clear only the current session's unsaved changes without affecting previously saved drafts
+     */
+    fun clearCurrentSessionChanges() {
+        // Simply reset the dirty tracking and field states to their loaded values
+        val currentState = _state.value
+
+        // Reset field states to their loaded values from the database
+        dirtyDataValues.clear()
+
+        // Reset field states to original loaded values
+        _fieldStates.clear()
+        currentState.dataValues.forEach { dataValue ->
+            val key = "${dataValue.dataElement}|${dataValue.categoryOptionCombo}"
+            _fieldStates[key] = androidx.compose.ui.text.input.TextFieldValue(dataValue.value ?: "")
+        }
+
+        savePressed = false
+
+        Log.d("DataEntryViewModel", "Cleared current session changes, preserved existing drafts")
+    }
+
     fun toggleGridRow(sectionName: String, rowKey: String) {
         _state.update { currentState ->
             val currentSet = currentState.expandedGridRows[sectionName] ?: emptySet()
@@ -740,7 +770,9 @@ class DataEntryViewModel @Inject constructor(
     fun startValidationForCompletion() {
         val stateSnapshot = _state.value
         viewModelScope.launch {
-            Log.d("DataEntryViewModel", "Starting validation for completion...")
+            Log.d("DataEntryViewModel", "=== COMPLETION FLOW: Starting validation for completion ===")
+            Log.d("DataEntryViewModel", "Current isCompleted state: ${stateSnapshot.isCompleted}")
+            Log.d("DataEntryViewModel", "Dataset: ${stateSnapshot.datasetId}, Period: ${stateSnapshot.period}, OrgUnit: ${stateSnapshot.orgUnit}")
             _state.update { it.copy(isValidating = true, error = null, validationSummary = null) }
             
             try {
@@ -777,7 +809,9 @@ class DataEntryViewModel @Inject constructor(
     fun completeDatasetAfterValidation(onResult: (Boolean, String?) -> Unit) {
         val stateSnapshot = _state.value
         viewModelScope.launch {
-            Log.d("DataEntryViewModel", "Proceeding with dataset completion after validation...")
+            Log.d("DataEntryViewModel", "=== COMPLETION FLOW: Proceeding with dataset completion after validation ===")
+            Log.d("DataEntryViewModel", "Dataset: ${stateSnapshot.datasetId}, Period: ${stateSnapshot.period}, OrgUnit: ${stateSnapshot.orgUnit}")
+            Log.d("DataEntryViewModel", "AttributeOptionCombo: ${stateSnapshot.attributeOptionCombo}")
             _state.update { it.copy(isLoading = true, error = null) }
             
             try {
@@ -819,6 +853,44 @@ class DataEntryViewModel @Inject constructor(
                     )
                 }
                 onResult(false, "Error during completion: ${e.message}")
+            }
+        }
+    }
+
+    fun markDatasetIncomplete(onResult: (Boolean, String?) -> Unit) {
+        val stateSnapshot = _state.value
+        viewModelScope.launch {
+            Log.d("DataEntryViewModel", "=== COMPLETION FLOW: Marking dataset as incomplete ===")
+            Log.d("DataEntryViewModel", "Dataset: ${stateSnapshot.datasetId}, Period: ${stateSnapshot.period}, OrgUnit: ${stateSnapshot.orgUnit}")
+            Log.d("DataEntryViewModel", "AttributeOptionCombo: ${stateSnapshot.attributeOptionCombo}")
+            _state.update { it.copy(isLoading = true, error = null) }
+
+            try {
+                val result = useCases.markDatasetInstanceIncomplete(
+                    stateSnapshot.datasetId,
+                    stateSnapshot.period,
+                    stateSnapshot.orgUnit,
+                    stateSnapshot.attributeOptionCombo
+                )
+
+                if (result.isSuccess) {
+                    _state.update {
+                        it.copy(
+                            isLoading = false,
+                            isCompleted = false,
+                            error = null
+                        )
+                    }
+                    onResult(true, "Dataset marked as incomplete")
+                } else {
+                    Log.e("DataEntryViewModel", "Failed to mark dataset incomplete: ${result.exceptionOrNull()}")
+                    _state.update { it.copy(isLoading = false, error = result.exceptionOrNull()?.message) }
+                    onResult(false, result.exceptionOrNull()?.message)
+                }
+            } catch (e: Exception) {
+                Log.e("DataEntryViewModel", "Exception marking dataset incomplete: ${e.message}", e)
+                _state.update { it.copy(isLoading = false, error = e.message) }
+                onResult(false, e.message)
             }
         }
     }

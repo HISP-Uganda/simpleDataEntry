@@ -181,11 +181,6 @@ private fun ValidationHeaderSection(validationSummary: ValidationSummary) {
                 style = MaterialTheme.typography.titleLarge,
                 fontWeight = FontWeight.Bold
             )
-            Text(
-                text = "Execution time: ${validationSummary.executionTimeMs}ms",
-                style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant
-            )
         }
     }
 }
@@ -390,37 +385,6 @@ private fun ValidationIssueItem(issue: ValidationIssue) {
                     style = MaterialTheme.typography.titleSmall,
                     fontWeight = FontWeight.Medium
                 )
-                
-                Text(
-                    text = issue.description,
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant
-                )
-                
-                // Show values if available
-                if (issue.leftSideValue != null && issue.rightSideValue != null && issue.operator != null) {
-                    Surface(
-                        shape = RoundedCornerShape(8.dp),
-                        color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f)
-                    ) {
-                        Text(
-                            text = "${issue.leftSideValue} ${issue.operator} ${issue.rightSideValue}",
-                            style = MaterialTheme.typography.bodySmall,
-                            fontWeight = FontWeight.Medium,
-                            modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp)
-                        )
-                    }
-                }
-                
-                // Show affected data elements if available
-                if (issue.affectedDataElements.isNotEmpty()) {
-                    Text(
-                        text = "Affects: ${issue.affectedDataElements.joinToString(", ")}",
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        fontWeight = FontWeight.Light
-                    )
-                }
             }
         }
     }

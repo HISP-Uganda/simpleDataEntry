@@ -86,8 +86,31 @@ class ValidationService @Inject constructor(
                         stagedCount++
                         Log.v(tag, "✓ Successfully staged and verified: ${dataValue.dataElement} = '$valueToStage'")
                     } else {
-                        stagingErrors++
-                        Log.w(tag, "✗ Staging verification failed: ${dataValue.dataElement} expected='$valueToStage' actual='${stagedValue?.value()}'")
+                        // Retry staging once if verification failed
+                        Log.w(tag, "⚠️ Staging verification failed, retrying: ${dataValue.dataElement}")
+                        Thread.sleep(200) // Brief delay before retry
+                        
+                        try {
+                            d2.dataValueModule().dataValues()
+                                .value(period, organisationUnit, dataValue.dataElement, dataValue.categoryOptionCombo, attributeOptionCombo)
+                                .blockingSet(valueToStage)
+                            
+                            // Verify retry
+                            val retryValue = d2.dataValueModule().dataValues()
+                                .value(period, organisationUnit, dataValue.dataElement, dataValue.categoryOptionCombo, attributeOptionCombo)
+                                .blockingGet()
+                            
+                            if (retryValue?.value() == valueToStage) {
+                                stagedCount++
+                                Log.v(tag, "✓ Retry successful: ${dataValue.dataElement} = '$valueToStage'")
+                            } else {
+                                stagingErrors++
+                                Log.w(tag, "✗ Retry failed: ${dataValue.dataElement} expected='$valueToStage' actual='${retryValue?.value()}'")
+                            }
+                        } catch (retryException: Exception) {
+                            stagingErrors++
+                            Log.e(tag, "Retry staging failed: ${dataValue.dataElement}: ${retryException.message}")
+                        }
                     }
                     
                 } catch (e: Exception) {
@@ -105,9 +128,18 @@ class ValidationService @Inject constructor(
             // Enhanced SDK database synchronization before validation
             // Research shows DHIS2 SDK database operations need more time to complete
             try {
-                // Increased delay based on DHIS2 Community findings about staging timing
-                Thread.sleep(500) // Increased from 100ms to 500ms for better synchronization
-                Log.d(tag, "Data staging synchronization complete (500ms delay)")
+                // Enhanced delay based on DHIS2 Community findings and 37/37 failure analysis  
+                Thread.sleep(1000) // Increased from 500ms to 1000ms for comprehensive synchronization
+                Log.d(tag, "Data staging synchronization complete (1000ms delay)")
+                
+                // Additional SDK database flush to ensure all writes are committed
+                try {
+                    // Force SDK to flush any pending database operations
+                    d2.maintenanceModule().foreignKeyViolations().blockingCount()
+                    Log.d(tag, "SDK database flush completed successfully")
+                } catch (e: Exception) {
+                    Log.w(tag, "SDK database flush failed: ${e.message}")
+                }
                 
                 // Verify all data is properly staged and retrievable
                 val allDataStagedCorrectly = dataValues.all { dataValue ->
@@ -399,12 +431,21 @@ class ValidationService @Inject constructor(
                     null -> ValidationSeverity.WARNING
                 }
                 
+                val affectedDataElements = extractDataElementsFromRule(validationRule)
+                val affectedDataElementNames = try {
+                    getDataElementFormNames(affectedDataElements)
+                } catch (e: Exception) {
+                    Log.w(tag, "Failed to get form names during validation: ${e.message}")
+                    affectedDataElements
+                }
+
                 val validationIssue = ValidationIssue(
                     ruleId = ruleUid,
                     ruleName = ruleName,
                     description = description,
                     severity = severity,
-                    affectedDataElements = extractDataElementsFromRule(validationRule)
+                    affectedDataElements = affectedDataElements,
+                    affectedDataElementNames = affectedDataElementNames
                 )
                 
                 when (severity) {
@@ -465,6 +506,40 @@ class ValidationService @Inject constructor(
         return (leftDataElements + rightDataElements).distinct()
     }
     
+    /**
+     * Get form names for data elements to display in validation messages
+     */
+    private fun getDataElementFormNames(dataElementUids: List<String>): List<String> {
+        if (dataElementUids.isEmpty()) return emptyList()
+
+        return try {
+            val d2 = sessionManager.getD2() ?: return dataElementUids
+
+            dataElementUids.mapNotNull { uid ->
+                // Extract just the data element UID (before any dots for category combos)
+                val elementUid = uid.split('.')[0]
+
+                try {
+                    val dataElement = d2.dataElementModule().dataElements()
+                        .uid(elementUid)
+                        .blockingGet()
+
+                    // Use form name first, then display name, then UID as fallback
+                    dataElement?.formName()
+                        ?: dataElement?.displayName()
+                        ?: dataElement?.name()
+                        ?: elementUid
+                } catch (e: Exception) {
+                    Log.w(tag, "Failed to get form name for data element $elementUid: ${e.message}")
+                    elementUid
+                }
+            }
+        } catch (e: Exception) {
+            Log.w(tag, "Failed to retrieve form names: ${e.message}")
+            dataElementUids
+        }
+    }
+
     /**
      * Comprehensive validation system diagnosis method
      * Based on DHIS2 Community research findings about systematic failures

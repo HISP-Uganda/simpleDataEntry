@@ -8,5 +8,7 @@ data class DatasetEntity(
     @PrimaryKey val id: String,
     val name: String,
     val description: String,
-    val periodType: String
+    val periodType: String,
+    val styleIcon: String? = null,
+    val styleColor: String? = null
 ) 

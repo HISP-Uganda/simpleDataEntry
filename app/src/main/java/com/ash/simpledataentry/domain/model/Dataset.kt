@@ -9,6 +9,7 @@ data class Dataset(
     val description: String?,
     val periodType: PeriodType,
     val instanceCount: Int = 0, // Number of dataset instances for this dataset
+    val style: DatasetStyle? = null // DHIS2 visual styling including icon
 //    val categoryCombo: CategoryCombo,
 //    val formType: FormType,
 //    val lastUpdated: Date,
@@ -81,3 +82,11 @@ enum class ValueType {
     AGE,
     OPTION_SET
 }
+
+/**
+ * DHIS2 dataset visual styling configuration
+ */
+data class DatasetStyle(
+    val icon: String? = null,     // DHIS2 icon name (e.g., "health-care", "child-health")
+    val color: String? = null     // Hex color code (e.g., "#FF5722")
+)

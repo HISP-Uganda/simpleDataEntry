@@ -42,8 +42,9 @@ class SessionManager @Inject constructor() {
                     .context(context)
                     .appName("Simple Data Entry")
                     .appVersion("1.0")
-                    .readTimeoutInSeconds(30)
-                    .writeTimeoutInSeconds(30)
+                    .readTimeoutInSeconds(180)  // 3 minutes for downloads
+                    .writeTimeoutInSeconds(600) // 10 minutes for uploads
+                    .connectTimeoutInSeconds(60) // 1 minute for connection
                     .interceptors(listOf(loggingInterceptor))
                     .build()
                 d2 = D2Manager.blockingInstantiateD2(config)
@@ -153,13 +154,18 @@ class SessionManager @Inject constructor() {
 
     suspend fun hydrateRoomFromSdk(context: Context, db: AppDatabase) = withContext(Dispatchers.IO) {
         val d2Instance = d2 ?: return@withContext
-        // Hydrate datasets
+        // Hydrate datasets with style information
         val datasets = d2Instance.dataSetModule().dataSets().blockingGet().map {
+            val datasetStyle = it.style()
+            Log.d("SessionManager", "Dataset ${it.uid()}: style=${datasetStyle?.icon()}, color=${datasetStyle?.color()}")
+
             com.ash.simpledataentry.data.local.DatasetEntity(
                 id = it.uid(),
                 name = it.displayName() ?: it.name() ?: "Unnamed Dataset",
                 description = it.description() ?: "",
-                periodType = it.periodType()?.name ?: "Monthly"
+                periodType = it.periodType()?.name ?: "Monthly",
+                styleIcon = datasetStyle?.icon(),
+                styleColor = datasetStyle?.color()
             )
         }
         db.datasetDao().clearAll()
@@ -206,6 +212,57 @@ class SessionManager @Inject constructor() {
         }
         db.organisationUnitDao().clearAll()
         db.organisationUnitDao().insertAll(orgUnits)
+
+
+        // Hydrate data values from DHIS2 SDK to Room database
+        Log.d("SessionManager", "Loading data values from DHIS2 SDK...")
+        try {
+            // First, create a mapping of data element UIDs to dataset UIDs
+            val dataElementToDatasetMap = mutableMapOf<String, String>()
+            d2Instance.dataSetModule().dataSets().blockingGet().forEach { dataset ->
+                dataset.dataSetElements()?.forEach { dataSetElement ->
+                    dataElementToDatasetMap[dataSetElement.dataElement().uid()] = dataset.uid()
+                }
+            }
+            Log.d("SessionManager", "Created mapping for ${dataElementToDatasetMap.size} data elements to datasets")
+
+            // Use regular data values for now until we understand the aggregated module interface
+            val regularDataValues = d2Instance.dataValueModule().dataValues().blockingGet()
+            Log.d("SessionManager", "Using regular data values (${regularDataValues.size})")
+
+            val dataValuesToUse = regularDataValues
+
+            val dataValues = dataValuesToUse.mapIndexed { index, dataValue ->
+                val dataElementUid = dataValue.dataElement() ?: ""
+                val datasetId = dataElementToDatasetMap[dataElementUid] ?: ""
+                val period = dataValue.period() ?: ""
+                val orgUnit = dataValue.organisationUnit() ?: ""
+                val attributeOptionCombo = dataValue.attributeOptionCombo() ?: ""
+                val categoryOptionCombo = dataValue.categoryOptionCombo() ?: ""
+                val value = dataValue.value()
+
+                if (index < 10) { // Log first 10 for debugging
+                    Log.d("SessionManager", "Storing DataValue $index: datasetId='$datasetId', period='$period', orgUnit='$orgUnit', attributeOptionCombo='$attributeOptionCombo', dataElement='$dataElementUid', categoryOptionCombo='$categoryOptionCombo', value='$value'")
+                }
+
+                com.ash.simpledataentry.data.local.DataValueEntity(
+                    datasetId = datasetId,
+                    period = period,
+                    orgUnit = orgUnit,
+                    attributeOptionCombo = attributeOptionCombo,
+                    dataElement = dataElementUid,
+                    categoryOptionCombo = categoryOptionCombo,
+                    value = value,
+                    comment = dataValue.comment(),
+                    lastModified = dataValue.lastUpdated()?.time ?: System.currentTimeMillis()
+                )
+            }
+            db.dataValueDao().deleteAllDataValues()
+            db.dataValueDao().insertAll(dataValues)
+            Log.d("SessionManager", "Loaded ${dataValues.size} data values into Room database")
+        } catch (e: Exception) {
+            Log.e("SessionManager", "Failed to load data values: ${e.message}", e)
+        }
     }
 
 }

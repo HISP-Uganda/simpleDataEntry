@@ -18,4 +18,7 @@ interface DataValueDao {
     
     @Query("DELETE FROM data_values")
     suspend fun deleteAllDataValues()
+
+    @Query("SELECT * FROM data_values WHERE datasetId = :datasetId")
+    suspend fun getValuesForDataset(datasetId: String): List<DataValueEntity>
 } 

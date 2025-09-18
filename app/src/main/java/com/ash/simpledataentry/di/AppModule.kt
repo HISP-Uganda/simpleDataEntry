@@ -197,14 +197,16 @@ object AppModule {
         dataElementDao: DataElementDao,
         categoryComboDao: CategoryComboDao,
         categoryOptionComboDao: CategoryOptionComboDao,
-        organisationUnitDao: OrganisationUnitDao
+        organisationUnitDao: OrganisationUnitDao,
+        dataValueDao: DataValueDao
     ): MetadataCacheService {
         return MetadataCacheService(
             sessionManager,
             dataElementDao,
             categoryComboDao,
             categoryOptionComboDao,
-            organisationUnitDao
+            organisationUnitDao,
+            dataValueDao
         )
     }
 

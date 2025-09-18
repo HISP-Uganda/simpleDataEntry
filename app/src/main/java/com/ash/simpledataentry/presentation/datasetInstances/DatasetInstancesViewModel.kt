@@ -8,8 +8,10 @@ import androidx.lifecycle.viewModelScope
 import com.ash.simpledataentry.domain.model.CompletionStatus
 import com.ash.simpledataentry.domain.model.DatasetInstance
 import com.ash.simpledataentry.domain.model.DatasetInstanceFilterState
+import com.ash.simpledataentry.domain.model.InstanceSortBy
 import com.ash.simpledataentry.domain.model.PeriodFilterType
 import com.ash.simpledataentry.domain.model.DatasetInstanceState
+import com.ash.simpledataentry.domain.model.SortOrder
 import com.ash.simpledataentry.domain.model.SyncStatus
 import com.ash.simpledataentry.domain.useCase.GetDatasetInstancesUseCase
 import com.ash.simpledataentry.domain.useCase.SyncDatasetInstancesUseCase
@@ -17,6 +19,7 @@ import com.ash.simpledataentry.domain.repository.DataEntryRepository
 import com.ash.simpledataentry.domain.repository.DatasetInstancesRepository
 import com.ash.simpledataentry.util.NetworkUtils
 import com.ash.simpledataentry.util.PeriodHelper
+import com.ash.simpledataentry.data.local.DataValueDraftDao
 import dagger.hilt.android.lifecycle.HiltViewModel
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -33,7 +36,8 @@ data class DatasetInstancesState(
     val successMessage: String? = null,
     val attributeOptionCombos: List<Pair<String, String>> = emptyList(),
     val dataset: com.ash.simpledataentry.domain.model.Dataset? = null,
-    val localInstanceCount: Int = 0
+    val localInstanceCount: Int = 0,
+    val instancesWithDrafts: Set<String> = emptySet() // Set of instance keys that have draft values
 )
 
 @HiltViewModel
@@ -43,6 +47,7 @@ class DatasetInstancesViewModel @Inject constructor(
     private val dataEntryRepository: DataEntryRepository,
     private val datasetInstacesRepository: DatasetInstancesRepository,
     private val datasetsRepository: com.ash.simpledataentry.domain.repository.DatasetsRepository,
+    private val draftDao: DataValueDraftDao,
     private val app: Application
 ) : ViewModel() {
     private var datasetId: String = ""
@@ -60,6 +65,13 @@ class DatasetInstancesViewModel @Inject constructor(
     // Filter state
     private val _filterState = MutableStateFlow(DatasetInstanceFilterState())
     val filterState: StateFlow<DatasetInstanceFilterState> = _filterState.asStateFlow()
+
+    /**
+     * Creates a unique key for a dataset instance based on its identity
+     */
+    private fun createInstanceKey(datasetId: String, period: String, orgUnit: String, attributeOptionCombo: String): String {
+        return "$datasetId|$period|$orgUnit|$attributeOptionCombo"
+    }
 
     fun setDatasetId(id: String) {
         if (id.isNotEmpty() && id != datasetId) {
@@ -98,13 +110,29 @@ class DatasetInstancesViewModel @Inject constructor(
                 instancesResult.fold(
                     onSuccess = { instances ->
                         Log.d("DatasetInstancesVM", "Received "+instances.size+" instances")
-                        
-                        // Count local instances (drafts or unsynced)
-                        val localCount = instances.count { instance ->
-                            instance.id.startsWith("draft-") || 
-                            (instance.state == DatasetInstanceState.OPEN && instance.lastUpdated != null)
+
+                        // Check for instances with draft values (real sync status)
+                        val instancesWithDrafts = mutableSetOf<String>()
+                        for (instance in instances) {
+                            val draftCount = draftDao.getDraftCountForInstance(
+                                datasetId = instance.datasetId,
+                                period = instance.period.id,
+                                orgUnit = instance.organisationUnit.id,
+                                attributeOptionCombo = instance.attributeOptionCombo
+                            )
+                            if (draftCount > 0) {
+                                val instanceKey = createInstanceKey(
+                                    instance.datasetId,
+                                    instance.period.id,
+                                    instance.organisationUnit.id,
+                                    instance.attributeOptionCombo
+                                )
+                                instancesWithDrafts.add(instanceKey)
+                            }
                         }
-                        
+
+                        Log.d("DatasetInstancesVM", "Found ${instancesWithDrafts.size} instances with local draft values")
+
                         _state.value = _state.value.copy(
                             instances = instances,
                             filteredInstances = applyFilters(orderInstances(instances)),
@@ -112,7 +140,8 @@ class DatasetInstancesViewModel @Inject constructor(
                             error = null,
                             attributeOptionCombos = attributeOptionCombos,
                             dataset = dataset,
-                            localInstanceCount = localCount
+                            localInstanceCount = instancesWithDrafts.size,
+                            instancesWithDrafts = instancesWithDrafts
                         )
                     },
                     onFailure = { error ->
@@ -366,11 +395,20 @@ class DatasetInstancesViewModel @Inject constructor(
 
         return instances.filter { instance ->
             val periodMatches = if (filter.periodType == PeriodFilterType.ALL) true else instance.period.id in periodIds
+
+            // Check sync status based on draft data values
+            val instanceKey = createInstanceKey(
+                instance.datasetId,
+                instance.period.id,
+                instance.organisationUnit.id,
+                instance.attributeOptionCombo
+            )
+            val hasDraftValues = _state.value.instancesWithDrafts.contains(instanceKey)
+
             val syncStatusMatches = when (filter.syncStatus) {
                 SyncStatus.ALL -> true
-                SyncStatus.SYNCED -> instance.state == DatasetInstanceState.COMPLETE // Assuming COMPLETE is a synced state
-                SyncStatus.NOT_SYNCED -> instance.state == DatasetInstanceState.OPEN // Assuming OPEN is a not synced state
-                //SyncStatus.PENDING -> false // No pending state in the domain model
+                SyncStatus.SYNCED -> !hasDraftValues // No draft values = synced
+                SyncStatus.NOT_SYNCED -> hasDraftValues // Has draft values = not synced
             }
             val completionMatches = when (filter.completionStatus) {
                 CompletionStatus.ALL -> true
@@ -402,27 +440,25 @@ class DatasetInstancesViewModel @Inject constructor(
     }
 
     private fun orderInstances(instances: List<DatasetInstance>): List<DatasetInstance> {
-        val attributeOptionCombos = _state.value.attributeOptionCombos
-        
-        // Check if default is the only or primary option
-        val hasNonDefaultOptions = attributeOptionCombos.any { 
-            !it.first.equals("default", ignoreCase = true) 
-        }
-        
-        return if (hasNonDefaultOptions) {
-            // Order by period first (descending), then by attribute option combo order within each period
-            instances.sortedWith(compareByDescending<DatasetInstance> { instance ->
-                parseDhis2PeriodToDate(instance.period.id)?.time ?: 0L
-            }.thenBy { instance ->
-                val index = attributeOptionCombos.indexOfFirst { it.first == instance.attributeOptionCombo }
-                if (index >= 0) index else Int.MAX_VALUE
-            })
-        } else {
-            // Fallback to period ordering only
-            instances.sortedByDescending { instance ->
-                parseDhis2PeriodToDate(instance.period.id)?.time ?: 0L
+        val filter = _filterState.value
+
+        val sorted = when (filter.sortBy) {
+            InstanceSortBy.ORGANISATION_UNIT -> instances.sortedBy { it.organisationUnit.name.lowercase() }
+            InstanceSortBy.PERIOD -> instances.sortedWith(
+                compareBy<DatasetInstance> { parseDhis2PeriodToDate(it.period.id)?.time ?: 0L }
+                    .thenBy { it.attributeOptionCombo }
+            )
+            InstanceSortBy.LAST_UPDATED -> instances.sortedBy {
+                it.lastUpdated?.toString()?.let { dateStr ->
+                    try {
+                        java.text.SimpleDateFormat("EEE MMM dd HH:mm:ss zzz yyyy", java.util.Locale.ENGLISH).parse(dateStr)?.time
+                    } catch (e: Exception) { 0L }
+                } ?: 0L
             }
+            InstanceSortBy.COMPLETION_STATUS -> instances.sortedBy { it.state.ordinal }
         }
+
+        return if (filter.sortOrder == SortOrder.DESCENDING) sorted.reversed() else sorted
     }
 
     private fun parseDhis2PeriodToDate(periodId: String): java.util.Date? {

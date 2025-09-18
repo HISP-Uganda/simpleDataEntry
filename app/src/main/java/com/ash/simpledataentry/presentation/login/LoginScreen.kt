@@ -26,10 +26,17 @@ import androidx.compose.material3.Snackbar
 import androidx.compose.material3.Text
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.TextButton
+import androidx.compose.material3.OutlinedIconButton
+import androidx.compose.foundation.border
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.AccountCircle
 import androidx.compose.material.icons.filled.ArrowDropDown
 import androidx.compose.material.icons.filled.Clear
+import androidx.compose.material.icons.filled.Link
+import androidx.compose.material.icons.filled.Lock
+import androidx.compose.material.icons.filled.Person
 import androidx.compose.material.icons.filled.Visibility
 import androidx.compose.material.icons.filled.VisibilityOff
 import androidx.compose.runtime.Composable
@@ -70,6 +77,7 @@ import androidx.compose.animation.core.*
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.material3.Surface
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.width
 import androidx.compose.ui.graphics.graphicsLayer
 
 
@@ -124,7 +132,7 @@ fun LoginScreen(
         }
     } else {
         // Local state for input fields, preserved across configuration changes
-        var serverUrl by rememberSaveable { mutableStateOf("") }
+        var serverUrl by rememberSaveable { mutableStateOf("https://") }
         var username by rememberSaveable { mutableStateOf("") }
         var password by rememberSaveable { mutableStateOf("") }
         var showUrlDropdown by remember { mutableStateOf(false) }
@@ -163,14 +171,14 @@ fun LoginScreen(
                 horizontalAlignment = Alignment.CenterHorizontally,
                 verticalArrangement = Arrangement.Center
             ) {
-                // DHIS2 Official Logo Icon
+                // Official DHIS2 Logo
                 Icon(
-                    painter = painterResource(id = R.drawable.dhis2_logo),
+                    painter = painterResource(id = R.drawable.dhis2_official_logo),
                     contentDescription = "DHIS2 Logo",
                     modifier = Modifier
-                        .size(80.dp)
-                        .padding(bottom = 32.dp),
-                    tint = MaterialTheme.colorScheme.primary
+                        .height(240.dp)
+                        .padding(bottom = 24.dp),
+                    tint = Color.Unspecified // Use original colors
                 )
                 
                 // Saved Account Selection (if any accounts exist)
@@ -234,9 +242,11 @@ fun LoginScreen(
                 Box {
                     OutlinedTextField(
                         value = serverUrl,
-                        onValueChange = { 
+                        onValueChange = {
                             serverUrl = it
-                            viewModel.updateUrlSuggestions(it)
+                            // Auto-suggestions disabled for better user experience
+                            // Only show cached URLs dropdown when explicitly requested
+                            viewModel.clearUrlSuggestions()
                         },
                         label = { Text("Server URL") },
                         modifier = Modifier
@@ -245,18 +255,29 @@ fun LoginScreen(
                             .bringIntoViewRequester(serverUrlBringIntoViewRequester)
                             .onFocusChanged { focusState ->
                                 serverUrlFocused = focusState.isFocused
-                                if (focusState.isFocused) {
-                                    viewModel.updateUrlSuggestions(serverUrl)
-                                } else {
+                                if (!focusState.isFocused) {
                                     viewModel.clearUrlSuggestions()
                                 }
                             },
                         enabled = !state.isLoading,
                         keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Uri),
+                        leadingIcon = {
+                            Icon(
+                                imageVector = Icons.Default.Link,
+                                contentDescription = "Server URL",
+                                tint = MaterialTheme.colorScheme.primary
+                            )
+                        },
                         trailingIcon = {
                             if (state.cachedUrls.isNotEmpty()) {
                                 IconButton(
-                                    onClick = { showUrlDropdown = !showUrlDropdown }
+                                    onClick = { 
+                                        showUrlDropdown = !showUrlDropdown
+                                        // Don't trigger URL suggestions when clicking dropdown button
+                                        if (showUrlDropdown) {
+                                            viewModel.clearUrlSuggestions()
+                                        }
+                                    }
                                 ) {
                                     Icon(
                                         imageVector = Icons.Default.ArrowDropDown,
@@ -297,23 +318,7 @@ fun LoginScreen(
                         }
                     }
                     
-                    // Dropdown for URL suggestions
-                    if (state.urlSuggestions.isNotEmpty() && serverUrl.isNotBlank()) {
-                        DropdownMenu(
-                            expanded = true,
-                            onDismissRequest = { viewModel.clearUrlSuggestions() }
-                        ) {
-                            state.urlSuggestions.forEach { suggestion ->
-                                DropdownMenuItem(
-                                    text = { Text(suggestion.url) },
-                                    onClick = {
-                                        serverUrl = suggestion.url
-                                        viewModel.clearUrlSuggestions()
-                                    }
-                                )
-                            }
-                        }
-                    }
+                    // Auto-suggestions disabled - only show cached URLs dropdown when explicitly requested
                 }
 
                 Spacer(modifier = Modifier.height(8.dp))
@@ -329,7 +334,14 @@ fun LoginScreen(
                         .onFocusChanged { focusState ->
                             usernameFocused = focusState.isFocused
                         },
-                    enabled = !state.isLoading
+                    enabled = !state.isLoading,
+                    leadingIcon = {
+                        Icon(
+                            imageVector = Icons.Default.Person,
+                            contentDescription = "Username",
+                            tint = MaterialTheme.colorScheme.primary
+                        )
+                    }
                 )
 
                 Spacer(modifier = Modifier.height(8.dp))
@@ -348,6 +360,13 @@ fun LoginScreen(
                         },
                     enabled = !state.isLoading,
                     keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password),
+                    leadingIcon = {
+                        Icon(
+                            imageVector = Icons.Default.Lock,
+                            contentDescription = "Password",
+                            tint = MaterialTheme.colorScheme.primary
+                        )
+                    },
                     trailingIcon = {
                         IconButton(
                             onClick = { passwordVisible = !passwordVisible }
@@ -359,14 +378,19 @@ fun LoginScreen(
                         }
                     }
                 )
-            }
-                Box(
-                    modifier = Modifier
-                    .align(Alignment.BottomCenter)
-                    .fillMaxWidth()
-                    .imePadding()
-                    .padding(16.dp))
-        {
+                
+                // Forgot Password Link
+                TextButton(
+                    onClick = { /* TODO: Implement forgot password functionality */ },
+                    modifier = Modifier.padding(bottom = 16.dp)
+                ) {
+                    Text(
+                        text = "Forgot Password",
+                        color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.6f)
+                    )
+                }
+
+                // Login Button
                 Button(
                     onClick = {
                         val db = Room.databaseBuilder(
@@ -383,9 +407,19 @@ fun LoginScreen(
                             serverUrl.isNotBlank() &&
                             username.isNotBlank() &&
                             password.isNotBlank(),
-                    modifier = Modifier.fillMaxWidth()
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .height(48.dp),
+                    shape = RoundedCornerShape(24.dp),
+                    colors = ButtonDefaults.buttonColors(
+                        containerColor = MaterialTheme.colorScheme.primary
+                    )
                 ) {
-                    Text("Login")
+                    Text(
+                        text = "Log in",
+                        color = Color.White,
+                        style = MaterialTheme.typography.bodyLarge
+                    )
                 }
             }
 

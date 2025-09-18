@@ -54,15 +54,17 @@ class DatasetsRepositoryImpl(
                     Log.e(TAG, "D2 instance is null")
                     throw Exception("D2 not initialized")
                 }
-                val datasets = d2Instance.dataSetModule()
-                    .dataSets()
-                    .blockingGet()
-                    .map { dataSet ->
-                        Log.d(TAG, "Processing dataset: ${dataSet.uid()}")
-                        val dataset = dataSet.toDomainModel()
-                        val instanceCount = datasetInstancesRepository.getDatasetInstanceCount(dataset.id)
-                        dataset.copy(instanceCount = instanceCount)
-                    }
+                val datasets = withContext(Dispatchers.IO) {
+                    d2Instance.dataSetModule()
+                        .dataSets()
+                        .blockingGet()
+                        .map { dataSet ->
+                            Log.d(TAG, "Processing dataset: ${dataSet.uid()}")
+                            val dataset = dataSet.toDomainModel()
+                            val instanceCount = datasetInstancesRepository.getDatasetInstanceCount(dataset.id)
+                            dataset.copy(instanceCount = instanceCount)
+                        }
+                }
                 // Update Room
                 withContext(Dispatchers.IO) {
                     datasetDao.clearAll()
@@ -82,7 +84,9 @@ class DatasetsRepositoryImpl(
     override suspend fun syncDatasets(): Result<Unit> {
         return try {
             Log.d(TAG, "Starting dataset sync...")
-            d2.metadataModule().blockingDownload()
+            withContext(Dispatchers.IO) {
+                d2.metadataModule().blockingDownload()
+            }
             Log.d(TAG, "Dataset sync completed successfully")
             Result.success(Unit)
         } catch (e: Exception) {
@@ -94,14 +98,16 @@ class DatasetsRepositoryImpl(
     override suspend fun filterDatasets(period: String?, syncStatus: Boolean?): Result<List<Dataset>> {
         return try {
             Log.d(TAG, "Filtering datasets - period: $period, syncStatus: $syncStatus")
-            val datasets = d2.dataSetModule()
-                .dataSets()
-                .blockingGet()
-                .map { dataSet ->
-                    val dataset = dataSet.toDomainModel()
-                    val instanceCount = datasetInstancesRepository.getDatasetInstanceCount(dataset.id)
-                    dataset.copy(instanceCount = instanceCount)
-                }
+            val datasets = withContext(Dispatchers.IO) {
+                d2.dataSetModule()
+                    .dataSets()
+                    .blockingGet()
+                    .map { dataSet ->
+                        val dataset = dataSet.toDomainModel()
+                        val instanceCount = datasetInstancesRepository.getDatasetInstanceCount(dataset.id)
+                        dataset.copy(instanceCount = instanceCount)
+                    }
+            }
 
             Log.d(TAG, "Found ${datasets.size} datasets after filtering")
             Result.success(datasets)
@@ -117,6 +123,17 @@ class DatasetsRepositoryImpl(
  * Extension function converting the DHIS2 DataSet object into our domain Dataset model.
  */
 fun DataSet.toDomainModel(): Dataset {
+    val datasetStyle = style()?.let { sdkStyle ->
+        Log.d("DatasetsRepo", "Dataset ${uid()}: Found style - icon: ${sdkStyle.icon()}, color: ${sdkStyle.color()}")
+        com.ash.simpledataentry.domain.model.DatasetStyle(
+            icon = sdkStyle.icon(),
+            color = sdkStyle.color()
+        )
+    } ?: run {
+        Log.d("DatasetsRepo", "Dataset ${uid()}: No style found")
+        null
+    }
+
     return Dataset(
         id = uid(),
         name = displayName() ?: name() ?: "Unnamed Dataset",
@@ -127,8 +144,8 @@ fun DataSet.toDomainModel(): Dataset {
             "Monthly" -> PeriodType.Monthly
             "Yearly" -> PeriodType.Yearly
             else -> PeriodType.Monthly // Default fallback, adjust as needed
-        }
-
+        },
+        style = datasetStyle
     )
 }
 
@@ -138,7 +155,9 @@ fun Dataset.toEntity(): com.ash.simpledataentry.data.local.DatasetEntity =
         id = id,
         name = name,
         description = description.toString(),
-        periodType = periodType?.name ?: "Monthly"
+        periodType = periodType?.name ?: "Monthly",
+        styleIcon = style?.icon,
+        styleColor = style?.color
     )
 
 fun com.ash.simpledataentry.data.local.DatasetEntity.toDomainModel(): Dataset =
@@ -152,5 +171,11 @@ fun com.ash.simpledataentry.data.local.DatasetEntity.toDomainModel(): Dataset =
             "Monthly" -> PeriodType.Monthly
             "Yearly" -> PeriodType.Yearly
             else -> PeriodType.Monthly
-        }
+        },
+        style = if (styleIcon != null || styleColor != null) {
+            com.ash.simpledataentry.domain.model.DatasetStyle(
+                icon = styleIcon,
+                color = styleColor
+            )
+        } else null
     )

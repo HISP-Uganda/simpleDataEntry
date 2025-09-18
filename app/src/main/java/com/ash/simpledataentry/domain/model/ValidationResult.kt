@@ -25,6 +25,7 @@ data class ValidationIssue(
     val description: String,
     val severity: ValidationSeverity,
     val affectedDataElements: List<String> = emptyList(),
+    val affectedDataElementNames: List<String> = emptyList(), // Form names for display
     val leftSideValue: String? = null,
     val rightSideValue: String? = null,
     val operator: String? = null

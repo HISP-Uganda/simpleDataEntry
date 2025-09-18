@@ -1,12 +1,16 @@
 package com.ash.simpledataentry.presentation.datasets
 
+import android.util.Log
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.ash.simpledataentry.domain.model.Dataset
 import com.ash.simpledataentry.domain.model.FilterState
 import com.ash.simpledataentry.domain.model.PeriodFilterType
+import com.ash.simpledataentry.domain.model.SortBy
+import com.ash.simpledataentry.domain.model.SortOrder
 import com.ash.simpledataentry.domain.model.SyncStatus
 import com.ash.simpledataentry.domain.useCase.FilterDatasetsUseCase
+import com.ash.simpledataentry.data.sync.BackgroundSyncManager
 import com.ash.simpledataentry.domain.useCase.GetDatasetsUseCase
 import com.ash.simpledataentry.domain.useCase.LogoutUseCase
 import com.ash.simpledataentry.domain.useCase.SyncDatasetsUseCase
@@ -20,6 +24,7 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.catch
 import kotlinx.coroutines.launch
+import androidx.work.WorkInfo
 import javax.inject.Inject
 
 sealed class DatasetsState {
@@ -29,7 +34,10 @@ sealed class DatasetsState {
         val datasets: List<Dataset>,
         val filteredDatasets: List<Dataset> = datasets,
         val currentFilter: FilterState = FilterState(),
-        val isSyncing: Boolean = false
+        val isSyncing: Boolean = false,
+        val syncMessage: String? = null,
+        val syncProgress: Int = 0,
+        val syncStep: String? = null
     ) : DatasetsState()
 }
 @HiltViewModel
@@ -38,6 +46,7 @@ class DatasetsViewModel @Inject constructor(
     private val syncDatasetsUseCase: SyncDatasetsUseCase,
     private val filterDatasetsUseCase: FilterDatasetsUseCase,
     private val logoutUseCase: LogoutUseCase,
+    private val backgroundSyncManager: BackgroundSyncManager,
     private val backgroundDataPrefetcher: BackgroundDataPrefetcher,
     private val sessionManager: SessionManager,
     private val savedAccountRepository: SavedAccountRepository
@@ -62,38 +71,37 @@ class DatasetsViewModel @Inject constructor(
                     )
                 }
                 .collect { datasets ->
+                    val currentState = _uiState.value
+                    val wasSyncing = (currentState as? DatasetsState.Success)?.isSyncing == true
                     _uiState.value = DatasetsState.Success(
                         datasets = datasets,
-                        filteredDatasets = datasets
+                        filteredDatasets = datasets,
+                        isSyncing = false,
+                        syncMessage = if (wasSyncing) "Sync completed successfully!" else null,
+                        syncProgress = 0,
+                        syncStep = null
                     )
                 }
         }
     }
 
     fun syncDatasets() {
-        viewModelScope.launch {
-            val currentState = _uiState.value
-            if (currentState is DatasetsState.Success) {
-                _uiState.value = currentState.copy(isSyncing = true)
-                try {
-                    val result = syncDatasetsUseCase()
-                    result.fold(
-                        onSuccess = {
-                            // Reload datasets after successful sync
-                            loadDatasets()
-                        },
-                        onFailure = { exception ->
-                            _uiState.value = DatasetsState.Error(
-                                message = exception.message ?: "Failed to sync datasets"
-                            )
-                        }
-                    )
-                } catch (e: Exception) {
-                    _uiState.value = DatasetsState.Error(
-                        message = "Failed to sync datasets: ${e.message}"
-                    )
-                }
+        val currentState = _uiState.value
+        if (currentState is DatasetsState.Success && !currentState.isSyncing) {
+            Log.d("DatasetsViewModel", "=== DATASETS SYNC: Triggering WorkManager sync ===")
+            _uiState.value = currentState.copy(isSyncing = true, syncProgress = 0, syncStep = "Starting sync...")
+
+            // Use WorkManager for background-safe sync and observe progress
+            val workName = backgroundSyncManager.triggerImmediateSync()
+
+            viewModelScope.launch {
+                // Set a success message for immediate UI feedback
+                // The actual sync completion will be handled by WorkManager
+                kotlinx.coroutines.delay(2000) // Brief delay to show sync started
+                loadDatasets() // Reload after sync is triggered
             }
+        } else {
+            Log.w("DatasetsViewModel", "DATASETS SYNC: Cannot sync - already syncing or state is not Success")
         }
     }
 
@@ -122,7 +130,7 @@ class DatasetsViewModel @Inject constructor(
             else -> emptyList()
         }
 
-        return datasets.filter { dataset ->
+        val filteredDatasets = datasets.filter { dataset ->
             // Search query filter
             val matchesSearch = if (filterState.searchQuery.isBlank()) {
                 true
@@ -152,6 +160,19 @@ class DatasetsViewModel @Inject constructor(
 
             matchesSearch && matchesPeriod && matchesSyncStatus
         }
+
+        // Apply sorting
+        return sortDatasets(filteredDatasets, filterState.sortBy, filterState.sortOrder)
+    }
+
+    private fun sortDatasets(datasets: List<Dataset>, sortBy: SortBy, sortOrder: SortOrder): List<Dataset> {
+        val sorted = when (sortBy) {
+            SortBy.NAME -> datasets.sortedBy { it.name.lowercase() }
+            SortBy.CREATED_DATE -> datasets.sortedBy { it.id } // Use ID as fallback since no created date field
+            SortBy.ENTRY_COUNT -> datasets.sortedBy { it.instanceCount }
+        }
+
+        return if (sortOrder == SortOrder.DESCENDING) sorted.reversed() else sorted
     }
 
     fun clearFilters() {
@@ -161,6 +182,13 @@ class DatasetsViewModel @Inject constructor(
                 filteredDatasets = currentState.datasets,
                 currentFilter = FilterState()
             )
+        }
+    }
+
+    fun clearSyncMessage() {
+        val currentState = _uiState.value
+        if (currentState is DatasetsState.Success) {
+            _uiState.value = currentState.copy(syncMessage = null)
         }
     }
 

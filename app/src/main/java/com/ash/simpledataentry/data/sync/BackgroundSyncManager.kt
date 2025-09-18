@@ -92,18 +92,24 @@ class BackgroundSyncManager @Inject constructor(
     /**
      * Trigger an immediate sync (one-time work)
      */
-    fun triggerImmediateSync() {
+    fun triggerImmediateSync(): String {
         val constraints = Constraints.Builder()
             .setRequiredNetworkType(androidx.work.NetworkType.CONNECTED)
             .build()
-            
+
+        val workName = "immediate_sync_${System.currentTimeMillis()}"
         val oneTimeWorkRequest = OneTimeWorkRequestBuilder<BackgroundSyncWorker>()
             .setConstraints(constraints)
             .addTag("immediate_sync")
             .build()
-            
-        workManager.enqueue(oneTimeWorkRequest)
-        Log.d(TAG, "Triggered immediate sync")
+
+        workManager.enqueueUniqueWork(
+            workName,
+            ExistingWorkPolicy.REPLACE,
+            oneTimeWorkRequest
+        )
+        Log.d(TAG, "Triggered immediate sync with work name: $workName")
+        return workName
     }
     
     /**
@@ -114,7 +120,12 @@ class BackgroundSyncManager @Inject constructor(
     }
     
     /**
-     * Get work info for monitoring sync status
+     * Get work info for monitoring periodic sync status
      */
     fun getSyncWorkInfo() = workManager.getWorkInfosForUniqueWorkLiveData(SYNC_WORK_NAME)
+
+    /**
+     * Get work info for monitoring immediate sync status
+     */
+    fun getImmediateSyncWorkInfo(workName: String) = workManager.getWorkInfosForUniqueWorkLiveData(workName)
 }

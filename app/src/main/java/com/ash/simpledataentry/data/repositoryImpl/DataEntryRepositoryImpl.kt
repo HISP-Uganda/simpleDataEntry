@@ -11,6 +11,7 @@ import kotlinx.coroutines.flow.flow
 import com.ash.simpledataentry.data.SessionManager
 import org.hisp.dhis.android.core.D2
 import com.ash.simpledataentry.data.local.DataValueDraftDao
+import com.ash.simpledataentry.data.local.DataValueDraftEntity
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import com.ash.simpledataentry.data.local.DataElementDao
@@ -177,43 +178,48 @@ class DataEntryRepositoryImpl @Inject constructor(
         
         // OFFLINE-FIRST: Always use cached data for instant loading (both online and offline)
         Log.d("DataEntryRepositoryImpl", "Using cached data for instant loading (offline-first approach)")
-        
-        // Get drafts (unsaved user changes) 
+
+        // Get drafts (unsaved user changes)
         val drafts = withContext(Dispatchers.IO) {
             draftDao.getDraftsForInstance(datasetId, period, orgUnit, attributeOptionCombo)
         }
         val draftMap = drafts.associateBy { it.dataElement to it.categoryOptionCombo }
-        
+
         // Get cached data values (from previous sync/login)
         val cachedDataValues = withContext(Dispatchers.IO) {
-            dataValueDao.getValuesForInstance(datasetId, period, orgUnit, attributeOptionCombo)
-                .associateBy { it.dataElement to it.categoryOptionCombo }
+            val values = dataValueDao.getValuesForInstance(datasetId, period, orgUnit, attributeOptionCombo)
+            values.associateBy { it.dataElement to it.categoryOptionCombo }
         }
         
-        // Get metadata from cache (fast)
+        // Get metadata from cache with pre-fetched data values (fast)
         val optimizedData = metadataCacheService.getOptimizedDataForEntry(datasetId, period, orgUnit, attributeOptionCombo)
+
+        Log.d("DataEntryRepositoryImpl", "Fresh SDK data loaded: ${optimizedData.sdkDataValues.size} values")
         
         // Build DataValue objects using cached metadata and data, prioritizing drafts
         val mappedDataValues = optimizedData.sections.flatMap { section ->
-            section.dataElementUids.flatMap { deUid ->
+            val sectionResults = section.dataElementUids.flatMap { deUid ->
                 val dataElement = optimizedData.dataElements[deUid]
                 val comboId = dataElement?.categoryComboId ?: ""
                 val combos = optimizedData.categoryOptionCombos.values.filter { it.categoryComboId == comboId }
-                
+
                 // Get display name with proper fallback hierarchy
                 val dataElementName = getDataElementDisplayName(deUid) ?: dataElement?.name ?: deUid
-                
+
                 if (combos.isEmpty()) {
                     val draft = draftMap[deUid to ""]
                     val cached = cachedDataValues[deUid to ""]
-                    
+                    val sdkValue = optimizedData.sdkDataValues[deUid to ""]
+
+                    val finalValue = draft?.value ?: sdkValue?.value() ?: cached?.value
+
                     listOf(DataValue(
                         dataElement = deUid,
                         dataElementName = dataElementName,
                         sectionName = section.name,
                         categoryOptionCombo = "",
                         categoryOptionComboName = "Default",
-                        value = draft?.value ?: cached?.value, // Draft takes priority over cached
+                        value = finalValue, // Draft > SDK > cached
                         comment = draft?.comment ?: cached?.comment,
                         storedBy = null, // Cached data doesn't store storedBy info
                         validationState = ValidationState.VALID,
@@ -225,14 +231,17 @@ class DataEntryRepositoryImpl @Inject constructor(
                     combos.map { coc ->
                         val draft = draftMap[deUid to coc.id]
                         val cached = cachedDataValues[deUid to coc.id]
-                        
+                        val sdkValue = optimizedData.sdkDataValues[deUid to coc.id]
+
+                        val finalValue = draft?.value ?: sdkValue?.value() ?: cached?.value
+
                         DataValue(
                             dataElement = deUid,
                             dataElementName = dataElementName,
                             sectionName = section.name,
                             categoryOptionCombo = coc.id,
                             categoryOptionComboName = coc.name,
-                            value = draft?.value ?: cached?.value, // Draft takes priority over cached
+                            value = finalValue, // Draft > SDK > cached
                             comment = draft?.comment ?: cached?.comment,
                             storedBy = null, // Cached data doesn't store storedBy info
                             validationState = ValidationState.VALID,
@@ -243,6 +252,8 @@ class DataEntryRepositoryImpl @Inject constructor(
                     }
                 }
             }
+
+            sectionResults
         }
         
         Log.d("DataEntryRepositoryImpl", "Loaded ${mappedDataValues.size} data values from cache (instant loading)")
@@ -262,7 +273,7 @@ class DataEntryRepositoryImpl @Inject constructor(
         return try {
             val dataValueObjectRepository = d2.dataValueModule().dataValues()
                 .value(period, orgUnit, dataElement, categoryOptionCombo, attributeOptionCombo)
-            
+
             if (value != null) {
                 try {
                     dataValueObjectRepository.blockingSet(value)
@@ -270,12 +281,30 @@ class DataEntryRepositoryImpl @Inject constructor(
 //                        dataValueObjectRepository.blockingSetComment(comment)
 //                    }
                     Log.d("DataEntryRepositoryImpl", "Staged value for upload: $value, comment: $comment")
+
+                    // CRITICAL FIX: Create draft record for sync queue
+                    val draft = DataValueDraftEntity(
+                        datasetId = datasetId,
+                        period = period,
+                        orgUnit = orgUnit,
+                        attributeOptionCombo = attributeOptionCombo,
+                        dataElement = dataElement,
+                        categoryOptionCombo = categoryOptionCombo,
+                        value = value,
+                        comment = comment,
+                        lastModified = System.currentTimeMillis()
+                    )
+                    draftDao.upsertDraft(draft)
+                    Log.d("DataEntryRepositoryImpl", "Created draft record for sync queue")
                 } catch (e: Exception) {
                     Log.e("DataEntryRepositoryImpl", "Error staging value for upload", e)
                     throw e
                 }
             } else {
                 dataValueObjectRepository.blockingDeleteIfExist()
+                // Also remove draft if value is deleted
+                draftDao.deleteDraft(datasetId, period, orgUnit, attributeOptionCombo, dataElement, categoryOptionCombo)
+                Log.d("DataEntryRepositoryImpl", "Deleted value and removed from draft queue")
             }
 
             val dataElementObj = d2.dataElementModule().dataElements()
@@ -460,11 +489,32 @@ class DataEntryRepositoryImpl @Inject constructor(
             syncQueueManager.queueForSync()
             return
         }
-        
+
         val syncResult = syncQueueManager.startSync()
         if (syncResult.isFailure) {
             Log.e("DataEntryRepositoryImpl", "Sync failed: ${syncResult.exceptionOrNull()?.message}")
             throw syncResult.exceptionOrNull() ?: Exception("Sync failed")
+        }
+    }
+
+    override suspend fun pushDataForInstance(
+        datasetId: String,
+        period: String,
+        orgUnit: String,
+        attributeOptionCombo: String
+    ) {
+        if (!networkStateManager.isOnline()) {
+            Log.i("DataEntryRepositoryImpl", "Offline - queuing instance data for sync when connection available")
+            syncQueueManager.queueForSync()
+            return
+        }
+
+        val syncResult = syncQueueManager.startSyncForInstance(
+            datasetId, period, orgUnit, attributeOptionCombo
+        )
+        if (syncResult.isFailure) {
+            Log.e("DataEntryRepositoryImpl", "Instance sync failed: ${syncResult.exceptionOrNull()?.message}")
+            throw syncResult.exceptionOrNull() ?: Exception("Instance sync failed")
         }
     }
 
@@ -475,16 +525,19 @@ class DataEntryRepositoryImpl @Inject constructor(
                 syncQueueManager.queueForSync()
                 return@withContext
             }
-            
+
             try {
+                // First, upload any local data changes
                 val syncResult = syncQueueManager.startSync()
                 if (syncResult.isFailure) {
-                    throw syncResult.exceptionOrNull() ?: Exception("Sync failed")
+                    throw syncResult.exceptionOrNull() ?: Exception("Upload sync failed")
                 }
-                
-                // Download aggregated data after successful sync
+
+                // Then download the latest aggregated data from server
+                Log.d("DataEntryRepositoryImpl", "Downloading latest aggregated data from server...")
                 d2.aggregatedModule().data().blockingDownload()
-                Log.d("DataEntryRepositoryImpl", "Current entry form synced successfully")
+
+                Log.d("DataEntryRepositoryImpl", "Current entry form synced successfully - upload completed and latest data downloaded")
             } catch (e: Exception) {
                 Log.e("DataEntryRepositoryImpl", "Error syncing current entry form", e)
                 throw e

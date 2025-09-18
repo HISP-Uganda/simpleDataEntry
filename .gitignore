@@ -132,3 +132,6 @@ build/reports/
 docs/
 
 # Ignore everything in .taskmaster except .gitignore
+
+# Code Visualizer Tool (development prototype)
+code-visualizer/

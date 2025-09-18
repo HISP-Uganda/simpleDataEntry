@@ -19,7 +19,8 @@ class MetadataCacheService @Inject constructor(
     private val dataElementDao: DataElementDao,
     private val categoryComboDao: CategoryComboDao,
     private val categoryOptionComboDao: CategoryOptionComboDao,
-    private val organisationUnitDao: OrganisationUnitDao
+    private val organisationUnitDao: OrganisationUnitDao,
+    private val dataValueDao: DataValueDao
 ) {
     
     private val d2 get() = sessionManager.getD2()!!
@@ -39,7 +40,8 @@ class MetadataCacheService @Inject constructor(
     )
     
     /**
-     * Get optimized data for EditEntryScreen using cached metadata where possible
+     * Get optimized data for EditEntryScreen with pre-fetched and pre-mapped data values
+     * This implements the requested architecture: metadata first, then data values mapped to UI structure
      */
     suspend fun getOptimizedDataForEntry(
         datasetId: String,
@@ -47,31 +49,30 @@ class MetadataCacheService @Inject constructor(
         orgUnit: String,
         attributeOptionCombo: String
     ): OptimizedEntryData = withContext(Dispatchers.IO) {
-        
+
         Log.d("MetadataCacheService", "Getting optimized data for dataset: $datasetId")
-        
-        // 1. Get sections (cache or API)
+
+        // 1. Get sections (cache or API) - this is the UI structure parsing
         val sections = getSectionsForDataset(datasetId)
         val allDataElementUids = sections.flatMap { it.dataElementUids }.distinct()
-        
+
         // 2. Get data elements from Room (already hydrated during login)
         val dataElements = dataElementDao.getByIds(allDataElementUids).associateBy { it.id }
-        
+
         // 3. Get category combos from Room (already hydrated during login)
         val categoryCombos = categoryComboDao.getAll().associateBy { it.id }
-        
+
         // 4. Get category option combos from Room (already hydrated during login)
         val categoryOptionCombos = categoryOptionComboDao.getAll().associateBy { it.id }
-        
+
         // 5. Get org units from Room (already hydrated during login)
         val orgUnits = organisationUnitDao.getAll().associateBy { it.id }
-        
-        // 6. For offline-first approach, we don't fetch SDK data values here
-        // Data values are retrieved from Room cache in the repository for instant loading
-        val sdkDataValues = emptyMap<Pair<String, String>, org.hisp.dhis.android.core.datavalue.DataValue>()
-        
-        Log.d("MetadataCacheService", "Optimized cache load complete: ${sections.size} sections, ${dataElements.size} data elements")
-        
+
+        // 6. NEW STEP: Pre-fetch and map data values using the parsed UI structure
+        val sdkDataValues = preFetchAndMapDataValues(datasetId, period, orgUnit, attributeOptionCombo)
+
+        Log.d("MetadataCacheService", "Optimized data complete: ${sections.size} sections, ${dataElements.size} data elements, ${sdkDataValues.size} data values")
+
         OptimizedEntryData(
             sections = sections,
             dataElements = dataElements,
@@ -214,11 +215,91 @@ class MetadataCacheService @Inject constructor(
     }
     
     /**
+     * Pre-fetch and map data values using the parsed UI structure
+     * This bridges the gap between metadata parsing and data retrieval
+     */
+    private suspend fun preFetchAndMapDataValues(
+        datasetId: String,
+        period: String,
+        orgUnit: String,
+        attributeOptionCombo: String
+    ): Map<Pair<String, String>, org.hisp.dhis.android.core.datavalue.DataValue> {
+
+        Log.d("MetadataCacheService", "Pre-fetching data values for dataset: $datasetId")
+
+        // First check if we have cached data in Room
+        val cachedDataValues = dataValueDao.getValuesForInstance(datasetId, period, orgUnit, attributeOptionCombo)
+
+        if (cachedDataValues.isNotEmpty()) {
+            Log.d("MetadataCacheService", "Using cached data values from Room: ${cachedDataValues.size} entries")
+
+            // For cached data, we'll return empty map and let the DataEntryRepositoryImpl
+            // handle retrieving data from Room cache directly - this avoids complex SDK mocking
+            return emptyMap()
+        }
+
+        // If no cached data, fetch fresh data values from SDK
+        val rawSdkDataValues = d2.dataValueModule().dataValues()
+            .byDataSetUid(datasetId)
+            .byPeriod().eq(period)
+            .byOrganisationUnitUid().eq(orgUnit)
+            .byAttributeOptionComboUid().eq(attributeOptionCombo)
+            .blockingGet()
+
+        Log.d("MetadataCacheService", "Raw SDK data values retrieved: ${rawSdkDataValues.size}")
+
+        // Map using the actual keys from SDK data - this fixes the key mismatch issue
+        val mappedDataValues = rawSdkDataValues.associateBy {
+            (it.dataElement() ?: "") to (it.categoryOptionCombo() ?: "")
+        }
+
+        // Store in Room for quick subsequent loading
+        storeDataValuesInRoom(datasetId, period, orgUnit, attributeOptionCombo, rawSdkDataValues)
+
+        Log.d("MetadataCacheService", "Data values mapped and cached: ${mappedDataValues.size} entries")
+
+        return mappedDataValues
+    }
+
+    /**
+     * Store SDK data values in Room database for quick subsequent access
+     */
+    private suspend fun storeDataValuesInRoom(
+        datasetId: String,
+        period: String,
+        orgUnit: String,
+        attributeOptionCombo: String,
+        sdkDataValues: List<org.hisp.dhis.android.core.datavalue.DataValue>
+    ) {
+        // Clear existing data for this instance
+        dataValueDao.deleteValuesForInstance(datasetId, period, orgUnit, attributeOptionCombo)
+
+        // Convert SDK data values to Room entities
+        val entities = sdkDataValues.map { sdkValue ->
+            DataValueEntity(
+                datasetId = datasetId,
+                period = period,
+                orgUnit = orgUnit,
+                attributeOptionCombo = attributeOptionCombo,
+                dataElement = sdkValue.dataElement() ?: "",
+                categoryOptionCombo = sdkValue.categoryOptionCombo() ?: "",
+                value = sdkValue.value(),
+                comment = sdkValue.comment()
+            )
+        }
+
+        // Store in Room
+        dataValueDao.insertAll(entities)
+        Log.d("MetadataCacheService", "Stored ${entities.size} data values in Room database")
+    }
+
+
+    /**
      * Pre-warm caches with commonly used data
      */
     suspend fun preWarmCaches(datasetIds: List<String>) = withContext(Dispatchers.IO) {
         Log.d("MetadataCacheService", "Pre-warming caches for ${datasetIds.size} datasets")
-        
+
         datasetIds.forEach { datasetId ->
             try {
                 getSectionsForDataset(datasetId)
@@ -226,7 +307,7 @@ class MetadataCacheService @Inject constructor(
                 Log.w("MetadataCacheService", "Failed to pre-warm cache for dataset $datasetId", e)
             }
         }
-        
+
         Log.d("MetadataCacheService", "Cache pre-warming completed")
     }
 }

@@ -31,8 +31,6 @@ fun SectionNavigator(
             modifier = Modifier.weight(1f)
         ) {
             Icon(Icons.Default.ArrowBack, contentDescription = "Previous Section")
-            Spacer(Modifier.width(8.dp))
-            Text("Previous")
         }
 
         Spacer(Modifier.width(16.dp))
@@ -51,8 +49,6 @@ fun SectionNavigator(
             enabled = currentSectionIndex < totalSections - 1,
             modifier = Modifier.weight(1f)
         ) {
-            Text("Next")
-            Spacer(Modifier.width(8.dp))
             Icon(Icons.Default.ArrowForward, contentDescription = "Next Section")
         }
     }

@@ -9,7 +9,9 @@ data class FilterState(
     val customToDate: Date? = null,
     val syncStatus: SyncStatus = SyncStatus.ALL,
     val completionStatus: CompletionStatus = CompletionStatus.ALL,
-    val searchQuery: String = ""
+    val searchQuery: String = "",
+    val sortBy: SortBy = SortBy.NAME,
+    val sortOrder: SortOrder = SortOrder.ASCENDING
 )
 
 data class DatasetInstanceFilterState(
@@ -20,14 +22,18 @@ data class DatasetInstanceFilterState(
     val syncStatus: SyncStatus = SyncStatus.ALL,
     val completionStatus: CompletionStatus = CompletionStatus.ALL,
     val attributeOptionCombo: String? = null,
-    val searchQuery: String = ""
+    val searchQuery: String = "",
+    val sortBy: InstanceSortBy = InstanceSortBy.PERIOD,
+    val sortOrder: SortOrder = SortOrder.DESCENDING
 ) {
     fun hasActiveFilters(): Boolean {
         return periodType != PeriodFilterType.ALL ||
                 syncStatus != SyncStatus.ALL ||
                 completionStatus != CompletionStatus.ALL ||
                 attributeOptionCombo != null ||
-                searchQuery.isNotBlank()
+                searchQuery.isNotBlank() ||
+                sortBy != InstanceSortBy.PERIOD ||
+                sortOrder != SortOrder.DESCENDING
     }
 }
 
@@ -93,4 +99,22 @@ enum class CompletionStatus(val displayName: String) {
     ALL("All"),
     COMPLETE("Complete"),
     INCOMPLETE("Incomplete")
+}
+
+enum class SortBy(val displayName: String) {
+    NAME("Name"),
+    CREATED_DATE("Created Date"),
+    ENTRY_COUNT("Entry Count")
+}
+
+enum class SortOrder(val displayName: String) {
+    ASCENDING("Ascending"),
+    DESCENDING("Descending")
+}
+
+enum class InstanceSortBy(val displayName: String) {
+    ORGANISATION_UNIT("Organisation Unit"),
+    PERIOD("Period"),
+    LAST_UPDATED("Last Updated"),
+    COMPLETION_STATUS("Completion Status")
 }
