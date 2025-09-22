@@ -344,7 +344,7 @@ fun DatasetsScreen(
                 IconButton(
                     onClick = {
                         if ((datasetsState as? DatasetsState.Success)?.isSyncing != true) {
-                            viewModel.syncDatasets()
+                            viewModel.downloadOnlySync()
                         }
                     }
                 ) {
@@ -357,7 +357,7 @@ fun DatasetsScreen(
                     } else {
                         Icon(
                             imageVector = Icons.Default.Sync,
-                            contentDescription = "Sync",
+                            contentDescription = "Download latest data",
                             tint = TextColor.OnSurface,
                             modifier = Modifier.size(24.dp)
                         )

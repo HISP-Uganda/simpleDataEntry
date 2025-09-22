@@ -5,6 +5,7 @@ import android.util.Log
 import com.ash.simpledataentry.domain.model.Dhis2Config
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
+import kotlinx.coroutines.runBlocking
 import org.hisp.dhis.android.core.D2
 import org.hisp.dhis.android.core.D2Configuration
 import org.hisp.dhis.android.core.D2Manager
@@ -265,6 +266,85 @@ class SessionManager @Inject constructor() {
 
     fun isSessionActive(): Boolean {
         return d2?.userModule()?.isLogged()?.blockingGet() ?: false
+    }
+
+    /**
+     * Attempt offline login using existing DHIS2 session data
+     * This works when the user has previously logged in and the D2 database contains the credentials
+     */
+    suspend fun attemptOfflineLogin(context: Context, dhis2Config: Dhis2Config, db: AppDatabase): Boolean = withContext(Dispatchers.IO) {
+        return@withContext try {
+            Log.d("SessionManager", "Attempting offline login for ${dhis2Config.username}")
+
+            // Initialize D2 if needed
+            if (d2 == null) {
+                initD2(context)
+            }
+
+            // Check if there's an existing session or cached credentials
+            val d2Instance = d2 ?: return@withContext false
+
+            // Check if the user has logged in before by checking if we have user data
+            val userExists = try {
+                d2Instance.userModule().user().blockingGet()?.uid() != null
+            } catch (e: Exception) {
+                false
+            }
+
+            if (userExists) {
+                Log.d("SessionManager", "Found existing user data, enabling offline access")
+
+                // Store session info for offline use
+                val prefs = context.getSharedPreferences("session_prefs", Context.MODE_PRIVATE)
+                prefs.edit {
+                    putString("username", dhis2Config.username)
+                    putString("serverUrl", dhis2Config.serverUrl)
+                    putBoolean("offline_mode", true)
+                }
+
+                // Hydrate Room database from existing SDK data
+                hydrateRoomFromSdk(context, db)
+
+                Log.i("SessionManager", "Offline login successful for ${dhis2Config.username}")
+                true
+            } else {
+                Log.w("SessionManager", "No existing user data found - offline login not possible")
+                false
+            }
+
+        } catch (e: Exception) {
+            Log.e("SessionManager", "Offline login failed", e)
+            false
+        }
+    }
+
+    /**
+     * Check if offline login is possible for a given user
+     */
+    fun canLoginOffline(context: Context, username: String, serverUrl: String): Boolean {
+        return try {
+            if (d2 == null) {
+                // Try to initialize D2 to check for existing data
+                runBlocking { initD2(context) }
+            }
+
+            val prefs = context.getSharedPreferences("session_prefs", Context.MODE_PRIVATE)
+            val lastUser = prefs.getString("username", null)
+            val lastServer = prefs.getString("serverUrl", null)
+
+            // Check if this is the same user as last login and if we have cached data
+            val isSameUser = lastUser == username && lastServer == serverUrl
+
+            if (isSameUser) {
+                // Check if we have user data in D2
+                d2?.userModule()?.user()?.blockingGet()?.uid() != null
+            } else {
+                false
+            }
+        } catch (e: Exception) {
+            Log.w("SessionManager", "Cannot determine offline login capability", e)
+            false
+        }
     }
 
     fun logout() {

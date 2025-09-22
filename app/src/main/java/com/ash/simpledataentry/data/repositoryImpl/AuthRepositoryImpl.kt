@@ -42,6 +42,30 @@ class AuthRepositoryImpl @Inject constructor(
         }
     }
 
+    /**
+     * Attempt offline login with saved account data
+     */
+    suspend fun attemptOfflineLogin(
+        serverUrl: String,
+        username: String,
+        password: String,
+        context: Context,
+        db: AppDatabase
+    ): Boolean {
+        return try {
+            sessionManager.attemptOfflineLogin(context, Dhis2Config(serverUrl, username, password), db)
+        } catch (e: Exception) {
+            false
+        }
+    }
+
+    /**
+     * Check if offline login is possible for given credentials
+     */
+    fun canLoginOffline(context: Context, username: String, serverUrl: String): Boolean {
+        return sessionManager.canLoginOffline(context, username, serverUrl)
+    }
+
     //override fun isLoggedIn(): Boolean = sessionManager.isSessionActive()
 
     override suspend fun logout() = sessionManager.logout()

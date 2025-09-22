@@ -109,14 +109,39 @@ class LoginViewModel @Inject constructor(
                     navigationProgress = NavigationProgress.initial()
                 )
 
-                val loginResult = authRepository.loginWithProgress(
-                    username = username,
-                    password = password,
-                    serverUrl = serverUrl,
-                    context = context,
-                    db = db
-                ) { progress ->
-                    _state.value = _state.value.copy(navigationProgress = progress)
+                // Check if offline login is possible first
+                val canLoginOffline = authRepository.canLoginOffline(context, username, serverUrl)
+                android.util.Log.d("LoginViewModel", "Can login offline: $canLoginOffline")
+
+                val loginResult = if (canLoginOffline) {
+                    // Try offline login first
+                    android.util.Log.d("LoginViewModel", "Attempting offline login for $username")
+                    _state.value = _state.value.copy(
+                        navigationProgress = NavigationProgress.initial().copy(
+                            phaseTitle = "Offline Login",
+                            phaseDetail = "Accessing saved session..."
+                        )
+                    )
+
+                    authRepository.attemptOfflineLogin(
+                        username = username,
+                        password = password,
+                        serverUrl = serverUrl,
+                        context = context,
+                        db = db
+                    )
+                } else {
+                    // Fall back to online login with progress tracking
+                    android.util.Log.d("LoginViewModel", "Offline login not possible, attempting online login")
+                    authRepository.loginWithProgress(
+                        username = username,
+                        password = password,
+                        serverUrl = serverUrl,
+                        context = context,
+                        db = db
+                    ) { progress ->
+                        _state.value = _state.value.copy(navigationProgress = progress)
+                    }
                 }
 
                 if (loginResult) {
@@ -144,7 +169,11 @@ class LoginViewModel @Inject constructor(
                 } else {
                     _state.value = _state.value.copy(
                         isLoading = false,
-                        error = "Login failed: Invalid credentials or server error",
+                        error = if (canLoginOffline) {
+                            "Offline login failed - try connecting to the internet"
+                        } else {
+                            "Login failed: Invalid credentials or server error"
+                        },
                         showSplash = false,
                         navigationProgress = null
                     )
@@ -266,22 +295,47 @@ class LoginViewModel @Inject constructor(
                     return@launch
                 }
 
-                // Use enhanced login with progress tracking
-                _state.value = _state.value.copy(navigationProgress = NavigationProgress.initial())
+                // Check if offline login is possible first
+                val canLoginOffline = authRepository.canLoginOffline(context, account.username, account.serverUrl)
+                android.util.Log.d("LoginViewModel", "Can login offline: $canLoginOffline")
 
-                val loginResult = authRepository.loginWithProgress(
-                    username = account.username,
-                    password = decryptedPassword,
-                    serverUrl = account.serverUrl,
-                    context = context,
-                    db = db
-                ) { progress ->
-                    _state.value = _state.value.copy(navigationProgress = progress)
+                val loginResult = if (canLoginOffline) {
+                    // Try offline login first
+                    android.util.Log.d("LoginViewModel", "Attempting offline login for ${account.username}")
+                    _state.value = _state.value.copy(
+                        navigationProgress = NavigationProgress.initial().copy(
+                            phaseTitle = "Offline Login",
+                            phaseDetail = "Accessing saved session..."
+                        )
+                    )
+
+                    authRepository.attemptOfflineLogin(
+                        username = account.username,
+                        password = decryptedPassword,
+                        serverUrl = account.serverUrl,
+                        context = context,
+                        db = db
+                    )
+                } else {
+                    // Fall back to online login with progress tracking
+                    android.util.Log.d("LoginViewModel", "Offline login not possible, attempting online login")
+                    _state.value = _state.value.copy(navigationProgress = NavigationProgress.initial())
+
+                    authRepository.loginWithProgress(
+                        username = account.username,
+                        password = decryptedPassword,
+                        serverUrl = account.serverUrl,
+                        context = context,
+                        db = db
+                    ) { progress ->
+                        _state.value = _state.value.copy(navigationProgress = progress)
+                    }
                 }
+
                 if (loginResult) {
                     // Update last used and switch to this account
                     savedAccountRepository.switchToAccount(account.id)
-                    
+
                     _state.value = _state.value.copy(
                         isLoading = false,
                         isLoggedIn = true,
@@ -291,7 +345,11 @@ class LoginViewModel @Inject constructor(
                 } else {
                     _state.value = _state.value.copy(
                         isLoading = false,
-                        error = "Login failed: Invalid credentials or server error",
+                        error = if (canLoginOffline) {
+                            "Offline login failed - try connecting to the internet"
+                        } else {
+                            "Login failed: Invalid credentials or server error"
+                        },
                         showSplash = false,
                         navigationProgress = null
                     )

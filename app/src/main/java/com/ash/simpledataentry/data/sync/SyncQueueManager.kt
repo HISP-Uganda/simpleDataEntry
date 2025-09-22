@@ -94,18 +94,18 @@ class SyncQueueManager @Inject constructor(
     private var networkMonitorJob: Job? = null
     private var autoRetryJob: Job? = null
 
-    // Aligned timeout configuration with DHIS2 SDK recommendations
-    private val uploadTimeoutMs = 600000L // 10 minutes - matches DHIS2 SDK expectations
-    private val downloadTimeoutMs = 300000L // 5 minutes - sufficient for metadata downloads
-    private val connectionTimeoutMs = 30000L // 30 seconds - reasonable for connection establishment
+    // Aligned timeout configuration with DHIS2 SDK recommendations - optimized for 2G compatibility
+    private val uploadTimeoutMs = 900000L // 15 minutes - extended for slow 2G connections
+    private val downloadTimeoutMs = 450000L // 7.5 minutes - extended for slow connections
+    private val connectionTimeoutMs = 45000L // 45 seconds - more generous for slow connections
     private val connectionValidationTimeoutMs = 15000L // 15 seconds for connection validation
     private val overallSyncTimeoutMs = 900000L // 15 minutes max for entire sync process
 
-    // Moderate retry configuration aligned with longer timeouts
-    private val maxRetryAttempts = 2 // Reduce attempts since individual operations have longer timeouts
-    private val baseRetryDelayMs = 5000L // Start with 5 seconds between retries
-    private val maxRetryDelayMs = 20000L // Up to 20 seconds max delay
-    private val maxConsecutiveFailures = 3 // Allow more failures since timeouts are longer
+    // Moderate retry configuration - reduced aggressiveness to avoid persistent failed dialogs
+    private val maxRetryAttempts = 1 // Single retry attempt to reduce dialog persistence
+    private val baseRetryDelayMs = 3000L // Shorter initial delay
+    private val maxRetryDelayMs = 10000L // Shorter max delay to fail faster
+    private val maxConsecutiveFailures = 2 // Reduced to avoid persistent failures
 
     // Chunk configuration optimized for efficiency with longer timeouts
     private val baseChunkSize = 25 // Moderate chunk size for better efficiency
@@ -171,6 +171,42 @@ class SyncQueueManager @Inject constructor(
             _syncState.value = _syncState.value.copy(
                 isRunning = false,
                 error = e.message ?: "Sync failed"
+            )
+            Result.failure(e)
+        }
+    }
+
+    suspend fun startDownloadOnlySync(forceSync: Boolean = false): Result<Unit> {
+        if (_syncState.value.isRunning && !forceSync) {
+            return Result.failure(Exception("Sync already in progress"))
+        }
+
+        syncJob?.cancel()
+        syncJob = syncScope.launch {
+            try {
+                withTimeout(downloadTimeoutMs) { // 5 minutes for download-only
+                    performDownloadOnlySync()
+                }
+            } catch (e: TimeoutCancellationException) {
+                Log.e(tag, "Download-only sync timed out after ${downloadTimeoutMs/1000} seconds")
+                setErrorState(SyncError.TimeoutError("Download sync timed out"))
+            } catch (e: Exception) {
+                Log.e(tag, "Download-only sync failed", e)
+                setErrorState(classifyError(e))
+            }
+        }
+
+        return try {
+            syncJob?.join()
+            if (_syncState.value.error == null) {
+                Result.success(Unit)
+            } else {
+                Result.failure(Exception(_syncState.value.error))
+            }
+        } catch (e: Exception) {
+            _syncState.value = _syncState.value.copy(
+                isRunning = false,
+                error = e.message ?: "Download sync failed"
             )
             Result.failure(e)
         }
@@ -332,8 +368,9 @@ class SyncQueueManager @Inject constructor(
 
                                     // Enhanced upload with shorter timeout and network validation
                     val uploadResult = withTimeout(uploadTimeoutMs) {
-                        // Validate network before upload
-                        if (!networkStateManager.isOnline()) {
+                        // Validate network before upload - permissive check for 2G compatibility
+                        val networkState = networkStateManager.networkState.value
+                        if (!networkState.isConnected || !networkState.hasInternet) {
                             throw Exception("Network connection lost before upload")
                         }
                         d2.dataValueModule().dataValues().blockingUpload()
@@ -376,8 +413,9 @@ class SyncQueueManager @Inject constructor(
                         // Show countdown to user
                         showRetryCountdown(retryDelay, attempt)
 
-                        // Check network before retry
-                        if (!networkStateManager.isOnline()) {
+                        // Check network before retry - permissive for 2G
+                        val networkState = networkStateManager.networkState.value
+                        if (!networkState.isConnected || !networkState.hasInternet) {
                             setErrorState(SyncError.NetworkError("Network connection lost during retry"))
                             return
                         }
@@ -445,6 +483,56 @@ class SyncQueueManager @Inject constructor(
             if (_detailedProgress.value?.error == null) {
                 setErrorState(error)
             }
+        }
+    }
+
+    private suspend fun performDownloadOnlySync() {
+        _syncState.value = _syncState.value.copy(
+            isRunning = true,
+            lastSyncAttempt = System.currentTimeMillis(),
+            error = null
+        )
+
+        try {
+            // Phase 1: Initialize download sync (0-20%)
+            updateProgress(SyncPhase.INITIALIZING, 0, "Starting download sync...")
+
+            // Phase 2: Validate connection (10-20%)
+            if (!validateConnection()) {
+                return // Error state already set in validateConnection()
+            }
+
+            val d2 = sessionManager.getD2()!! // Already validated in validateConnection()
+            updateProgress(SyncPhase.DOWNLOADING_UPDATES, 30, "Downloading latest data...")
+
+            try {
+                // Download latest data from server without uploading
+                withTimeout(downloadTimeoutMs) {
+                    d2.dataValueModule().dataValues().get()
+                }
+                updateProgress(SyncPhase.DOWNLOADING_UPDATES, 80, "Download completed")
+            } catch (e: Exception) {
+                Log.w(tag, "Failed to download latest data: ${e.message}")
+                // Continue anyway - this is just a refresh operation
+            }
+
+            // Phase 3: Finalize (80-100%)
+            updateProgress(SyncPhase.FINALIZING, 100, "Download sync completed")
+
+            _syncState.value = _syncState.value.copy(
+                isRunning = false,
+                lastSuccessfulSync = System.currentTimeMillis(),
+                error = null
+            )
+
+            // Clear progress after successful completion
+            _detailedProgress.value = null
+
+            Log.d(tag, "Download-only sync completed successfully")
+        } catch (e: Exception) {
+            Log.e(tag, "Download-only sync failed", e)
+            val error = classifyError(e)
+            setErrorState(error)
         }
     }
 
@@ -656,6 +744,18 @@ class SyncQueueManager @Inject constructor(
     }
 
     /**
+     * Clear error state and reset sync state - helps dismiss persistent failed sync dialogues
+     */
+    fun clearErrorState() {
+        _detailedProgress.value = null
+        _syncState.value = _syncState.value.copy(
+            error = null,
+            isRunning = false
+        )
+        Log.d(tag, "Error state cleared - sync dialogues should be dismissible")
+    }
+
+    /**
      * Update detailed progress with phase information
      */
     private suspend fun updateProgress(
@@ -710,11 +810,16 @@ class SyncQueueManager @Inject constructor(
 
             updateProgress(SyncPhase.VALIDATING_CONNECTION, 7, "Checking network connectivity...")
 
-            if (!networkStateManager.isOnline()) {
+            // More permissive network check - allow any connection type including 2G
+            val networkState = networkStateManager.networkState.value
+            if (!networkState.isConnected || !networkState.hasInternet) {
                 Log.w(tag, "Network not available for sync")
                 setErrorState(SyncError.NetworkError("No internet connection available"))
                 return false
             }
+
+            // Log network type but don't block - allow 2G connections
+            Log.d(tag, "Network type: ${networkState.networkType}, metered: ${networkState.isMetered}")
 
             updateProgress(SyncPhase.VALIDATING_CONNECTION, 8, "Testing server connection...")
 

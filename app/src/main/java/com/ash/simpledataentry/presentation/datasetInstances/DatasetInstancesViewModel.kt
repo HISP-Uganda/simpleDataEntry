@@ -296,6 +296,8 @@ class DatasetInstancesViewModel @Inject constructor(
     }
 
     fun dismissSyncOverlay() {
+        // Clear error state in SyncQueueManager to prevent persistent dialogs
+        syncQueueManager.clearErrorState()
         _state.value = _state.value.copy(
             detailedSyncProgress = null,
             isSyncing = false

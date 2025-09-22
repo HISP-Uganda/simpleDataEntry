@@ -157,6 +157,55 @@ class DatasetsViewModel @Inject constructor(
         }
     }
 
+    fun downloadOnlySync() {
+        val currentState = _uiState.value
+        if (currentState is DatasetsState.Success && !currentState.isSyncing) {
+            Log.d("DatasetsViewModel", "Starting download-only sync for datasets")
+
+            viewModelScope.launch {
+                try {
+                    val syncResult = syncQueueManager.startDownloadOnlySync()
+                    syncResult.fold(
+                        onSuccess = {
+                            Log.d("DatasetsViewModel", "Download-only sync completed successfully")
+                            loadDatasets() // Reload all data after download
+                            val state = _uiState.value
+                            if (state is DatasetsState.Success) {
+                                _uiState.value = state.copy(
+                                    syncMessage = "Latest data downloaded successfully",
+                                    detailedSyncProgress = null
+                                )
+                            }
+                        },
+                        onFailure = { error ->
+                            Log.e("DatasetsViewModel", "Download-only sync failed", error)
+                            val errorMessage = error.message ?: "Failed to download latest data"
+                            val state = _uiState.value
+                            if (state is DatasetsState.Success) {
+                                _uiState.value = state.copy(
+                                    syncMessage = errorMessage,
+                                    detailedSyncProgress = null
+                                )
+                            }
+                        }
+                    )
+                } catch (e: Exception) {
+                    Log.e("DatasetsViewModel", "Download-only sync failed", e)
+                    val state = _uiState.value
+                    if (state is DatasetsState.Success) {
+                        _uiState.value = state.copy(
+                            isSyncing = false,
+                            syncMessage = e.message ?: "Failed to download datasets",
+                            detailedSyncProgress = null
+                        )
+                    }
+                }
+            }
+        } else {
+            Log.w("DatasetsViewModel", "DATASETS DOWNLOAD: Cannot download - already syncing or state is not Success")
+        }
+    }
+
     fun applyFilter(filterState: FilterState) {
         val currentState = _uiState.value
         if (currentState is DatasetsState.Success) {
@@ -247,6 +296,8 @@ class DatasetsViewModel @Inject constructor(
     fun dismissSyncOverlay() {
         val currentState = _uiState.value
         if (currentState is DatasetsState.Success) {
+            // Clear error state in SyncQueueManager to prevent persistent dialogs
+            syncQueueManager.clearErrorState()
             _uiState.value = currentState.copy(
                 detailedSyncProgress = null,
                 isSyncing = false

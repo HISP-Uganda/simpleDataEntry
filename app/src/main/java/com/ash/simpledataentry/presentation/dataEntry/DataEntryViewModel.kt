@@ -17,6 +17,7 @@ import com.ash.simpledataentry.data.sync.SyncQueueManager
 import com.ash.simpledataentry.domain.repository.DataEntryRepository
 import com.ash.simpledataentry.domain.useCase.DataEntryUseCases
 import com.ash.simpledataentry.util.NetworkUtils
+import com.ash.simpledataentry.data.sync.NetworkStateManager
 import dagger.hilt.android.lifecycle.HiltViewModel
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.async
@@ -74,7 +75,8 @@ class DataEntryViewModel @Inject constructor(
     private val useCases: DataEntryUseCases,
     private val draftDao: DataValueDraftDao,
     private val validationRepository: ValidationRepository,
-    private val syncQueueManager: SyncQueueManager
+    private val syncQueueManager: SyncQueueManager,
+    private val networkStateManager: NetworkStateManager
 ) : ViewModel() {
     private val _state = MutableStateFlow(DataEntryState())
     val state: StateFlow<DataEntryState> = _state.asStateFlow()
@@ -404,8 +406,9 @@ class DataEntryViewModel @Inject constructor(
         viewModelScope.launch {
             _state.update { it.copy(isLoading = true, error = null) }
             val stateSnapshot = _state.value
-            val isOnline = NetworkUtils.isNetworkAvailable(application)
-            if (!isOnline) {
+            // More permissive network check - allow 2G connections
+            val networkState = networkStateManager.networkState.value
+            if (!networkState.isConnected || !networkState.hasInternet) {
                 _state.update { it.copy(isLoading = false, error = "Cannot sync while offline.") }
                 return@launch
             }
@@ -596,6 +599,8 @@ class DataEntryViewModel @Inject constructor(
     }
 
     fun dismissSyncOverlay() {
+        // Clear error state in SyncQueueManager to prevent persistent dialogs
+        syncQueueManager.clearErrorState()
         _state.update {
             it.copy(
                 detailedSyncProgress = null,
