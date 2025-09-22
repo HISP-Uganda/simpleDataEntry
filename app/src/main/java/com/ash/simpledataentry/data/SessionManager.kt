@@ -12,6 +12,8 @@ import javax.inject.Inject
 import javax.inject.Singleton
 import androidx.core.content.edit
 import com.ash.simpledataentry.data.local.AppDatabase
+import com.ash.simpledataentry.presentation.core.NavigationProgress
+import com.ash.simpledataentry.presentation.core.LoadingPhase
 import okhttp3.OkHttpClient
 import okhttp3.Interceptor
 import org.koin.core.context.GlobalContext
@@ -94,6 +96,143 @@ class SessionManager @Inject constructor() {
             Log.i("SessionManager", "Login successful for ${dhis2Config.username}")
         } catch (e: Exception) {
             Log.e("SessionManager", "Login failed", e)
+            throw e
+        }
+    }
+
+    /**
+     * Enhanced login with progress tracking
+     */
+    suspend fun loginWithProgress(
+        context: Context,
+        dhis2Config: Dhis2Config,
+        db: AppDatabase,
+        onProgress: (NavigationProgress) -> Unit
+    ) = withContext(Dispatchers.IO) {
+        try {
+            // Step 1: Initialize (0-10%)
+            onProgress(NavigationProgress(
+                phase = LoadingPhase.INITIALIZING,
+                overallPercentage = 5,
+                phaseTitle = LoadingPhase.INITIALIZING.title,
+                phaseDetail = "Setting up connection..."
+            ))
+
+            val prefs = context.getSharedPreferences("session_prefs", Context.MODE_PRIVATE)
+            val lastUser = prefs.getString("username", null)
+            val lastServer = prefs.getString("serverUrl", null)
+            val isDifferentUser = lastUser != dhis2Config.username || lastServer != dhis2Config.serverUrl
+
+            if (isDifferentUser) {
+                wipeAllData(context)
+            }
+
+            // Always re-instantiate D2 before login to ensure fresh state
+            d2 = null
+            initD2(context)
+
+            // Step 2: Authentication (10-30%)
+            onProgress(NavigationProgress(
+                phase = LoadingPhase.AUTHENTICATING,
+                overallPercentage = 15,
+                phaseTitle = LoadingPhase.AUTHENTICATING.title,
+                phaseDetail = "Connecting to server..."
+            ))
+
+            // Log out if already logged in to avoid D2Error
+            if (d2?.userModule()?.isLogged()?.blockingGet() == true) {
+                d2?.userModule()?.blockingLogOut()
+            }
+
+            d2?.userModule()?.blockingLogIn(
+                dhis2Config.username,
+                dhis2Config.password,
+                dhis2Config.serverUrl
+            ) ?: throw IllegalStateException("D2 not initialized")
+
+            onProgress(NavigationProgress(
+                phase = LoadingPhase.AUTHENTICATING,
+                overallPercentage = 25,
+                phaseTitle = LoadingPhase.AUTHENTICATING.title,
+                phaseDetail = "Authentication successful"
+            ))
+
+            prefs.edit {
+                putString("username", dhis2Config.username)
+                putString("serverUrl", dhis2Config.serverUrl)
+            }
+
+            // Step 3: Download Metadata (30-60%)
+            onProgress(NavigationProgress(
+                phase = LoadingPhase.DOWNLOADING_METADATA,
+                overallPercentage = 35,
+                phaseTitle = LoadingPhase.DOWNLOADING_METADATA.title,
+                phaseDetail = "Downloading configuration..."
+            ))
+
+            downloadMetadata()
+
+            onProgress(NavigationProgress(
+                phase = LoadingPhase.DOWNLOADING_METADATA,
+                overallPercentage = 55,
+                phaseTitle = LoadingPhase.DOWNLOADING_METADATA.title,
+                phaseDetail = "Metadata downloaded successfully"
+            ))
+
+            // Step 4: Download Data (60-80%)
+            onProgress(NavigationProgress(
+                phase = LoadingPhase.DOWNLOADING_DATA,
+                overallPercentage = 65,
+                phaseTitle = LoadingPhase.DOWNLOADING_DATA.title,
+                phaseDetail = "Downloading your data..."
+            ))
+
+            downloadAggregateData()
+
+            onProgress(NavigationProgress(
+                phase = LoadingPhase.DOWNLOADING_DATA,
+                overallPercentage = 75,
+                phaseTitle = LoadingPhase.DOWNLOADING_DATA.title,
+                phaseDetail = "Data downloaded successfully"
+            ))
+
+            // Step 5: Database Preparation (80-95%)
+            onProgress(NavigationProgress(
+                phase = LoadingPhase.PREPARING_DATABASE,
+                overallPercentage = 85,
+                phaseTitle = LoadingPhase.PREPARING_DATABASE.title,
+                phaseDetail = "Preparing local database..."
+            ))
+
+            hydrateRoomFromSdk(context, db)
+
+            onProgress(NavigationProgress(
+                phase = LoadingPhase.PREPARING_DATABASE,
+                overallPercentage = 90,
+                phaseTitle = LoadingPhase.PREPARING_DATABASE.title,
+                phaseDetail = "Database setup complete"
+            ))
+
+            // Step 6: Finalization (95-100%)
+            onProgress(NavigationProgress(
+                phase = LoadingPhase.FINALIZING,
+                overallPercentage = 98,
+                phaseTitle = LoadingPhase.FINALIZING.title,
+                phaseDetail = "Login complete!"
+            ))
+
+            Log.i("SessionManager", "Enhanced login successful for ${dhis2Config.username}")
+
+            onProgress(NavigationProgress(
+                phase = LoadingPhase.FINALIZING,
+                overallPercentage = 100,
+                phaseTitle = "Ready",
+                phaseDetail = "Welcome to DHIS2 Data Entry!"
+            ))
+
+        } catch (e: Exception) {
+            Log.e("SessionManager", "Enhanced login failed", e)
+            onProgress(NavigationProgress.error(e.message ?: "Login failed"))
             throw e
         }
     }

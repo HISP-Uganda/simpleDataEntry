@@ -9,6 +9,7 @@ import com.ash.simpledataentry.domain.repository.SystemRepository
 import com.ash.simpledataentry.data.local.AppDatabase
 import javax.inject.Inject
 import javax.inject.Singleton
+import com.ash.simpledataentry.presentation.core.NavigationProgress
 
 @Singleton
 class AuthRepositoryImpl @Inject constructor(
@@ -19,6 +20,22 @@ class AuthRepositoryImpl @Inject constructor(
     override suspend fun login(serverUrl: String, username: String, password: String, context: Context, db: AppDatabase): Boolean {
         return try {
             sessionManager.login(context, Dhis2Config(serverUrl, username, password), db)
+            true
+        } catch (e: Exception) {
+            false
+        }
+    }
+
+    suspend fun loginWithProgress(
+        serverUrl: String,
+        username: String,
+        password: String,
+        context: Context,
+        db: AppDatabase,
+        onProgress: (NavigationProgress) -> Unit
+    ): Boolean {
+        return try {
+            sessionManager.loginWithProgress(context, Dhis2Config(serverUrl, username, password), db, onProgress)
             true
         } catch (e: Exception) {
             false

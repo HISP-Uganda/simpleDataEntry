@@ -35,6 +35,8 @@ import com.ash.simpledataentry.domain.model.DatasetInstanceState
 import com.ash.simpledataentry.presentation.core.BaseScreen
 import com.ash.simpledataentry.presentation.core.FullScreenLoader
 import com.ash.simpledataentry.presentation.core.OverlayLoader
+import com.ash.simpledataentry.presentation.core.DetailedSyncOverlay
+import com.ash.simpledataentry.ui.theme.DHIS2BlueDeep
 import org.hisp.dhis.android.core.dataset.DataSetInstance
 import org.hisp.dhis.mobile.ui.designsystem.component.AdditionalInfoItem
 import org.hisp.dhis.mobile.ui.designsystem.component.ListCard
@@ -58,9 +60,8 @@ import androidx.compose.material3.CardDefaults
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.width
-import androidx.compose.material3.AssistChip
-import androidx.compose.material3.AssistChipDefaults
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.shape.CircleShape
 
 // Status information for better UI presentation
 data class StatusInfo(
@@ -69,469 +70,6 @@ data class StatusInfo(
     val color: androidx.compose.ui.graphics.Color,
     val backgroundColor: androidx.compose.ui.graphics.Color
 )
-
-@SuppressLint("SuspiciousIndentation")
-@OptIn(ExperimentalMaterial3Api::class)
-@Composable
-fun DatasetInstancesScreen(
-    navController: NavController,
-    datasetId: String,
-    datasetName: String,
-    viewModel: DatasetInstancesViewModel = hiltViewModel()
-) {
-    val coroutineScope = rememberCoroutineScope()
-    val snackbarHostState = remember { SnackbarHostState() }
-    val state by viewModel.state.collectAsState()
-    val bulkMode by viewModel.bulkCompletionMode.collectAsState()
-    val selectedInstances by viewModel.selectedInstances.collectAsState()
-    val filterState by viewModel.filterState.collectAsState()
-    var bulkActionMessage by remember { mutableStateOf<String?>(null) }
-    var bulkActionSuccess by remember { mutableStateOf<Boolean?>(null) }
-    var showFilterDialog by remember { mutableStateOf(false) }
-    var showSyncDialog by remember { mutableStateOf(false) }
-    var showFilterSection by remember { mutableStateOf(false) }
-
-    LaunchedEffect(datasetId) {
-        viewModel.setDatasetId(datasetId)
-    }
-
-    // Refresh data when the screen is resumed (e.g., coming back from EditEntryScreen)
-    LaunchedEffect(Unit) {
-        viewModel.refreshData()
-    }
-
-    LaunchedEffect(state.error) {
-        state.error?.let {
-            snackbarHostState.showSnackbar(
-                message = it,
-                duration = SnackbarDuration.Short
-            )
-        }
-    }
-
-    LaunchedEffect(state.successMessage) {
-        state.successMessage?.let {
-            snackbarHostState.showSnackbar(
-                message = it,
-                duration = SnackbarDuration.Short
-            )
-        }
-    }
-
-    BaseScreen(
-        title = datasetName,
-        navController = navController,
-        actions = {
-            // Keep icons visible during loading - just disable them
-            IconButton(
-                onClick = { showFilterSection = !showFilterSection },
-                enabled = !state.isSyncing && !bulkMode
-            ) {
-                Icon(
-                    imageVector = Icons.Default.FilterList,
-                    contentDescription = "Filter",
-                    tint = if (filterState.hasActiveFilters() || showFilterSection) MaterialTheme.colorScheme.primary else TextColor.OnSurface
-                )
-            }
-            IconButton(
-                onClick = {
-                    if (!state.isSyncing) {
-                        showSyncDialog = true
-                    }
-                },
-                enabled = !state.isLoading && !state.isSyncing && !bulkMode
-            ) {
-                if (state.isSyncing) {
-                    CircularProgressIndicator(
-                        modifier = Modifier.size(24.dp),
-                        strokeWidth = 2.dp,
-                        color = MaterialTheme.colorScheme.primary
-                    )
-                } else {
-                    Icon(
-                        imageVector = Icons.Default.Sync,
-                        contentDescription = "Sync",
-                        tint = TextColor.OnSurface
-                    )
-                }
-            }
-            IconButton(
-                onClick = { viewModel.toggleBulkCompletionMode() },
-                enabled = !state.isLoading && !state.isSyncing
-            ) {
-                Icon(
-                    imageVector = Icons.Default.Check,
-                    contentDescription = if (bulkMode) "Exit Bulk Complete" else "Bulk Complete",
-                    tint = if (bulkMode) MaterialTheme.colorScheme.primary else TextColor.OnSurface
-                )
-            }
-        }
-    ) {
-        Column {
-            // Pull-down filter section
-            AnimatedVisibility(
-                visible = showFilterSection,
-                enter = slideInVertically(initialOffsetY = { -it }),
-                exit = slideOutVertically(targetOffsetY = { -it })
-            ) {
-                Card(
-                    modifier = Modifier.fillMaxWidth(),
-                    colors = CardDefaults.cardColors(
-                        containerColor = MaterialTheme.colorScheme.surface
-                    ),
-                    elevation = CardDefaults.cardElevation(defaultElevation = 2.dp)
-                ) {
-                    DatasetInstancesPullDownFilter(
-                        currentFilter = filterState,
-                        onApplyFilter = { newFilter ->
-                            viewModel.updateFilterState(newFilter)
-                        }
-                    )
-                }
-            }
-            
-            // Main content with proper loading overlays
-            OverlayLoader(
-                message = "Syncing...",
-                isVisible = state.isSyncing,
-                modifier = Modifier.fillMaxSize()
-            ) {
-                if (state.isLoading) {
-                    FullScreenLoader(
-                        message = "Loading dataset instances...",
-                        isVisible = true
-                    )
-                } else {
-                LazyColumn(
-                    modifier = Modifier.fillMaxSize(),
-                    contentPadding = PaddingValues(16.dp),
-                    verticalArrangement = Arrangement.spacedBy(8.dp)
-                ) {
-                    items(state.filteredInstances) { instance ->
-                        var isLoading by remember { mutableStateOf(false) }
-                        val formattedDate = try {
-                            instance.lastUpdated?.let { dateStr ->
-                                if (dateStr is String) {
-                                    val inputFormat = SimpleDateFormat("EEE MMM dd HH:mm:ss zzz yyyy", Locale.ENGLISH)
-                                    val outputFormat = SimpleDateFormat("dd/MM/yyyy", Locale.ENGLISH)
-                                    val date = inputFormat.parse(dateStr)
-                                    date?.let { outputFormat.format(it) } ?: "N/A"
-                                } else {
-                                    "N/A"
-                                }
-                            } ?: "N/A"
-                        } catch (e: Exception) {
-                            Log.e("DatasetInstancesScreen", "Error parsing date: ", e)
-                            "N/A"
-                        }
-                        val periodText = instance.period.toString().replace("Period(id=", "").replace(")", "")
-                        val attrComboName = state.attributeOptionCombos.find { it.first == instance.attributeOptionCombo }?.second ?: instance.attributeOptionCombo
-                        val showAttrCombo = !attrComboName.equals("default", ignoreCase = true)
-                        val isComplete = instance.state == DatasetInstanceState.COMPLETE
-
-                        // Check if this instance has local draft values (real sync status)
-                        val instanceKey = "${instance.datasetId}|${instance.period.id}|${instance.organisationUnit.id}|${instance.attributeOptionCombo}"
-                        val hasLocalChanges = state.instancesWithDrafts.contains(instanceKey)
-
-                        // For the top-right date, we'll use the ListCard's lastUpdated parameter
-                        val dateForTopRight = if (instance.lastUpdated != null) formattedDate else null
-                        Row(
-                            verticalAlignment = Alignment.CenterVertically,
-                            modifier = Modifier.fillMaxWidth()
-                        ) {
-                            if (bulkMode) {
-                                Checkbox(
-                                    checked = selectedInstances.contains(instance.id) || isComplete,
-                                    onCheckedChange = { checked ->
-                                        if (!state.isLoading && !state.isSyncing && !isComplete) {
-                                            viewModel.toggleInstanceSelection(instance.id)
-                                        }
-                                    },
-                                    enabled = !state.isLoading && !state.isSyncing && !isComplete,
-                                    colors = CheckboxDefaults.colors(
-                                        checkedColor = if (isComplete) MaterialTheme.colorScheme.onSurface.copy(alpha = 0.38f) else MaterialTheme.colorScheme.primary,
-                                        uncheckedColor = if (isComplete) MaterialTheme.colorScheme.onSurface.copy(alpha = 0.38f) else MaterialTheme.colorScheme.onSurface
-                                    )
-                                )
-                            }
-                            Box(modifier = Modifier.weight(1f)) {
-                                Card(
-                                    modifier = Modifier.fillMaxWidth(),
-                                    colors = CardDefaults.cardColors(
-                                        containerColor = MaterialTheme.colorScheme.surface
-                                    ),
-                                    elevation = CardDefaults.cardElevation(defaultElevation = 2.dp),
-                                    onClick = {
-                                        if (!isLoading && !bulkMode) {
-                                            val encodedDatasetId = URLEncoder.encode(datasetId, "UTF-8")
-                                            val encodedDatasetName = URLEncoder.encode(datasetName, "UTF-8")
-                                            navController.navigate("EditEntry/$encodedDatasetId/${instance.period.id}/${instance.organisationUnit.id}/${instance.attributeOptionCombo}/$encodedDatasetName") {
-                                                launchSingleTop = true
-                                                popUpTo("DatasetInstances/{datasetId}/{datasetName}") {
-                                                    saveState = true
-                                                }
-                                            }
-                                        }
-                                    }
-                                ) {
-                                    Column(
-                                        modifier = Modifier.padding(16.dp)
-                                    ) {
-                                        // Title row with date on the right
-                                        Row(
-                                            modifier = Modifier.fillMaxWidth(),
-                                            horizontalArrangement = Arrangement.SpaceBetween,
-                                            verticalAlignment = Alignment.CenterVertically
-                                        ) {
-                                            Text(
-                                                text = "${instance.organisationUnit.name} • $periodText",
-                                                style = MaterialTheme.typography.titleMedium,
-                                                color = MaterialTheme.colorScheme.onSurface,
-                                                modifier = Modifier.weight(1f)
-                                            )
-
-                                            // Date only in top-right
-                                            if (dateForTopRight != null) {
-                                                Text(
-                                                    text = dateForTopRight,
-                                                    style = MaterialTheme.typography.bodySmall,
-                                                    color = MaterialTheme.colorScheme.onSurfaceVariant
-                                                )
-                                            }
-                                        }
-
-                                        // Second row: Attribute option combo + completion checkmark
-                                        if (showAttrCombo || isComplete) {
-                                            Spacer(modifier = Modifier.height(4.dp))
-                                            Row(
-                                                modifier = Modifier.fillMaxWidth(),
-                                                horizontalArrangement = Arrangement.SpaceBetween,
-                                                verticalAlignment = Alignment.CenterVertically
-                                            ) {
-                                                if (showAttrCombo) {
-                                                    Text(
-                                                        text = attrComboName,
-                                                        style = MaterialTheme.typography.bodyMedium,
-                                                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                                        modifier = Modifier.weight(1f)
-                                                    )
-                                                } else {
-                                                    Spacer(modifier = Modifier.weight(1f))
-                                                }
-
-                                                // Completion checkmark (right-justified in second row)
-                                                if (isComplete) {
-                                                    Icon(
-                                                        imageVector = Icons.Default.CheckCircle,
-                                                        contentDescription = "Complete",
-                                                        tint = MaterialTheme.colorScheme.primary,
-                                                        modifier = Modifier.size(20.dp)
-                                                    )
-                                                }
-                                            }
-                                        }
-
-                                        // Third row: Sync status chip (only if has local changes)
-                                        if (hasLocalChanges && !bulkMode) {
-                                            Spacer(modifier = Modifier.height(8.dp))
-                                            AssistChip(
-                                                onClick = { /* No action needed */ },
-                                                label = {
-                                                    Text(
-                                                        text = "Not synced",
-                                                        style = MaterialTheme.typography.labelSmall
-                                                    )
-                                                },
-                                                leadingIcon = {
-                                                    Icon(
-                                                        imageVector = Icons.Default.Sync,
-                                                        contentDescription = null,
-                                                        modifier = Modifier.size(16.dp)
-                                                    )
-                                                },
-                                                colors = AssistChipDefaults.assistChipColors(
-                                                    containerColor = MaterialTheme.colorScheme.secondaryContainer,
-                                                    labelColor = MaterialTheme.colorScheme.onSecondaryContainer,
-                                                    leadingIconContentColor = MaterialTheme.colorScheme.onSecondaryContainer
-                                                ),
-                                                shape = RoundedCornerShape(8.dp)
-                                            )
-                                        }
-                                    }
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-
-            SnackbarHost(
-                hostState = snackbarHostState,
-                modifier = Modifier.padding(16.dp),
-                snackbar = { data ->
-                    Snackbar(
-                        containerColor = MaterialTheme.colorScheme.surface,
-                        contentColor = Color.White
-                    ) {
-                        Text(data.visuals.message)
-                    }
-                }
-            )
-            if (bulkActionMessage != null) {
-                LaunchedEffect(bulkActionMessage) {
-                    snackbarHostState.showSnackbar(bulkActionMessage!!)
-                    bulkActionMessage = null
-                }
-            }
-            if (bulkMode) {
-                Row(
-                    modifier = Modifier.padding(16.dp),
-                    horizontalArrangement = Arrangement.spacedBy(16.dp)
-                ) {
-                    Button(
-                        onClick = {
-                            viewModel.bulkCompleteSelectedInstances { success, error ->
-                                bulkActionSuccess = success
-                                bulkActionMessage = if (success) "Selected instances marked as complete." else (error ?: "Failed to complete selected instances.")
-                            }
-                        },
-                        enabled = selectedInstances.isNotEmpty() && !state.isLoading && !state.isSyncing
-                    ) {
-                        Text("Complete Selected")
-                    }
-                    Button(
-                        onClick = { viewModel.clearBulkSelection() },
-                        enabled = !state.isLoading && !state.isSyncing
-                    ) {
-                        Text("Cancel")
-                    }
-                }
-            }
-            if (!bulkMode) {
-                FloatingActionButton(
-                    onClick = {
-                        val encodedDatasetName = URLEncoder.encode(datasetName, "UTF-8")
-                        navController.navigate("CreateDataEntry/$datasetId/$encodedDatasetName") {
-                            launchSingleTop = true
-                            popUpTo("DatasetInstances/{datasetId}/{datasetName}") {
-                                saveState = true
-                            }
-                        }
-                    },
-                    modifier = Modifier.padding(16.dp)
-                ) {
-                    Icon(
-                        imageVector = Icons.Default.Add,
-                        contentDescription = "Create Data Entry"
-                    )
-                }
-            }
-                }
-            }
-        }
-
-        // Filter Dialog - only show when data is loaded
-        if (showFilterDialog && !state.isLoading) {
-            DatasetInstanceFilterDialog(
-                currentFilter = filterState,
-                attributeOptionCombos = state.attributeOptionCombos,
-                dataset = state.dataset,
-                onFilterChanged = { newFilter ->
-                    viewModel.updateFilterState(newFilter)
-                },
-                onClearFilters = {
-                    viewModel.clearFilters()
-                },
-                onDismiss = { showFilterDialog = false }
-            )
-        }
-        
-        // Sync Dialog
-        if (showSyncDialog) {
-            SyncConfirmationDialog(
-                syncOptions = SyncOptions(
-                    uploadLocalData = state.localInstanceCount > 0,
-                    localInstanceCount = state.localInstanceCount
-                ),
-                onConfirm = { uploadFirst ->
-                    viewModel.syncDatasetInstances(uploadFirst)
-                    showSyncDialog = false
-                },
-                onDismiss = { showSyncDialog = false }
-            )
-        }
-    }
-
-
-@Composable
-private fun LoadingIndicator() {
-    Box(
-        modifier = Modifier.fillMaxSize(),
-        contentAlignment = Alignment.Center
-    ) {
-        CircularProgressIndicator(
-            modifier = Modifier.size(24.dp),
-            strokeWidth = 2.dp
-        )
-    }
-}
-
-fun parseDhis2PeriodToDate(periodId: String): Date? {
-    return try {
-        when {
-            // Yearly: 2023
-            Regex("^\\d{4}$").matches(periodId) -> {
-                SimpleDateFormat("yyyy", Locale.ENGLISH).parse(periodId)
-            }
-            // Monthly: 202306
-            Regex("^\\d{6}$").matches(periodId) -> {
-                SimpleDateFormat("yyyyMM", Locale.ENGLISH).parse(periodId)
-            }
-            // Daily: 2023-06-01
-            Regex("^\\d{4}-\\d{2}-\\d{2}$").matches(periodId) -> {
-                SimpleDateFormat("yyyy-MM-dd", Locale.ENGLISH).parse(periodId)
-            }
-            // Weekly: 2023W23
-            Regex("^\\d{4}W\\d{1,2}$").matches(periodId) -> {
-                val year = periodId.substring(0, 4).toInt()
-                val week = periodId.substring(5).toInt()
-                val cal = Calendar.getInstance(Locale.ENGLISH)
-                cal.clear()
-                cal.set(Calendar.YEAR, year)
-                cal.set(Calendar.WEEK_OF_YEAR, week)
-                cal.set(Calendar.DAY_OF_WEEK, Calendar.MONDAY)
-                cal.time
-            }
-            // Quarterly: 2023Q2
-            Regex("^\\d{4}Q[1-4]$").matches(periodId) -> {
-                val year = periodId.substring(0, 4).toInt()
-                val quarter = periodId.substring(5).toInt()
-                val month = (quarter - 1) * 3
-                val cal = Calendar.getInstance(Locale.ENGLISH)
-                cal.clear()
-                cal.set(Calendar.YEAR, year)
-                cal.set(Calendar.MONTH, month)
-                cal.set(Calendar.DAY_OF_MONTH, 1)
-                cal.time
-            }
-            // Six-monthly: 2023S1 or 2023S2
-            Regex("^\\d{4}S[1-2]$").matches(periodId) -> {
-                val year = periodId.substring(0, 4).toInt()
-                val semester = periodId.substring(5).toInt()
-                val month = if (semester == 1) 0 else 6
-                val cal = Calendar.getInstance(Locale.ENGLISH)
-                cal.clear()
-                cal.set(Calendar.YEAR, year)
-                cal.set(Calendar.MONTH, month)
-                cal.set(Calendar.DAY_OF_MONTH, 1)
-                cal.time
-            }
-            else -> null
-        }
-    } catch (e: Exception) {
-        null
-    }
-}
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -555,7 +93,7 @@ fun DatasetInstancesPullDownFilter(
         var showCompletionDropdown by remember { mutableStateOf(false) }
         var showSortByDropdown by remember { mutableStateOf(false) }
         var showSortOrderDropdown by remember { mutableStateOf(false) }
-        
+
         // Search field
         OutlinedTextField(
             value = searchQuery,
@@ -676,7 +214,7 @@ fun DatasetInstancesPullDownFilter(
                         }
                     }
                 )
-                
+
                 DropdownMenu(
                     expanded = showSyncDropdown,
                     onDismissRequest = { showSyncDropdown = false }
@@ -699,8 +237,8 @@ fun DatasetInstancesPullDownFilter(
                     }
                 }
             }
-            
-            // Completion Status Filter  
+
+            // Completion Status Filter
             Box(modifier = Modifier.weight(1f)) {
                 OutlinedTextField(
                     value = completionStatus.displayName,
@@ -714,7 +252,7 @@ fun DatasetInstancesPullDownFilter(
                         }
                     }
                 )
-                
+
                 DropdownMenu(
                     expanded = showCompletionDropdown,
                     onDismissRequest = { showCompletionDropdown = false }
@@ -738,7 +276,7 @@ fun DatasetInstancesPullDownFilter(
                 }
             }
         }
-        
+
         // Clear button
         if (searchQuery.isNotBlank() || syncStatus != SyncStatus.ALL || completionStatus != CompletionStatus.ALL ||
             sortBy != InstanceSortBy.PERIOD || sortOrder != SortOrder.DESCENDING) {
@@ -754,6 +292,529 @@ fun DatasetInstancesPullDownFilter(
                 modifier = Modifier.align(Alignment.CenterHorizontally)
             ) {
                 Text("Clear All")
+            }
+        }
+    }
+}
+
+@SuppressLint("SuspiciousIndentation")
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+fun DatasetInstancesScreen(
+    navController: NavController,
+    datasetId: String,
+    datasetName: String,
+    viewModel: DatasetInstancesViewModel = hiltViewModel()
+) {
+    val coroutineScope = rememberCoroutineScope()
+    val snackbarHostState = remember { SnackbarHostState() }
+    val state by viewModel.state.collectAsState()
+    val bulkMode by viewModel.bulkCompletionMode.collectAsState()
+    val selectedInstances by viewModel.selectedInstances.collectAsState()
+    val filterState by viewModel.filterState.collectAsState()
+    var bulkActionMessage by remember { mutableStateOf<String?>(null) }
+    var bulkActionSuccess by remember { mutableStateOf<Boolean?>(null) }
+    var showFilterDialog by remember { mutableStateOf(false) }
+    var showSyncDialog by remember { mutableStateOf(false) }
+    var showFilterSection by remember { mutableStateOf(false) }
+
+    LaunchedEffect(datasetId) {
+        viewModel.setDatasetId(datasetId)
+    }
+
+    // Refresh data when the screen is resumed (e.g., coming back from EditEntryScreen)
+    LaunchedEffect(Unit) {
+        viewModel.refreshData()
+    }
+
+    LaunchedEffect(state.error) {
+        state.error?.let {
+            snackbarHostState.showSnackbar(
+                message = it,
+                duration = SnackbarDuration.Short
+            )
+        }
+    }
+
+    LaunchedEffect(state.successMessage) {
+        state.successMessage?.let {
+            snackbarHostState.showSnackbar(
+                message = it,
+                duration = SnackbarDuration.Short
+            )
+        }
+    }
+
+    BaseScreen(
+        title = datasetName,
+        navController = navController,
+        actions = {
+            // Keep icons visible during loading - just disable them
+            IconButton(
+                onClick = { showFilterSection = !showFilterSection },
+                enabled = !state.isSyncing && !bulkMode
+            ) {
+                Icon(
+                    imageVector = Icons.Default.FilterList,
+                    contentDescription = "Filter",
+                    tint = if (filterState.hasActiveFilters() || showFilterSection) Color.White else TextColor.OnSurface,
+                    modifier = Modifier.size(24.dp)
+                )
+            }
+            IconButton(
+                onClick = {
+                    if (!state.isSyncing) {
+                        showSyncDialog = true
+                    }
+                },
+                enabled = !state.isLoading && !state.isSyncing && !bulkMode
+            ) {
+                if (state.isSyncing) {
+                    CircularProgressIndicator(
+                        modifier = Modifier.size(24.dp),
+                        strokeWidth = 2.dp,
+                        color = MaterialTheme.colorScheme.primary
+                    )
+                } else {
+                    Icon(
+                        imageVector = Icons.Default.Sync,
+                        contentDescription = "Sync",
+                        tint = TextColor.OnSurface,
+                        modifier = Modifier.size(24.dp)
+                    )
+                }
+            }
+            IconButton(
+                onClick = { viewModel.toggleBulkCompletionMode() },
+                enabled = !state.isLoading && !state.isSyncing
+            ) {
+                Icon(
+                    imageVector = Icons.Default.Check,
+                    contentDescription = if (bulkMode) "Exit Bulk Complete" else "Bulk Complete",
+                    tint = if (bulkMode) MaterialTheme.colorScheme.primary else TextColor.OnSurface,
+                    modifier = Modifier.size(24.dp)
+                )
+            }
+        },
+        floatingActionButton = if (!bulkMode) {
+            {
+                FloatingActionButton(
+                    onClick = {
+                        val encodedDatasetName = URLEncoder.encode(datasetName, "UTF-8")
+                        navController.navigate("CreateDataEntry/$datasetId/$encodedDatasetName") {
+                            launchSingleTop = true
+                            popUpTo("DatasetInstances/{datasetId}/{datasetName}") {
+                                saveState = true
+                            }
+                        }
+                    }
+                ) {
+                    Icon(
+                        imageVector = Icons.Default.Add,
+                        contentDescription = "Create Data Entry"
+                    )
+                }
+            }
+        } else null
+    ) {
+        Box(modifier = Modifier.fillMaxSize()) {
+            Column {
+                // Pull-down filter section
+                AnimatedVisibility(
+                    visible = showFilterSection,
+                    enter = slideInVertically(
+                        initialOffsetY = { -it },
+                        animationSpec = androidx.compose.animation.core.tween(200)
+                    ),
+                    exit = slideOutVertically(
+                        targetOffsetY = { -it },
+                        animationSpec = androidx.compose.animation.core.tween(150)
+                    )
+                ) {
+                    Card(
+                        modifier = Modifier.fillMaxWidth(),
+                        colors = CardDefaults.cardColors(
+                            containerColor = DHIS2BlueDeep
+                        ),
+                        elevation = CardDefaults.cardElevation(defaultElevation = 6.dp),
+                        shape = RoundedCornerShape(
+                            topStart = 0.dp,
+                            topEnd = 0.dp,
+                            bottomStart = 8.dp,
+                            bottomEnd = 8.dp
+                        )
+                    ) {
+                        DatasetInstancesPullDownFilter(
+                            currentFilter = filterState,
+                            onApplyFilter = { newFilter: DatasetInstanceFilterState ->
+                                viewModel.updateFilterState(newFilter)
+                            }
+                        )
+                    }
+                }
+
+                // Main content with enhanced sync progress overlay
+                DetailedSyncOverlay(
+                    progress = state.detailedSyncProgress,
+                    onNavigateBack = { navController.popBackStack() },
+                    onRetry = {
+                        viewModel.syncDatasetInstances(uploadFirst = false)
+                    },
+                    onCancel = { viewModel.dismissSyncOverlay() },
+                    modifier = Modifier.fillMaxSize()
+                ) {
+                    if (state.isLoading) {
+                        FullScreenLoader(
+                            message = state.navigationProgress?.phaseDetail ?: "Loading dataset instances...",
+                            isVisible = true,
+                            animationType = com.ash.simpledataentry.presentation.core.LoadingAnimationType.BOUNCING_DOTS,
+                            progress = state.navigationProgress?.overallPercentage,
+                            progressStep = state.navigationProgress?.phaseTitle
+                        )
+                    } else {
+                        LazyColumn(
+                            modifier = Modifier.fillMaxSize(),
+                            contentPadding = PaddingValues(16.dp),
+                            verticalArrangement = Arrangement.spacedBy(8.dp)
+                        ) {
+                            items(state.filteredInstances) { instance ->
+                                var isLoading by remember { mutableStateOf(false) }
+                                val formattedDate = try {
+                                    instance.lastUpdated?.let { dateStr ->
+                                        if (dateStr is String) {
+                                            val inputFormat = SimpleDateFormat(
+                                                "EEE MMM dd HH:mm:ss zzz yyyy",
+                                                Locale.ENGLISH
+                                            )
+                                            val outputFormat =
+                                                SimpleDateFormat("dd/MM/yyyy", Locale.ENGLISH)
+                                            val date = inputFormat.parse(dateStr)
+                                            date?.let { outputFormat.format(it) } ?: "N/A"
+                                        } else {
+                                            "N/A"
+                                        }
+                                    } ?: "N/A"
+                                } catch (e: Exception) {
+                                    Log.e("DatasetInstancesScreen", "Error parsing date: ", e)
+                                    "N/A"
+                                }
+                                val periodText =
+                                    instance.period.toString().replace("Period(id=", "")
+                                        .replace(")", "")
+                                val attrComboName =
+                                    state.attributeOptionCombos.find { it.first == instance.attributeOptionCombo }?.second
+                                        ?: instance.attributeOptionCombo
+                                val showAttrCombo =
+                                    !attrComboName.equals("default", ignoreCase = true)
+                                val isComplete = instance.state == DatasetInstanceState.COMPLETE
+
+                                // Check if this instance has local draft values (real sync status)
+                                val instanceKey =
+                                    "${instance.datasetId}|${instance.period.id}|${instance.organisationUnit.id}|${instance.attributeOptionCombo}"
+                                val hasLocalChanges =
+                                    state.instancesWithDrafts.contains(instanceKey)
+
+                                // For the top-right date, we'll use the ListCard's lastUpdated parameter
+                                val dateForTopRight =
+                                    if (instance.lastUpdated != null) formattedDate else null
+                                Row(
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    modifier = Modifier.fillMaxWidth()
+                                ) {
+                                    if (bulkMode) {
+                                        Checkbox(
+                                            checked = selectedInstances.contains(instance.id) || isComplete,
+                                            onCheckedChange = { checked ->
+                                                if (!state.isLoading && !state.isSyncing && !isComplete) {
+                                                    viewModel.toggleInstanceSelection(instance.id)
+                                                }
+                                            },
+                                            enabled = !state.isLoading && !state.isSyncing && !isComplete,
+                                            colors = CheckboxDefaults.colors(
+                                                checkedColor = if (isComplete) MaterialTheme.colorScheme.onSurface.copy(
+                                                    alpha = 0.38f
+                                                ) else MaterialTheme.colorScheme.primary,
+                                                uncheckedColor = if (isComplete) MaterialTheme.colorScheme.onSurface.copy(
+                                                    alpha = 0.38f
+                                                ) else MaterialTheme.colorScheme.onSurface
+                                            )
+                                        )
+                                    }
+                                    Box(modifier = Modifier.weight(1f)) {
+                                        Card(
+                                            modifier = Modifier.fillMaxWidth(),
+                                            colors = CardDefaults.cardColors(
+                                                containerColor = MaterialTheme.colorScheme.surface
+                                            ),
+                                            elevation = CardDefaults.cardElevation(
+                                                defaultElevation = 2.dp,
+                                                pressedElevation = 4.dp
+                                            ),
+                                            onClick = {
+                                                if (!isLoading && !bulkMode) {
+                                                    val encodedDatasetId =
+                                                        URLEncoder.encode(datasetId, "UTF-8")
+                                                    val encodedDatasetName =
+                                                        URLEncoder.encode(datasetName, "UTF-8")
+                                                    navController.navigate("EditEntry/$encodedDatasetId/${instance.period.id}/${instance.organisationUnit.id}/${instance.attributeOptionCombo}/$encodedDatasetName") {
+                                                        launchSingleTop = true
+                                                        popUpTo("DatasetInstances/{datasetId}/{datasetName}") {
+                                                            saveState = true
+                                                        }
+                                                    }
+                                                }
+                                            }
+                                        ) {
+                                            Column(
+                                                modifier = Modifier.padding(16.dp)
+                                            ) {
+                                                // Title row with date on the right
+                                                Row(
+                                                    modifier = Modifier.fillMaxWidth(),
+                                                    horizontalArrangement = Arrangement.SpaceBetween,
+                                                    verticalAlignment = Alignment.CenterVertically
+                                                ) {
+                                                    Text(
+                                                        text = "${instance.organisationUnit.name} • $periodText",
+                                                        style = MaterialTheme.typography.titleMedium,
+                                                        color = MaterialTheme.colorScheme.onSurface,
+                                                        modifier = Modifier.weight(1f)
+                                                    )
+
+                                                    // Date only in top-right
+                                                    if (dateForTopRight != null) {
+                                                        Text(
+                                                            text = dateForTopRight,
+                                                            style = MaterialTheme.typography.bodySmall,
+                                                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                                                        )
+                                                    }
+                                                }
+
+                                                // Second row: Attribute option combo + status chips
+                                                if (showAttrCombo || hasLocalChanges || isComplete) {
+                                                    Spacer(modifier = Modifier.height(4.dp))
+                                                    Row(
+                                                        modifier = Modifier.fillMaxWidth(),
+                                                        horizontalArrangement = Arrangement.SpaceBetween,
+                                                        verticalAlignment = Alignment.CenterVertically
+                                                    ) {
+                                                        if (showAttrCombo) {
+                                                            Text(
+                                                                text = attrComboName,
+                                                                style = MaterialTheme.typography.bodyMedium,
+                                                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                                                modifier = Modifier.weight(1f)
+                                                            )
+                                                        } else {
+                                                            Spacer(modifier = Modifier.weight(1f))
+                                                        }
+
+                                                        // Status chips (icon-only with left-to-right positioning in second row)
+                                                        if ((hasLocalChanges || isComplete) && !bulkMode) {
+                                                            Row(
+                                                                horizontalArrangement = Arrangement.spacedBy(
+                                                                    8.dp
+                                                                ),
+                                                                verticalAlignment = Alignment.CenterVertically
+                                                            ) {
+                                                                // Sync status chip (warning color for local changes)
+                                                                if (hasLocalChanges) {
+                                                                    Icon(
+                                                                        imageVector = Icons.Default.Sync,
+                                                                        contentDescription = "Not synced",
+                                                                        tint = MaterialTheme.colorScheme.onSecondaryContainer,
+                                                                        modifier = Modifier
+                                                                            .size(20.dp)
+                                                                            .background(
+                                                                                MaterialTheme.colorScheme.secondaryContainer,
+                                                                                CircleShape
+                                                                            )
+                                                                            .padding(4.dp)
+                                                                    )
+                                                                }
+
+                                                                // Completion status chip
+                                                                if (isComplete) {
+                                                                    Icon(
+                                                                        imageVector = Icons.Default.CheckCircle,
+                                                                        contentDescription = "Complete",
+                                                                        tint = MaterialTheme.colorScheme.primary,
+                                                                        modifier = Modifier.size(20.dp)
+                                                                    )
+                                                                }
+                                                            }
+                                                        }
+                                                    }
+                                                }
+
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+
+                SnackbarHost(
+                    hostState = snackbarHostState,
+                    modifier = Modifier.padding(16.dp),
+                    snackbar = { data ->
+                        Snackbar(
+                            containerColor = MaterialTheme.colorScheme.surface,
+                            contentColor = Color.White
+                        ) {
+                            Text(data.visuals.message)
+                        }
+                    }
+                )
+                if (bulkActionMessage != null) {
+                    LaunchedEffect(bulkActionMessage) {
+                        snackbarHostState.showSnackbar(bulkActionMessage!!)
+                        bulkActionMessage = null
+                    }
+                }
+            }
+
+            // Bulk action buttons positioned at bottom of screen
+            if (bulkMode) {
+                Row(
+                    modifier = Modifier
+                        .align(Alignment.BottomCenter)
+                        .fillMaxWidth()
+                        .padding(16.dp)
+                        .background(
+                            MaterialTheme.colorScheme.surface,
+                            RoundedCornerShape(topStart = 8.dp, topEnd = 8.dp)
+                        )
+                        .padding(16.dp),
+                    horizontalArrangement = Arrangement.Center
+                ) {
+                    Button(
+                        onClick = {
+                            viewModel.bulkCompleteSelectedInstances { success, error ->
+                                bulkActionSuccess = success
+                                bulkActionMessage =
+                                    if (success) "Selected instances marked as complete." else (error
+                                        ?: "Failed to complete selected instances.")
+                            }
+                        },
+                        enabled = selectedInstances.isNotEmpty() && !state.isLoading && !state.isSyncing,
+                        modifier = Modifier.padding(end = 8.dp)
+                    ) {
+                        Text("Complete Selected")
+                    }
+                    Button(
+                        onClick = { viewModel.clearBulkSelection() },
+                        enabled = !state.isLoading && !state.isSyncing,
+                        modifier = Modifier.padding(start = 8.dp)
+                    ) {
+                        Text("Cancel")
+                    }
+                }
+            }
+
+            // Filter Dialog - only show when data is loaded
+            if (showFilterDialog && !state.isLoading) {
+                DatasetInstanceFilterDialog(
+                    currentFilter = filterState,
+                    attributeOptionCombos = state.attributeOptionCombos,
+                    dataset = state.dataset,
+                    onFilterChanged = { newFilter ->
+                        viewModel.updateFilterState(newFilter)
+                    },
+                    onClearFilters = {
+                        viewModel.clearFilters()
+                    },
+                    onDismiss = { showFilterDialog = false }
+                )
+            }
+
+            // Sync Dialog
+            if (showSyncDialog) {
+                SyncConfirmationDialog(
+                    syncOptions = SyncOptions(
+                        uploadLocalData = state.localInstanceCount > 0,
+                        localInstanceCount = state.localInstanceCount
+                    ),
+                    onConfirm = { uploadFirst ->
+                        viewModel.syncDatasetInstances(uploadFirst)
+                        showSyncDialog = false
+                    },
+                    onDismiss = { showSyncDialog = false }
+                )
+            }
+        }
+
+        @Composable
+        fun LoadingIndicator() {
+            Box(
+                modifier = Modifier.fillMaxSize(),
+                contentAlignment = Alignment.Center
+            ) {
+                CircularProgressIndicator(
+                    modifier = Modifier.size(24.dp),
+                    strokeWidth = 2.dp
+                )
+            }
+        }
+
+        fun parseDhis2PeriodToDate(periodId: String): Date? {
+            return try {
+                when {
+                    // Yearly: 2023
+                    Regex("^\\d{4}$").matches(periodId) -> {
+                        SimpleDateFormat("yyyy", Locale.ENGLISH).parse(periodId)
+                    }
+                    // Monthly: 202306
+                    Regex("^\\d{6}$").matches(periodId) -> {
+                        SimpleDateFormat("yyyyMM", Locale.ENGLISH).parse(periodId)
+                    }
+                    // Daily: 2023-06-01
+                    Regex("^\\d{4}-\\d{2}-\\d{2}$").matches(periodId) -> {
+                        SimpleDateFormat("yyyy-MM-dd", Locale.ENGLISH).parse(periodId)
+                    }
+                    // Weekly: 2023W23
+                    Regex("^\\d{4}W\\d{1,2}$").matches(periodId) -> {
+                        val year = periodId.substring(0, 4).toInt()
+                        val week = periodId.substring(5).toInt()
+                        val cal = Calendar.getInstance(Locale.ENGLISH)
+                        cal.clear()
+                        cal.set(Calendar.YEAR, year)
+                        cal.set(Calendar.WEEK_OF_YEAR, week)
+                        cal.set(Calendar.DAY_OF_WEEK, Calendar.MONDAY)
+                        cal.time
+                    }
+                    // Quarterly: 2023Q2
+                    Regex("^\\d{4}Q[1-4]$").matches(periodId) -> {
+                        val year = periodId.substring(0, 4).toInt()
+                        val quarter = periodId.substring(5).toInt()
+                        val month = (quarter - 1) * 3
+                        val cal = Calendar.getInstance(Locale.ENGLISH)
+                        cal.clear()
+                        cal.set(Calendar.YEAR, year)
+                        cal.set(Calendar.MONTH, month)
+                        cal.set(Calendar.DAY_OF_MONTH, 1)
+                        cal.time
+                    }
+                    // Six-monthly: 2023S1 or 2023S2
+                    Regex("^\\d{4}S[1-2]$").matches(periodId) -> {
+                        val year = periodId.substring(0, 4).toInt()
+                        val semester = periodId.substring(5).toInt()
+                        val month = if (semester == 1) 0 else 6
+                        val cal = Calendar.getInstance(Locale.ENGLISH)
+                        cal.clear()
+                        cal.set(Calendar.YEAR, year)
+                        cal.set(Calendar.MONTH, month)
+                        cal.set(Calendar.DAY_OF_MONTH, 1)
+                        cal.time
+                    }
+
+                    else -> null
+                }
+            } catch (e: Exception) {
+                null
             }
         }
     }

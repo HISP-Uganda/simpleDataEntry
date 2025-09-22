@@ -12,6 +12,8 @@ import com.ash.simpledataentry.data.local.DataValueDraftDao
 import com.ash.simpledataentry.data.local.DataValueDraftEntity
 import com.ash.simpledataentry.data.repositoryImpl.ValidationRepository
 import com.ash.simpledataentry.domain.model.*
+import com.ash.simpledataentry.data.sync.DetailedSyncProgress
+import com.ash.simpledataentry.data.sync.SyncQueueManager
 import com.ash.simpledataentry.domain.repository.DataEntryRepository
 import com.ash.simpledataentry.domain.useCase.DataEntryUseCases
 import com.ash.simpledataentry.util.NetworkUtils
@@ -55,9 +57,14 @@ data class DataEntryState(
     val dataElementGroupedSections: Map<String, Map<String, List<DataValue>>> = emptyMap(),
     val localDraftCount: Int = 0,
     val isSyncing: Boolean = false,
+    val detailedSyncProgress: DetailedSyncProgress? = null, // Enhanced sync progress
     val successMessage: String? = null,
     val isValidating: Boolean = false,
-    val validationSummary: ValidationSummary? = null
+    val validationSummary: ValidationSummary? = null,
+    val navigationProgress: com.ash.simpledataentry.presentation.core.NavigationProgress? = null, // Enhanced loading progress
+    val completionProgress: com.ash.simpledataentry.presentation.core.CompletionProgress? = null, // Enhanced completion progress
+    val showCompletionDialog: Boolean = false,
+    val completionAction: com.ash.simpledataentry.presentation.core.CompletionAction? = null
 )
 
 @HiltViewModel
@@ -66,13 +73,28 @@ class DataEntryViewModel @Inject constructor(
     private val repository: DataEntryRepository,
     private val useCases: DataEntryUseCases,
     private val draftDao: DataValueDraftDao,
-    private val validationRepository: ValidationRepository
+    private val validationRepository: ValidationRepository,
+    private val syncQueueManager: SyncQueueManager
 ) : ViewModel() {
     private val _state = MutableStateFlow(DataEntryState())
     val state: StateFlow<DataEntryState> = _state.asStateFlow()
 
     // Track unsaved edits: key = Pair<dataElement, categoryOptionCombo>, value = DataValue
     private val dirtyDataValues = mutableMapOf<Pair<String, String>, DataValue>()
+
+    init {
+        // Observe sync progress from SyncQueueManager
+        viewModelScope.launch {
+            syncQueueManager.detailedProgress.collect { progress ->
+                _state.update { currentState ->
+                    currentState.copy(
+                        detailedSyncProgress = progress,
+                        isSyncing = progress != null
+                    )
+                }
+            }
+        }
+    }
 
     // --- BEGIN: Per-field TextFieldValue state ---
     private val _fieldStates = mutableStateMapOf<String, androidx.compose.ui.text.input.TextFieldValue>()
@@ -112,9 +134,25 @@ class DataEntryViewModel @Inject constructor(
                         period = period,
                         orgUnit = orgUnitId,
                         attributeOptionCombo = attributeOptionCombo,
-                        isEditMode = isEditMode
+                        isEditMode = isEditMode,
+                        navigationProgress = com.ash.simpledataentry.presentation.core.NavigationProgress(
+                            phase = com.ash.simpledataentry.presentation.core.LoadingPhase.INITIALIZING,
+                            overallPercentage = 10,
+                            phaseTitle = com.ash.simpledataentry.presentation.core.LoadingPhase.INITIALIZING.title,
+                            phaseDetail = "Preparing form..."
+                        )
                     )
                 }
+
+                // Step 1: Load Drafts (10-30%)
+                _state.update { it.copy(
+                    navigationProgress = com.ash.simpledataentry.presentation.core.NavigationProgress(
+                        phase = com.ash.simpledataentry.presentation.core.LoadingPhase.LOADING_DATA,
+                        overallPercentage = 25,
+                        phaseTitle = com.ash.simpledataentry.presentation.core.LoadingPhase.LOADING_DATA.title,
+                        phaseDetail = "Loading draft data..."
+                    )
+                )}
 
                 val drafts = withContext(Dispatchers.IO) {
                     draftDao.getDraftsForInstance(datasetId, period, orgUnitId, attributeOptionCombo)
@@ -125,8 +163,28 @@ class DataEntryViewModel @Inject constructor(
                     repository.getAttributeOptionCombos(datasetId)
                 }
 
+                // Step 2: Load Data Values (30-50%)
+                _state.update { it.copy(
+                    navigationProgress = com.ash.simpledataentry.presentation.core.NavigationProgress(
+                        phase = com.ash.simpledataentry.presentation.core.LoadingPhase.LOADING_DATA,
+                        overallPercentage = 40,
+                        phaseTitle = com.ash.simpledataentry.presentation.core.LoadingPhase.LOADING_DATA.title,
+                        phaseDetail = "Loading form data..."
+                    )
+                )}
+
                 val dataValuesFlow = repository.getDataValues(datasetId, period, orgUnitId, attributeOptionCombo)
                 dataValuesFlow.collect { values ->
+                    // Step 3: Process Categories (50-70%)
+                    _state.update { it.copy(
+                        navigationProgress = com.ash.simpledataentry.presentation.core.NavigationProgress(
+                            phase = com.ash.simpledataentry.presentation.core.LoadingPhase.PROCESSING_DATA,
+                            overallPercentage = 60,
+                            phaseTitle = com.ash.simpledataentry.presentation.core.LoadingPhase.PROCESSING_DATA.title,
+                            phaseDetail = "Processing categories..."
+                        )
+                    )}
+
                     val uniqueCategoryCombos = values
                         .mapNotNull { it.categoryOptionCombo }
                         .filter { it.isNotBlank() }
@@ -174,6 +232,16 @@ class DataEntryViewModel @Inject constructor(
                         }
                     }
 
+                    // Step 4: Finalizing (70-100%)
+                    _state.update { it.copy(
+                        navigationProgress = com.ash.simpledataentry.presentation.core.NavigationProgress(
+                            phase = com.ash.simpledataentry.presentation.core.LoadingPhase.COMPLETING,
+                            overallPercentage = 90,
+                            phaseTitle = com.ash.simpledataentry.presentation.core.LoadingPhase.COMPLETING.title,
+                            phaseDetail = "Setting up form..."
+                        )
+                    )}
+
                     _state.update { currentState ->
 
                         val groupedBySection = mergedValues.groupBy { it.sectionName } // Group once
@@ -216,7 +284,8 @@ class DataEntryViewModel @Inject constructor(
                             optionUidsToComboUid = optionUidsToComboUid,
                             attributeOptionComboName = attributeOptionComboName,
                             attributeOptionCombos = attributeOptionCombos,
-                            dataElementGroupedSections = dataElementGroupedSections
+                            dataElementGroupedSections = dataElementGroupedSections,
+                            navigationProgress = null // Clear progress when done
                         )
                     }
                 }
@@ -229,7 +298,8 @@ class DataEntryViewModel @Inject constructor(
                 _state.update { currentState ->
                     currentState.copy(
                         error = "Failed to load data values: ${e.message}",
-                        isLoading = false
+                        isLoading = false,
+                        navigationProgress = com.ash.simpledataentry.presentation.core.NavigationProgress.error(e.message ?: "Failed to load data values")
                     )
                 }
             }
@@ -468,40 +538,14 @@ class DataEntryViewModel @Inject constructor(
             return
         }
 
-        Log.d("DataEntryViewModel", "Starting sync for data entry: datasetId=${stateSnapshot.datasetId}, uploadFirst: $uploadFirst")
+        Log.d("DataEntryViewModel", "Starting enhanced sync for data entry: datasetId=${stateSnapshot.datasetId}, uploadFirst: $uploadFirst")
         viewModelScope.launch {
-            _state.update { it.copy(isSyncing = true, error = null, successMessage = null) }
             try {
-                if (!NetworkUtils.isNetworkAvailable(application)) {
-                    _state.update { 
-                        it.copy(
-                            isSyncing = false, 
-                            error = "No network connection. Sync will be attempted when online."
-                        ) 
-                    }
-                    return@launch
-                }
-                
-                if (uploadFirst) {
-                    Log.d("DataEntryViewModel", "Step 1: Uploading local data for current dataset instance")
-                    // 1. Push only this dataset instance's data to server first
-                    repository.pushDataForInstance(
-                        datasetId = stateSnapshot.datasetId,
-                        period = stateSnapshot.period,
-                        orgUnit = stateSnapshot.orgUnit,
-                        attributeOptionCombo = stateSnapshot.attributeOptionCombo
-                    )
-                    Log.d("DataEntryViewModel", "Step 1 completed: Instance data uploaded")
-
-                    // Immediately update draft count after successful upload
-                    loadDraftCount()
-                }
-                
-                Log.d("DataEntryViewModel", "Step 2: Pulling remote updates")
-                // 2. Pull updates from server and harmonize
-                val result = useCases.syncDataEntry()
-                result.fold(
+                // Use the enhanced SyncQueueManager which provides detailed progress tracking
+                val syncResult = syncQueueManager.startSync(forceSync = uploadFirst)
+                syncResult.fold(
                     onSuccess = {
+                        Log.d("DataEntryViewModel", "Enhanced sync completed successfully")
                         // Reload all data after sync
                         loadDataValues(
                             datasetId = stateSnapshot.datasetId,
@@ -512,45 +556,36 @@ class DataEntryViewModel @Inject constructor(
                             isEditMode = stateSnapshot.isEditMode
                         )
                         val message = if (uploadFirst) {
-                            "Local data uploaded and remote updates downloaded successfully"
+                            "Data synchronized successfully with enhanced progress tracking"
                         } else {
                             "Data entry synced successfully"
                         }
-                        _state.update { 
+                        _state.update {
                             it.copy(
-                                isSyncing = false,
-                                successMessage = message
-                            ) 
+                                successMessage = message,
+                                detailedSyncProgress = null // Clear progress when done
+                            )
                         }
-                        Log.d("DataEntryViewModel", "Sync completed successfully")
                     },
                     onFailure = { error ->
-                        Log.e("DataEntryViewModel", "Sync failed", error)
-                        val errorMessage = if (uploadFirst) {
-                            "Upload succeeded but failed to download updates: ${error.message}"
-                        } else {
-                            error.message ?: "Failed to sync data entry"
-                        }
-                        _state.update { 
+                        Log.e("DataEntryViewModel", "Enhanced sync failed", error)
+                        val errorMessage = error.message ?: "Failed to sync data entry"
+                        _state.update {
                             it.copy(
-                                isSyncing = false,
-                                error = errorMessage
-                            ) 
+                                error = errorMessage,
+                                detailedSyncProgress = null // Clear progress on failure
+                            )
                         }
                     }
                 )
             } catch (e: Exception) {
-                Log.e("DataEntryViewModel", "Sync failed", e)
-                val errorMessage = if (uploadFirst) {
-                    "Sync failed during ${if (e.message?.contains("upload") == true) "upload" else "download"}: ${e.message}"
-                } else {
-                    e.message ?: "Failed to sync data entry"
-                }
-                _state.update { 
+                Log.e("DataEntryViewModel", "Enhanced sync failed", e)
+                _state.update {
                     it.copy(
                         isSyncing = false,
-                        error = errorMessage
-                    ) 
+                        error = e.message ?: "Failed to sync data entry",
+                        detailedSyncProgress = null
+                    )
                 }
             }
         }
@@ -558,6 +593,15 @@ class DataEntryViewModel @Inject constructor(
 
     fun clearMessages() {
         _state.update { it.copy(error = null, successMessage = null) }
+    }
+
+    fun dismissSyncOverlay() {
+        _state.update {
+            it.copy(
+                detailedSyncProgress = null,
+                isSyncing = false
+            )
+        }
     }
 
 
@@ -897,5 +941,275 @@ class DataEntryViewModel @Inject constructor(
 
     fun clearValidationResult() {
         _state.update { it.copy(validationSummary = null) }
+    }
+
+    // === Enhanced Completion Workflow ===
+
+    fun showCompletionDialog() {
+        _state.update { it.copy(showCompletionDialog = true) }
+    }
+
+    fun dismissCompletionDialog() {
+        _state.update {
+            it.copy(
+                showCompletionDialog = false,
+                completionAction = null,
+                completionProgress = null
+            )
+        }
+    }
+
+    fun startCompletionWorkflow(action: com.ash.simpledataentry.presentation.core.CompletionAction) {
+        _state.update {
+            it.copy(
+                completionAction = action,
+                showCompletionDialog = false
+            )
+        }
+
+        when (action) {
+            com.ash.simpledataentry.presentation.core.CompletionAction.VALIDATE_AND_COMPLETE -> {
+                startValidationWithCompletionProgress()
+            }
+            com.ash.simpledataentry.presentation.core.CompletionAction.COMPLETE_WITHOUT_VALIDATION -> {
+                completeDirectlyWithProgress()
+            }
+            com.ash.simpledataentry.presentation.core.CompletionAction.RERUN_VALIDATION -> {
+                validateWithoutCompletion()
+            }
+            com.ash.simpledataentry.presentation.core.CompletionAction.MARK_INCOMPLETE -> {
+                markIncompleteWithProgress()
+            }
+        }
+    }
+
+    private fun startValidationWithCompletionProgress() {
+        val stateSnapshot = _state.value
+        viewModelScope.launch {
+            try {
+                // Step 1: Preparing (0-10%)
+                _state.update {
+                    it.copy(
+                        isValidating = true,
+                        error = null,
+                        validationSummary = null,
+                        completionProgress = com.ash.simpledataentry.presentation.core.CompletionProgress(
+                            phase = com.ash.simpledataentry.presentation.core.CompletionPhase.PREPARING,
+                            overallPercentage = 5,
+                            phaseTitle = com.ash.simpledataentry.presentation.core.CompletionPhase.PREPARING.title,
+                            phaseDetail = "Setting up validation...",
+                            isValidating = true
+                        )
+                    )
+                }
+
+                // Step 2: Validating (10-70%)
+                _state.update {
+                    it.copy(
+                        completionProgress = com.ash.simpledataentry.presentation.core.CompletionProgress(
+                            phase = com.ash.simpledataentry.presentation.core.CompletionPhase.VALIDATING,
+                            overallPercentage = 20,
+                            phaseTitle = com.ash.simpledataentry.presentation.core.CompletionPhase.VALIDATING.title,
+                            phaseDetail = "Running validation rules...",
+                            isValidating = true
+                        )
+                    )
+                }
+
+                val validationResult = validationRepository.validateDatasetInstance(
+                    datasetId = stateSnapshot.datasetId,
+                    period = stateSnapshot.period,
+                    organisationUnit = stateSnapshot.orgUnit,
+                    attributeOptionCombo = stateSnapshot.attributeOptionCombo,
+                    dataValues = stateSnapshot.dataValues,
+                    forceRefresh = true
+                )
+
+                // Step 3: Processing Results (70-90%)
+                _state.update {
+                    it.copy(
+                        completionProgress = com.ash.simpledataentry.presentation.core.CompletionProgress(
+                            phase = com.ash.simpledataentry.presentation.core.CompletionPhase.PROCESSING_RESULTS,
+                            overallPercentage = 80,
+                            phaseTitle = com.ash.simpledataentry.presentation.core.CompletionPhase.PROCESSING_RESULTS.title,
+                            phaseDetail = "Analyzing validation results...",
+                            isValidating = true
+                        )
+                    )
+                }
+
+                _state.update {
+                    it.copy(
+                        isValidating = false,
+                        validationSummary = validationResult,
+                        completionProgress = null // Clear progress when validation dialog shows
+                    )
+                }
+
+            } catch (e: Exception) {
+                Log.e("DataEntryViewModel", "Enhanced validation failed", e)
+                _state.update {
+                    it.copy(
+                        isValidating = false,
+                        error = "Validation failed: ${e.message}",
+                        completionProgress = com.ash.simpledataentry.presentation.core.CompletionProgress.error(
+                            e.message ?: "Validation failed"
+                        )
+                    )
+                }
+            }
+        }
+    }
+
+    private fun completeDirectlyWithProgress() {
+        val stateSnapshot = _state.value
+        viewModelScope.launch {
+            try {
+                // Step 1: Preparing (0-10%)
+                _state.update {
+                    it.copy(
+                        isLoading = true,
+                        error = null,
+                        completionProgress = com.ash.simpledataentry.presentation.core.CompletionProgress(
+                            phase = com.ash.simpledataentry.presentation.core.CompletionPhase.PREPARING,
+                            overallPercentage = 10,
+                            phaseTitle = com.ash.simpledataentry.presentation.core.CompletionPhase.PREPARING.title,
+                            phaseDetail = "Preparing to complete dataset..."
+                        )
+                    )
+                }
+
+                // Step 2: Completing (10-90%)
+                _state.update {
+                    it.copy(
+                        completionProgress = com.ash.simpledataentry.presentation.core.CompletionProgress(
+                            phase = com.ash.simpledataentry.presentation.core.CompletionPhase.COMPLETING,
+                            overallPercentage = 50,
+                            phaseTitle = com.ash.simpledataentry.presentation.core.CompletionPhase.COMPLETING.title,
+                            phaseDetail = "Marking dataset as complete..."
+                        )
+                    )
+                }
+
+                val result = useCases.completeDatasetInstance(
+                    stateSnapshot.datasetId,
+                    stateSnapshot.period,
+                    stateSnapshot.orgUnit,
+                    stateSnapshot.attributeOptionCombo
+                )
+
+                if (result.isSuccess) {
+                    // Step 3: Completed (90-100%)
+                    _state.update {
+                        it.copy(
+                            completionProgress = com.ash.simpledataentry.presentation.core.CompletionProgress(
+                                phase = com.ash.simpledataentry.presentation.core.CompletionPhase.COMPLETED,
+                                overallPercentage = 100,
+                                phaseTitle = com.ash.simpledataentry.presentation.core.CompletionPhase.COMPLETED.title,
+                                phaseDetail = "Dataset completed successfully!"
+                            )
+                        )
+                    }
+
+                    // Show success briefly, then clear
+                    kotlinx.coroutines.delay(1500)
+                    _state.update {
+                        it.copy(
+                            isCompleted = true,
+                            isLoading = false,
+                            completionProgress = null,
+                            successMessage = "Dataset marked as complete successfully."
+                        )
+                    }
+                } else {
+                    _state.update {
+                        it.copy(
+                            isLoading = false,
+                            error = result.exceptionOrNull()?.message ?: "Failed to complete dataset",
+                            completionProgress = com.ash.simpledataentry.presentation.core.CompletionProgress.error(
+                                result.exceptionOrNull()?.message ?: "Failed to complete dataset"
+                            )
+                        )
+                    }
+                }
+
+            } catch (e: Exception) {
+                Log.e("DataEntryViewModel", "Direct completion failed", e)
+                _state.update {
+                    it.copy(
+                        isLoading = false,
+                        error = "Completion failed: ${e.message}",
+                        completionProgress = com.ash.simpledataentry.presentation.core.CompletionProgress.error(
+                            e.message ?: "Completion failed"
+                        )
+                    )
+                }
+            }
+        }
+    }
+
+    private fun validateWithoutCompletion() {
+        startValidationForCompletion() // Use existing validation method
+    }
+
+    private fun markIncompleteWithProgress() {
+        val stateSnapshot = _state.value
+        viewModelScope.launch {
+            try {
+                _state.update {
+                    it.copy(
+                        isLoading = true,
+                        error = null,
+                        completionProgress = com.ash.simpledataentry.presentation.core.CompletionProgress(
+                            phase = com.ash.simpledataentry.presentation.core.CompletionPhase.PREPARING,
+                            overallPercentage = 30,
+                            phaseTitle = "Marking Incomplete",
+                            phaseDetail = "Updating dataset status..."
+                        )
+                    )
+                }
+
+                val result = useCases.markDatasetInstanceIncomplete(
+                    stateSnapshot.datasetId,
+                    stateSnapshot.period,
+                    stateSnapshot.orgUnit,
+                    stateSnapshot.attributeOptionCombo
+                )
+
+                if (result.isSuccess) {
+                    _state.update {
+                        it.copy(
+                            isLoading = false,
+                            isCompleted = false,
+                            error = null,
+                            completionProgress = null,
+                            successMessage = "Dataset marked as incomplete successfully."
+                        )
+                    }
+                } else {
+                    _state.update {
+                        it.copy(
+                            isLoading = false,
+                            error = result.exceptionOrNull()?.message ?: "Failed to mark incomplete",
+                            completionProgress = com.ash.simpledataentry.presentation.core.CompletionProgress.error(
+                                result.exceptionOrNull()?.message ?: "Failed to mark incomplete"
+                            )
+                        )
+                    }
+                }
+
+            } catch (e: Exception) {
+                Log.e("DataEntryViewModel", "Mark incomplete failed", e)
+                _state.update {
+                    it.copy(
+                        isLoading = false,
+                        error = e.message ?: "Failed to mark incomplete",
+                        completionProgress = com.ash.simpledataentry.presentation.core.CompletionProgress.error(
+                            e.message ?: "Failed to mark incomplete"
+                        )
+                    )
+                }
+            }
+        }
     }
 }

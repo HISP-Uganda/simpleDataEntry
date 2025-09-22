@@ -4,8 +4,9 @@ import androidx.compose.ui.graphics.Color
 
 // DHIS2 Blue Theme Colors
 val DHIS2Blue = Color(0xFF0073E7)
-val DHIS2BlueLight = Color(0xFF4A90E2) 
+val DHIS2BlueLight = Color(0xFF4A90E2)
 val DHIS2BlueDark = Color(0xFF004BA0)
+val DHIS2BlueDeep = Color(0xFF1976D2) // Lighter shade for seamless filter panel integration
 
 // Light theme colors
 val Primary40 = DHIS2Blue

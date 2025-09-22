@@ -42,6 +42,8 @@ import androidx.compose.material.icons.filled.VisibilityOff
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.res.painterResource
 import com.ash.simpledataentry.R
+import com.ash.simpledataentry.presentation.core.FullScreenLoader
+import com.ash.simpledataentry.presentation.core.LoadingAnimationType
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
@@ -63,6 +65,8 @@ import androidx.compose.foundation.layout.imePadding
 import androidx.compose.foundation.relocation.BringIntoViewRequester
 import androidx.compose.foundation.relocation.bringIntoViewRequester
 import androidx.compose.ui.focus.onFocusChanged
+import androidx.compose.foundation.verticalScroll
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.material3.SnackbarHost
 import androidx.compose.material3.SnackbarHostState
 import androidx.compose.runtime.rememberCoroutineScope
@@ -109,27 +113,15 @@ fun LoginScreen(
     }
 
     if (state.showSplash) {
-        Box(
-            modifier = Modifier
-                .fillMaxSize()
-                .background(MaterialTheme.colorScheme.background),
-            contentAlignment = Alignment.Center
-        ) {
-            Column(
-                horizontalAlignment = Alignment.CenterHorizontally,
-                verticalArrangement = Arrangement.Center
-            ) {
-                // DHIS2-style pulsing loading animation
-                Dhis2PulsingLoader()
-                
-                Spacer(modifier = Modifier.height(24.dp))
-                Text(
-                    text = "Loading your data...",
-                    style = MaterialTheme.typography.headlineSmall,
-                    color = MaterialTheme.colorScheme.onBackground
-                )
-            }
-        }
+        // Enhanced loading screen with detailed progress
+        FullScreenLoader(
+            message = state.navigationProgress?.phaseTitle ?: "Loading your data...",
+            isVisible = true,
+            animationType = LoadingAnimationType.DHIS2_PULSING_DOTS,
+            progress = state.navigationProgress?.overallPercentage,
+            progressStep = state.navigationProgress?.phaseDetail,
+            modifier = Modifier.fillMaxSize()
+        )
     } else {
         // Local state for input fields, preserved across configuration changes
         var serverUrl by rememberSaveable { mutableStateOf("https://") }
@@ -141,42 +133,42 @@ fun LoginScreen(
 
         val context = LocalContext.current
 
-        Box(modifier = Modifier.fillMaxSize().imePadding()) {
-            val serverUrlBringIntoViewRequester = remember { BringIntoViewRequester() }
-            val usernameBringIntoViewRequester = remember { BringIntoViewRequester() }
+        Box(modifier = Modifier.fillMaxSize()) {
+            val scrollState = rememberScrollState()
             val passwordBringIntoViewRequester = remember { BringIntoViewRequester() }
-            var serverUrlFocused by remember { mutableStateOf(false) }
+            val loginButtonBringIntoViewRequester = remember { BringIntoViewRequester() }
+
             var usernameFocused by remember { mutableStateOf(false) }
             var passwordFocused by remember { mutableStateOf(false) }
 
-            LaunchedEffect(serverUrlFocused) {
-                if (serverUrlFocused) {
-                    serverUrlBringIntoViewRequester.bringIntoView()
-                }
-            }
-            LaunchedEffect(usernameFocused) {
-                if (usernameFocused) {
-                    usernameBringIntoViewRequester.bringIntoView()
-                }
-            }
+            // Auto-scroll to password field when it gets focus
             LaunchedEffect(passwordFocused) {
                 if (passwordFocused) {
                     passwordBringIntoViewRequester.bringIntoView()
+                    // Also bring login button into view when password is focused
+                    kotlinx.coroutines.delay(200) // Small delay to let password field scroll first
+                    loginButtonBringIntoViewRequester.bringIntoView()
                 }
             }
+
             Column(
                 modifier = Modifier
                     .fillMaxSize()
+                    .imePadding()
+                    .verticalScroll(scrollState)
                     .padding(16.dp),
                 horizontalAlignment = Alignment.CenterHorizontally,
-                verticalArrangement = Arrangement.Center
+                verticalArrangement = Arrangement.spacedBy(16.dp)
             ) {
-                // Official DHIS2 Logo
+                // Top spacer for vertical centering when not scrolled
+                Spacer(modifier = Modifier.height(32.dp))
+
+                // Large DHIS2 Logo - can now be bigger since we have scroll
                 Icon(
                     painter = painterResource(id = R.drawable.dhis2_official_logo),
                     contentDescription = "DHIS2 Logo",
                     modifier = Modifier
-                        .height(240.dp)
+                        .height(280.dp)
                         .padding(bottom = 24.dp),
                     tint = Color.Unspecified // Use original colors
                 )
@@ -251,10 +243,7 @@ fun LoginScreen(
                         label = { Text("Server URL") },
                         modifier = Modifier
                             .fillMaxWidth()
-                            .padding(bottom = 8.dp)
-                            .bringIntoViewRequester(serverUrlBringIntoViewRequester)
                             .onFocusChanged { focusState ->
-                                serverUrlFocused = focusState.isFocused
                                 if (!focusState.isFocused) {
                                     viewModel.clearUrlSuggestions()
                                 }
@@ -321,16 +310,12 @@ fun LoginScreen(
                     // Auto-suggestions disabled - only show cached URLs dropdown when explicitly requested
                 }
 
-                Spacer(modifier = Modifier.height(8.dp))
-
                 OutlinedTextField(
                     value = username,
                     onValueChange = { username = it },
                     label = { Text("Username") },
                     modifier = Modifier
                         .fillMaxWidth()
-                        .padding(bottom = 8.dp)
-                        .bringIntoViewRequester(usernameBringIntoViewRequester)
                         .onFocusChanged { focusState ->
                             usernameFocused = focusState.isFocused
                         },
@@ -344,8 +329,6 @@ fun LoginScreen(
                     }
                 )
 
-                Spacer(modifier = Modifier.height(8.dp))
-
                 OutlinedTextField(
                     value = password,
                     onValueChange = { password = it },
@@ -353,7 +336,6 @@ fun LoginScreen(
                     visualTransformation = if (passwordVisible) VisualTransformation.None else PasswordVisualTransformation(),
                     modifier = Modifier
                         .fillMaxWidth()
-                        .padding(bottom = 16.dp)
                         .bringIntoViewRequester(passwordBringIntoViewRequester)
                         .onFocusChanged { focusState ->
                             passwordFocused = focusState.isFocused
@@ -381,8 +363,7 @@ fun LoginScreen(
                 
                 // Forgot Password Link
                 TextButton(
-                    onClick = { /* TODO: Implement forgot password functionality */ },
-                    modifier = Modifier.padding(bottom = 16.dp)
+                    onClick = { /* TODO: Implement forgot password functionality */ }
                 ) {
                     Text(
                         text = "Forgot Password",
@@ -401,7 +382,7 @@ fun LoginScreen(
                         // TODO: Replace fallbackToDestructiveMigration() with a real migration before production release!
                         .fallbackToDestructiveMigration()
                         .build()
-                        viewModel.login(serverUrl, username, password, context, db)
+                        viewModel.loginWithProgress(serverUrl, username, password, context, db)
                     },
                     enabled = !state.isLoading &&
                             serverUrl.isNotBlank() &&
@@ -409,7 +390,8 @@ fun LoginScreen(
                             password.isNotBlank(),
                     modifier = Modifier
                         .fillMaxWidth()
-                        .height(48.dp),
+                        .height(48.dp)
+                        .bringIntoViewRequester(loginButtonBringIntoViewRequester),
                     shape = RoundedCornerShape(24.dp),
                     colors = ButtonDefaults.buttonColors(
                         containerColor = MaterialTheme.colorScheme.primary
@@ -421,26 +403,33 @@ fun LoginScreen(
                         style = MaterialTheme.typography.bodyLarge
                     )
                 }
+
+                // Bottom spacer for consistent spacing
+                Spacer(modifier = Modifier.height(32.dp))
             }
 
             // Show error message as a Snackbar
-            SnackbarHost(
-                hostState = snackbarHostState,
+            Box(
                 modifier = Modifier
-                    .align(Alignment.BottomCenter)
+                    .fillMaxSize()
                     .padding(16.dp),
-                snackbar = { data ->
-                    Snackbar(
-                        containerColor = MaterialTheme.colorScheme.surface,
-                        contentColor = Color.White
-                    ) {
-                        Text(
-                            data.visuals.message,
-                            style = MaterialTheme.typography.bodyLarge
-                        )
+                contentAlignment = Alignment.BottomCenter
+            ) {
+                SnackbarHost(
+                    hostState = snackbarHostState,
+                    snackbar = { data ->
+                        Snackbar(
+                            containerColor = MaterialTheme.colorScheme.surface,
+                            contentColor = Color.White
+                        ) {
+                            Text(
+                                data.visuals.message,
+                                style = MaterialTheme.typography.bodyLarge
+                            )
+                        }
                     }
-                }
-            )
+                )
+            }
             
         }
     }

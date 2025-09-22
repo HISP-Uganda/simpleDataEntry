@@ -8,6 +8,8 @@ import com.ash.simpledataentry.data.local.AppDatabase
 import com.ash.simpledataentry.data.local.CachedUrlEntity
 import com.ash.simpledataentry.data.repositoryImpl.LoginUrlCacheRepository
 import com.ash.simpledataentry.data.repositoryImpl.SavedAccountRepository
+import com.ash.simpledataentry.data.repositoryImpl.AuthRepositoryImpl
+import com.ash.simpledataentry.presentation.core.NavigationProgress
 import com.ash.simpledataentry.domain.model.SavedAccount
 import dagger.hilt.android.lifecycle.HiltViewModel
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -26,14 +28,16 @@ data class LoginState(
     val savedAccounts: List<SavedAccount> = emptyList(),
     val showAccountSelection: Boolean = false,
     val saveAccountOffered: Boolean = false,
-    val pendingCredentials: Triple<String, String, String>? = null // serverUrl, username, password
+    val pendingCredentials: Triple<String, String, String>? = null, // serverUrl, username, password
+    val navigationProgress: NavigationProgress? = null // Enhanced loading progress
 )
 
 @HiltViewModel
 class LoginViewModel @Inject constructor(
     private val loginUseCase: LoginUseCase,
     private val urlCacheRepository: LoginUrlCacheRepository,
-    private val savedAccountRepository: SavedAccountRepository
+    private val savedAccountRepository: SavedAccountRepository,
+    private val authRepository: AuthRepositoryImpl
 ) : ViewModel() {
 
     private val _state = MutableStateFlow(LoginState())
@@ -87,7 +91,70 @@ class LoginViewModel @Inject constructor(
                 _state.value = _state.value.copy(
                     isLoading = false,
                     error = "Login failed: ${e.message ?: "Unknown error"}",
-                    showSplash = false
+                    showSplash = false,
+                    navigationProgress = NavigationProgress.error(e.message ?: "Login failed")
+                )
+            }
+        }
+    }
+
+    fun loginWithProgress(serverUrl: String, username: String, password: String, context: Context, db: AppDatabase) {
+        viewModelScope.launch {
+            try {
+                // Show splash screen immediately
+                _state.value = _state.value.copy(
+                    isLoading = true,
+                    error = null,
+                    showSplash = true,
+                    navigationProgress = NavigationProgress.initial()
+                )
+
+                val loginResult = authRepository.loginWithProgress(
+                    username = username,
+                    password = password,
+                    serverUrl = serverUrl,
+                    context = context,
+                    db = db
+                ) { progress ->
+                    _state.value = _state.value.copy(navigationProgress = progress)
+                }
+
+                if (loginResult) {
+                    // Cache the successful URL
+                    urlCacheRepository.addOrUpdateUrl(serverUrl)
+
+                    // Check if we should offer to save the account
+                    val existingAccount = savedAccountRepository.getAccountByCredentials(serverUrl, username)
+                    android.util.Log.d("LoginDebug", "Enhanced login - Existing account found: ${existingAccount != null}")
+
+                    if (existingAccount != null) {
+                        // Update last used timestamp for existing account
+                        savedAccountRepository.updateLastUsed(existingAccount.id)
+                        savedAccountRepository.switchToAccount(existingAccount.id)
+                    }
+
+                    _state.value = _state.value.copy(
+                        isLoading = false,
+                        isLoggedIn = true,
+                        showSplash = true,
+                        saveAccountOffered = existingAccount == null,
+                        pendingCredentials = if (existingAccount == null) Triple(serverUrl, username, password) else null,
+                        navigationProgress = null // Clear progress when done
+                    )
+                } else {
+                    _state.value = _state.value.copy(
+                        isLoading = false,
+                        error = "Login failed: Invalid credentials or server error",
+                        showSplash = false,
+                        navigationProgress = null
+                    )
+                }
+            } catch (e: Exception) {
+                _state.value = _state.value.copy(
+                    isLoading = false,
+                    error = "Login failed: ${e.message ?: "Unknown error"}",
+                    showSplash = false,
+                    navigationProgress = NavigationProgress.error(e.message ?: "Login failed")
                 )
             }
         }
@@ -199,7 +266,18 @@ class LoginViewModel @Inject constructor(
                     return@launch
                 }
 
-                val loginResult = loginUseCase(account.username, decryptedPassword, account.serverUrl, context, db)
+                // Use enhanced login with progress tracking
+                _state.value = _state.value.copy(navigationProgress = NavigationProgress.initial())
+
+                val loginResult = authRepository.loginWithProgress(
+                    username = account.username,
+                    password = decryptedPassword,
+                    serverUrl = account.serverUrl,
+                    context = context,
+                    db = db
+                ) { progress ->
+                    _state.value = _state.value.copy(navigationProgress = progress)
+                }
                 if (loginResult) {
                     // Update last used and switch to this account
                     savedAccountRepository.switchToAccount(account.id)
@@ -207,20 +285,23 @@ class LoginViewModel @Inject constructor(
                     _state.value = _state.value.copy(
                         isLoading = false,
                         isLoggedIn = true,
-                        showSplash = true
+                        showSplash = true,
+                        navigationProgress = null // Clear progress when done
                     )
                 } else {
                     _state.value = _state.value.copy(
                         isLoading = false,
                         error = "Login failed: Invalid credentials or server error",
-                        showSplash = false
+                        showSplash = false,
+                        navigationProgress = null
                     )
                 }
             } catch (e: Exception) {
                 _state.value = _state.value.copy(
                     isLoading = false,
                     error = "Login failed: ${e.message ?: "Unknown error"}",
-                    showSplash = false
+                    showSplash = false,
+                    navigationProgress = NavigationProgress.error(e.message ?: "Login failed")
                 )
             }
         }

@@ -1,9 +1,15 @@
 package com.ash.simpledataentry.presentation.core
 
+import android.app.Activity
+import android.view.WindowManager
 import androidx.compose.animation.core.*
 import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
+import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.*
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
@@ -11,8 +17,135 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.blur
 import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
+import com.ash.simpledataentry.data.sync.DetailedSyncProgress
+import com.ash.simpledataentry.data.sync.SyncError
+import com.ash.simpledataentry.data.sync.SyncPhase
+
+/**
+ * Navigation loading progress tracking models
+ */
+data class NavigationProgress(
+    val phase: LoadingPhase,
+    val overallPercentage: Int,
+    val phaseTitle: String,
+    val phaseDetail: String,
+    val isError: Boolean = false,
+    val errorMessage: String? = null
+) {
+    companion object {
+        fun initial() = NavigationProgress(
+            phase = LoadingPhase.INITIALIZING,
+            overallPercentage = 0,
+            phaseTitle = LoadingPhase.INITIALIZING.title,
+            phaseDetail = LoadingPhase.INITIALIZING.defaultDetail
+        )
+
+        fun error(message: String, phase: LoadingPhase = LoadingPhase.INITIALIZING) = NavigationProgress(
+            phase = phase,
+            overallPercentage = 0,
+            phaseTitle = "Error",
+            phaseDetail = message,
+            isError = true,
+            errorMessage = message
+        )
+    }
+}
+
+enum class LoadingPhase(val title: String, val defaultDetail: String, val basePercentage: Int) {
+    INITIALIZING("Initializing", "Preparing...", 0),
+    AUTHENTICATING("Authenticating", "Verifying credentials...", 10),
+    DOWNLOADING_METADATA("Downloading Metadata", "Fetching configuration data...", 30),
+    DOWNLOADING_DATA("Downloading Data", "Retrieving your information...", 60),
+    PREPARING_DATABASE("Preparing Data", "Setting up local storage...", 80),
+    FINALIZING("Finalizing", "Completing setup...", 95),
+    LOADING_DATA("Loading Data", "Fetching information...", 20),
+    PROCESSING_DATA("Processing Data", "Preparing display...", 70),
+    COMPLETING("Completing", "Almost ready...", 95)
+}
+
+/**
+ * Enhanced completion workflow models
+ */
+data class CompletionProgress(
+    val phase: CompletionPhase,
+    val overallPercentage: Int,
+    val phaseTitle: String,
+    val phaseDetail: String,
+    val isValidating: Boolean = false,
+    val validationRuleCount: Int = 0,
+    val processedRules: Int = 0,
+    val isError: Boolean = false,
+    val errorMessage: String? = null
+) {
+    companion object {
+        fun initial() = CompletionProgress(
+            phase = CompletionPhase.PREPARING,
+            overallPercentage = 0,
+            phaseTitle = CompletionPhase.PREPARING.title,
+            phaseDetail = CompletionPhase.PREPARING.defaultDetail
+        )
+
+        fun error(message: String, phase: CompletionPhase = CompletionPhase.PREPARING) = CompletionProgress(
+            phase = phase,
+            overallPercentage = 0,
+            phaseTitle = "Error",
+            phaseDetail = message,
+            isError = true,
+            errorMessage = message
+        )
+    }
+}
+
+enum class CompletionPhase(val title: String, val defaultDetail: String, val basePercentage: Int) {
+    PREPARING("Preparing", "Setting up validation...", 10),
+    VALIDATING("Validating", "Running validation rules...", 30),
+    PROCESSING_RESULTS("Processing Results", "Analyzing validation results...", 70),
+    COMPLETING("Completing", "Marking dataset as complete...", 90),
+    COMPLETED("Completed", "Dataset completed successfully!", 100)
+}
+
+enum class CompletionAction {
+    VALIDATE_AND_COMPLETE,
+    COMPLETE_WITHOUT_VALIDATION,
+    RERUN_VALIDATION,
+    MARK_INCOMPLETE
+}
+
+/**
+ * UI Blocking Manager - DHIS2 pattern for preventing interaction during sync
+ */
+object UIBlockingManager {
+    /**
+     * Block all user interactions during sync operations
+     * Following DHIS2 Android Capture app pattern
+     */
+    fun blockInteractions(activity: Activity) {
+        try {
+            activity.window.setFlags(
+                WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE,
+                WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE
+            )
+        } catch (e: Exception) {
+            // Fallback - log but don't crash
+            android.util.Log.w("UIBlockingManager", "Failed to block interactions", e)
+        }
+    }
+
+    /**
+     * Restore user interactions after sync completion
+     */
+    fun unblockInteractions(activity: Activity) {
+        try {
+            activity.window.clearFlags(WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE)
+        } catch (e: Exception) {
+            // Fallback - log but don't crash
+            android.util.Log.w("UIBlockingManager", "Failed to unblock interactions", e)
+        }
+    }
+}
 
 // LOADING ANIMATION CONFIGURATION - Edit this object to change animations globally
 object LoadingConfig {
@@ -253,7 +386,7 @@ fun OverlayLoader(
     content: @Composable () -> Unit
 ) {
     Box(modifier = modifier.fillMaxSize()) {
-        // Main content
+        // Main content - disable interactions when overlay is visible
         Box(
             modifier = if (isVisible) {
                 Modifier
@@ -265,6 +398,18 @@ fun OverlayLoader(
             }
         ) {
             content()
+        }
+
+        // Invisible click barrier to prevent background interactions
+        if (isVisible) {
+            Box(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .clickable(
+                        interactionSource = remember { MutableInteractionSource() },
+                        indication = null
+                    ) { /* Block all clicks */ }
+            )
         }
 
         // Loading overlay
@@ -350,4 +495,419 @@ fun CompactLoader(
         strokeWidth = strokeWidth,
         color = color
     )
+}
+
+/**
+ * Enhanced sync overlay with detailed progress, error handling, and navigation
+ * Uses DHIS2 patterns for proper UI blocking during sync operations
+ */
+@Composable
+fun DetailedSyncOverlay(
+    progress: DetailedSyncProgress?,
+    onNavigateBack: () -> Unit,
+    onRetry: (() -> Unit)? = null,
+    onCancel: (() -> Unit)? = null,
+    modifier: Modifier = Modifier,
+    content: @Composable () -> Unit
+) {
+    val context = LocalContext.current
+
+    // Handle UI blocking/unblocking using DHIS2 pattern
+    LaunchedEffect(progress) {
+        if (context is Activity) {
+            if (progress != null && progress.error == null) {
+                // Block interactions during active sync
+                UIBlockingManager.blockInteractions(context)
+            } else {
+                // Unblock when sync is done or there's an error
+                UIBlockingManager.unblockInteractions(context)
+            }
+        }
+    }
+
+    // Cleanup on disposal
+    DisposableEffect(context) {
+        onDispose {
+            if (context is Activity) {
+                UIBlockingManager.unblockInteractions(context)
+            }
+        }
+    }
+
+    Box(modifier = modifier.fillMaxSize()) {
+        // Main content
+        Box(
+            modifier = if (progress != null) {
+                Modifier
+                    .fillMaxSize()
+                    .blur(LoadingConfig.overlayBlurRadius)
+                    .alpha(LoadingConfig.overlayAlpha)
+            } else {
+                Modifier.fillMaxSize()
+            }
+        ) {
+            content()
+        }
+
+        // Detailed sync overlay (UI blocking handled by WindowManager flags)
+        if (progress != null) {
+            Box(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .background(
+                        MaterialTheme.colorScheme.surface.copy(alpha = 0.3f)
+                    ),
+                contentAlignment = Alignment.Center
+            ) {
+                Card(
+                    modifier = Modifier.padding(24.dp),
+                    colors = CardDefaults.cardColors(
+                        containerColor = if (progress.error != null) {
+                            MaterialTheme.colorScheme.errorContainer
+                        } else {
+                            MaterialTheme.colorScheme.surface
+                        }
+                    ),
+                    elevation = CardDefaults.cardElevation(defaultElevation = 12.dp)
+                ) {
+                    Column(
+                        modifier = Modifier.padding(24.dp),
+                        horizontalAlignment = Alignment.CenterHorizontally,
+                        verticalArrangement = Arrangement.Center
+                    ) {
+                        // Phase icon
+                        val phaseIcon = when (progress.phase) {
+                            SyncPhase.INITIALIZING -> Icons.Default.Sync
+                            SyncPhase.VALIDATING_CONNECTION -> Icons.Default.Wifi
+                            SyncPhase.UPLOADING_DATA -> Icons.Default.CloudUpload
+                            SyncPhase.DOWNLOADING_UPDATES -> Icons.Default.CloudDownload
+                            SyncPhase.FINALIZING -> Icons.Default.CheckCircle
+                        }
+
+                        // Show error icon if there's an error
+                        if (progress.error != null) {
+                            Icon(
+                                imageVector = Icons.Default.Error,
+                                contentDescription = "Error",
+                                modifier = Modifier.size(48.dp),
+                                tint = MaterialTheme.colorScheme.error
+                            )
+                        } else if (progress.isAutoRetrying) {
+                            // Show retry icon during auto-retry
+                            Icon(
+                                imageVector = Icons.Default.Refresh,
+                                contentDescription = "Auto Retrying",
+                                modifier = Modifier.size(48.dp),
+                                tint = MaterialTheme.colorScheme.primary
+                            )
+                        } else {
+                            // Normal phase icon with animation
+                            Icon(
+                                imageVector = phaseIcon,
+                                contentDescription = progress.phaseTitle,
+                                modifier = Modifier.size(48.dp),
+                                tint = MaterialTheme.colorScheme.primary
+                            )
+                        }
+
+                        Spacer(modifier = Modifier.height(16.dp))
+
+                        // Phase title
+                        Text(
+                            text = progress.phaseTitle,
+                            style = MaterialTheme.typography.headlineSmall,
+                            color = if (progress.error != null) {
+                                MaterialTheme.colorScheme.onErrorContainer
+                            } else {
+                                MaterialTheme.colorScheme.onSurface
+                            },
+                            textAlign = TextAlign.Center
+                        )
+
+                        Spacer(modifier = Modifier.height(8.dp))
+
+                        // Phase detail
+                        Text(
+                            text = progress.phaseDetail,
+                            style = MaterialTheme.typography.bodyMedium,
+                            color = if (progress.error != null) {
+                                MaterialTheme.colorScheme.onErrorContainer.copy(alpha = 0.7f)
+                            } else {
+                                MaterialTheme.colorScheme.onSurface.copy(alpha = 0.7f)
+                            },
+                            textAlign = TextAlign.Center
+                        )
+
+                        // Progress bar (only if not in error state and not auto-retrying countdown)
+                        if (progress.error == null && progress.autoRetryCountdown == null) {
+                            Spacer(modifier = Modifier.height(16.dp))
+                            LinearProgressIndicator(
+                                progress = { progress.overallPercentage / 100f },
+                                modifier = Modifier.fillMaxWidth(),
+                                color = MaterialTheme.colorScheme.primary,
+                                trackColor = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.3f),
+                            )
+                            Spacer(modifier = Modifier.height(8.dp))
+                            Text(
+                                text = "${progress.overallPercentage}%",
+                                style = MaterialTheme.typography.bodyMedium,
+                                color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.7f)
+                            )
+                        }
+
+                        // Auto-retry countdown
+                        if (progress.autoRetryCountdown != null) {
+                            Spacer(modifier = Modifier.height(16.dp))
+                            Text(
+                                text = "Retrying in ${progress.autoRetryCountdown} seconds...",
+                                style = MaterialTheme.typography.bodyLarge,
+                                color = MaterialTheme.colorScheme.primary,
+                                textAlign = TextAlign.Center
+                            )
+                        }
+
+                        // Action buttons
+                        if (progress.error != null || progress.canNavigateBack) {
+                            Spacer(modifier = Modifier.height(24.dp))
+                            Row(
+                                horizontalArrangement = Arrangement.spacedBy(12.dp)
+                            ) {
+                                // Always show back button when navigation is allowed
+                                if (progress.canNavigateBack) {
+                                    OutlinedButton(onClick = onNavigateBack) {
+                                        Icon(
+                                            imageVector = Icons.Default.KeyboardArrowLeft,
+                                            contentDescription = null,
+                                            modifier = Modifier.size(18.dp)
+                                        )
+                                        Spacer(modifier = Modifier.width(8.dp))
+                                        Text("Go Back")
+                                    }
+                                }
+
+                                // Show retry button for manual retry errors
+                                if (progress.error != null && onRetry != null) {
+                                    val shouldShowRetry = when (progress.error) {
+                                        is SyncError.NetworkError -> !progress.error.canAutoRetry
+                                        is SyncError.TimeoutError -> !progress.error.canAutoRetry
+                                        is SyncError.ServerError -> true
+                                        is SyncError.ValidationError -> true
+                                        is SyncError.AuthenticationError -> true
+                                        is SyncError.UnknownError -> true
+                                    }
+
+                                    if (shouldShowRetry) {
+                                        Button(onClick = onRetry) {
+                                            Icon(
+                                                imageVector = Icons.Default.Refresh,
+                                                contentDescription = null,
+                                                modifier = Modifier.size(18.dp)
+                                            )
+                                            Spacer(modifier = Modifier.width(8.dp))
+                                            Text("Retry")
+                                        }
+                                    }
+                                }
+
+                                // Show cancel button if provided (for both active sync and errors)
+                                if (onCancel != null) {
+                                    OutlinedButton(onClick = onCancel) {
+                                        Text(if (progress.error != null) "Dismiss" else "Cancel")
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+/**
+ * Enhanced completion progress overlay with detailed progress, similar to sync overlay
+ * Shows validation and completion progress phases with appropriate UI blocking
+ */
+@Composable
+fun CompletionProgressOverlay(
+    progress: CompletionProgress?,
+    onCancel: (() -> Unit)? = null,
+    modifier: Modifier = Modifier,
+    content: @Composable () -> Unit
+) {
+    val context = LocalContext.current
+
+    // Handle UI blocking/unblocking during completion
+    LaunchedEffect(progress) {
+        if (context is Activity) {
+            if (progress != null && !progress.isError) {
+                // Block interactions during active completion/validation
+                UIBlockingManager.blockInteractions(context)
+            } else {
+                // Unblock when completion is done or there's an error
+                UIBlockingManager.unblockInteractions(context)
+            }
+        }
+    }
+
+    // Cleanup on disposal
+    DisposableEffect(context) {
+        onDispose {
+            if (context is Activity) {
+                UIBlockingManager.unblockInteractions(context)
+            }
+        }
+    }
+
+    Box(modifier = modifier.fillMaxSize()) {
+        // Main content
+        Box(
+            modifier = if (progress != null) {
+                Modifier
+                    .fillMaxSize()
+                    .blur(LoadingConfig.overlayBlurRadius)
+                    .alpha(LoadingConfig.overlayAlpha)
+            } else {
+                Modifier.fillMaxSize()
+            }
+        ) {
+            content()
+        }
+
+        // Completion progress overlay
+        if (progress != null) {
+            Box(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .background(
+                        MaterialTheme.colorScheme.surface.copy(alpha = 0.3f)
+                    ),
+                contentAlignment = Alignment.Center
+            ) {
+                Card(
+                    modifier = Modifier.padding(24.dp),
+                    colors = CardDefaults.cardColors(
+                        containerColor = if (progress.isError) {
+                            MaterialTheme.colorScheme.errorContainer
+                        } else {
+                            MaterialTheme.colorScheme.surface
+                        }
+                    ),
+                    elevation = CardDefaults.cardElevation(defaultElevation = 12.dp)
+                ) {
+                    Column(
+                        modifier = Modifier.padding(24.dp),
+                        horizontalAlignment = Alignment.CenterHorizontally,
+                        verticalArrangement = Arrangement.Center
+                    ) {
+                        // Phase icon
+                        val phaseIcon = when (progress.phase) {
+                            CompletionPhase.PREPARING -> Icons.Default.Sync
+                            CompletionPhase.VALIDATING -> Icons.Default.Verified
+                            CompletionPhase.PROCESSING_RESULTS -> Icons.Default.Analytics
+                            CompletionPhase.COMPLETING -> Icons.Default.CheckCircle
+                            CompletionPhase.COMPLETED -> Icons.Default.CheckCircle
+                        }
+
+                        // Show error icon if there's an error
+                        if (progress.isError) {
+                            Icon(
+                                imageVector = Icons.Default.Error,
+                                contentDescription = "Error",
+                                modifier = Modifier.size(48.dp),
+                                tint = MaterialTheme.colorScheme.error
+                            )
+                        } else {
+                            // Normal phase icon with animation
+                            Icon(
+                                imageVector = phaseIcon,
+                                contentDescription = progress.phaseTitle,
+                                modifier = Modifier.size(48.dp),
+                                tint = MaterialTheme.colorScheme.primary
+                            )
+                        }
+
+                        Spacer(modifier = Modifier.height(16.dp))
+
+                        // Phase title
+                        Text(
+                            text = progress.phaseTitle,
+                            style = MaterialTheme.typography.headlineSmall,
+                            color = if (progress.isError) {
+                                MaterialTheme.colorScheme.onErrorContainer
+                            } else {
+                                MaterialTheme.colorScheme.onSurface
+                            },
+                            textAlign = TextAlign.Center
+                        )
+
+                        Spacer(modifier = Modifier.height(8.dp))
+
+                        // Phase detail
+                        Text(
+                            text = progress.phaseDetail,
+                            style = MaterialTheme.typography.bodyMedium,
+                            color = if (progress.isError) {
+                                MaterialTheme.colorScheme.onErrorContainer.copy(alpha = 0.7f)
+                            } else {
+                                MaterialTheme.colorScheme.onSurface.copy(alpha = 0.7f)
+                            },
+                            textAlign = TextAlign.Center
+                        )
+
+                        // Progress bar (only if not in error state)
+                        if (!progress.isError) {
+                            Spacer(modifier = Modifier.height(16.dp))
+                            LinearProgressIndicator(
+                                progress = { progress.overallPercentage / 100f },
+                                modifier = Modifier.fillMaxWidth(),
+                                color = MaterialTheme.colorScheme.primary,
+                                trackColor = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.3f),
+                            )
+                            Spacer(modifier = Modifier.height(8.dp))
+                            Text(
+                                text = "${progress.overallPercentage}%",
+                                style = MaterialTheme.typography.bodyMedium,
+                                color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.7f)
+                            )
+                        }
+
+                        // Validation progress details (if validating)
+                        if (progress.isValidating && progress.validationRuleCount > 0) {
+                            Spacer(modifier = Modifier.height(12.dp))
+                            Text(
+                                text = "Rules: ${progress.processedRules}/${progress.validationRuleCount}",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.6f)
+                            )
+                        }
+
+                        // Error message
+                        if (progress.isError && progress.errorMessage != null) {
+                            Spacer(modifier = Modifier.height(16.dp))
+                            Text(
+                                text = progress.errorMessage,
+                                style = MaterialTheme.typography.bodyMedium,
+                                color = MaterialTheme.colorScheme.onErrorContainer,
+                                textAlign = TextAlign.Center
+                            )
+                        }
+
+                        // Action buttons
+                        if (progress.isError && onCancel != null) {
+                            Spacer(modifier = Modifier.height(24.dp))
+                            OutlinedButton(onClick = onCancel) {
+                                Text("Dismiss")
+                            }
+                        } else if (onCancel != null && progress.phase != CompletionPhase.COMPLETED) {
+                            Spacer(modifier = Modifier.height(24.dp))
+                            OutlinedButton(onClick = onCancel) {
+                                Text("Cancel")
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
 }

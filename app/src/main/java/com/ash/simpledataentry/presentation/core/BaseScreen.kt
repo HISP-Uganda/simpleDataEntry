@@ -7,6 +7,7 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.ArrowBack
 import androidx.compose.material3.ExperimentalMaterial3Api
+import androidx.compose.material3.FabPosition
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.Scaffold
@@ -35,6 +36,7 @@ fun BaseScreen(
         }
     },
     actions: @Composable (RowScope.() -> Unit) = {},
+    floatingActionButton: @Composable (() -> Unit)? = null,
     content: @Composable () -> Unit
 ) {
     Scaffold(
@@ -53,7 +55,9 @@ fun BaseScreen(
                 ),
 
                 )
-        }
+        },
+        floatingActionButton = floatingActionButton ?: {},
+        floatingActionButtonPosition = FabPosition.End
     ) { paddingValues ->
         Box(
             modifier = Modifier

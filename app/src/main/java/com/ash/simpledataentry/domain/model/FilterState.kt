@@ -11,7 +11,9 @@ data class FilterState(
     val completionStatus: CompletionStatus = CompletionStatus.ALL,
     val searchQuery: String = "",
     val sortBy: SortBy = SortBy.NAME,
-    val sortOrder: SortOrder = SortOrder.ASCENDING
+    val sortOrder: SortOrder = SortOrder.ASCENDING,
+    val datasetPeriodType: DatasetPeriodType = DatasetPeriodType.ALL,
+    val organizationUnit: OrganizationUnitFilter = OrganizationUnitFilter.ALL
 )
 
 data class DatasetInstanceFilterState(
@@ -117,4 +119,20 @@ enum class InstanceSortBy(val displayName: String) {
     PERIOD("Period"),
     LAST_UPDATED("Last Updated"),
     COMPLETION_STATUS("Completion Status")
+}
+
+enum class DatasetPeriodType(val displayName: String) {
+    ALL("All Period Types"),
+    DAILY("Daily"),
+    WEEKLY("Weekly"),
+    MONTHLY("Monthly"),
+    QUARTERLY("Quarterly"),
+    YEARLY("Yearly")
+}
+
+enum class OrganizationUnitFilter(val displayName: String) {
+    ALL("All Organization Units"),
+    ASSIGNED("My Assigned Units"),
+    FAVORITES("Favorite Units"),
+    RECENT("Recently Used")
 }

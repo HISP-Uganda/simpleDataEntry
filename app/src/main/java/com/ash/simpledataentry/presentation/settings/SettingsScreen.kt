@@ -59,7 +59,7 @@ fun SettingsScreen(
             modifier = Modifier
                 .fillMaxSize()
                 .padding(16.dp),
-            verticalArrangement = Arrangement.spacedBy(16.dp)
+            verticalArrangement = Arrangement.spacedBy(8.dp)
         ) {
             // SYNC CONFIGURATION SECTION
             item {
@@ -426,7 +426,8 @@ private fun AccountManagementItem(
             }
         ),
         elevation = CardDefaults.cardElevation(
-            defaultElevation = if (account.isActive) 8.dp else 4.dp
+            defaultElevation = if (account.isActive) 8.dp else 4.dp,
+            pressedElevation = if (account.isActive) 12.dp else 6.dp
         )
     ) {
         Row(

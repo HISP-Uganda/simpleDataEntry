@@ -42,12 +42,15 @@ import androidx.compose.material3.ModalNavigationDrawer
 import androidx.compose.material3.NavigationDrawerItem
 import androidx.compose.material3.NavigationDrawerItemDefaults
 import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.OutlinedTextFieldDefaults
+import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Snackbar
 import androidx.compose.material3.SnackbarHost
 import androidx.compose.material3.SnackbarHostState
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.rememberDrawerState
+import androidx.compose.foundation.BorderStroke
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
@@ -67,32 +70,175 @@ import androidx.lifecycle.viewmodel.compose.viewModel
 import androidx.navigation.NavController
 import com.ash.simpledataentry.data.SessionManager
 import com.ash.simpledataentry.domain.model.FilterState
-import com.ash.simpledataentry.domain.model.SortBy
-import com.ash.simpledataentry.domain.model.SortOrder
-import com.ash.simpledataentry.domain.model.SyncStatus
-import com.ash.simpledataentry.domain.model.PeriodFilterType
-import com.ash.simpledataentry.domain.model.RelativePeriod
-import com.ash.simpledataentry.domain.repository.AuthRepository
+import com.ash.simpledataentry.domain.model.DatasetPeriodType
+import com.ash.simpledataentry.domain.model.OrganizationUnitFilter
 import com.ash.simpledataentry.navigation.Screen
 import com.ash.simpledataentry.presentation.core.BaseScreen
-import com.ash.simpledataentry.presentation.login.LoginViewModel
 import kotlinx.coroutines.launch
-import org.hisp.dhis.mobile.ui.designsystem.component.AdditionalInfoItem
-import org.hisp.dhis.mobile.ui.designsystem.component.ListCard
-import org.hisp.dhis.mobile.ui.designsystem.component.ListCardDescriptionModel
-import org.hisp.dhis.mobile.ui.designsystem.component.ListCardTitleModel
-import org.hisp.dhis.mobile.ui.designsystem.component.state.rememberAdditionalInfoColumnState
-import org.hisp.dhis.mobile.ui.designsystem.component.state.rememberListCardState
 import org.hisp.dhis.mobile.ui.designsystem.theme.TextColor
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.slideInVertically
 import androidx.compose.animation.slideOutVertically
-import androidx.compose.foundation.background
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import com.ash.simpledataentry.presentation.datasets.components.DatasetIcon
 import com.ash.simpledataentry.presentation.datasets.components.ProgramType
+import com.ash.simpledataentry.presentation.core.DetailedSyncOverlay
 import com.ash.simpledataentry.presentation.core.OverlayLoader
+import com.ash.simpledataentry.ui.theme.DHIS2BlueDeep
+
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+fun DatasetsFilterSection(
+    currentFilter: FilterState,
+    onApplyFilter: (FilterState) -> Unit
+) {
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(16.dp),
+        verticalArrangement = Arrangement.spacedBy(12.dp)
+    ) {
+        var searchQuery by remember { mutableStateOf(currentFilter.searchQuery) }
+        var datasetPeriodType by remember { mutableStateOf(currentFilter.datasetPeriodType) }
+        var organizationUnit by remember { mutableStateOf(currentFilter.organizationUnit) }
+
+        var showDatasetPeriodDropdown by remember { mutableStateOf(false) }
+        var showOrgUnitDropdown by remember { mutableStateOf(false) }
+
+        // Row 1: Search field
+        OutlinedTextField(
+            value = searchQuery,
+            onValueChange = {
+                searchQuery = it
+                onApplyFilter(
+                    currentFilter.copy(
+                        searchQuery = searchQuery
+                    )
+                )
+            },
+            label = { Text("Search datasets", color = Color.White) },
+            placeholder = { Text("Enter dataset name...", color = Color.White.copy(alpha = 0.7f)) },
+            modifier = Modifier.fillMaxWidth(),
+            leadingIcon = {
+                Icon(Icons.Default.Search, contentDescription = null, tint = Color.White)
+            },
+            colors = OutlinedTextFieldDefaults.colors(
+                focusedTextColor = Color.White,
+                unfocusedTextColor = Color.White,
+                focusedBorderColor = Color.White,
+                unfocusedBorderColor = Color.White.copy(alpha = 0.7f),
+                cursorColor = Color.White
+            )
+        )
+
+        // Row 2: Period Type Filter
+        Box(modifier = Modifier.fillMaxWidth()) {
+            OutlinedTextField(
+                value = datasetPeriodType.displayName,
+                onValueChange = { },
+                label = { Text("Period Type", color = Color.White) },
+                readOnly = true,
+                modifier = Modifier.fillMaxWidth(),
+                colors = OutlinedTextFieldDefaults.colors(
+                    focusedTextColor = Color.White,
+                    unfocusedTextColor = Color.White,
+                    focusedBorderColor = Color.White,
+                    unfocusedBorderColor = Color.White.copy(alpha = 0.7f)
+                ),
+                trailingIcon = {
+                    IconButton(onClick = { showDatasetPeriodDropdown = !showDatasetPeriodDropdown }) {
+                        Icon(Icons.Default.ArrowDropDown, contentDescription = null, tint = Color.White)
+                    }
+                }
+            )
+
+            DropdownMenu(
+                expanded = showDatasetPeriodDropdown,
+                onDismissRequest = { showDatasetPeriodDropdown = false }
+            ) {
+                DatasetPeriodType.entries.forEach { type ->
+                    DropdownMenuItem(
+                        text = { Text(type.displayName) },
+                        onClick = {
+                            datasetPeriodType = type
+                            showDatasetPeriodDropdown = false
+                            onApplyFilter(
+                                currentFilter.copy(
+                                    datasetPeriodType = datasetPeriodType
+                                )
+                            )
+                        }
+                    )
+                }
+            }
+        }
+
+        // Row 3: Organization Unit Filter
+        Box(modifier = Modifier.fillMaxWidth()) {
+            OutlinedTextField(
+                value = organizationUnit.displayName,
+                onValueChange = { },
+                label = { Text("Organization Unit", color = Color.White) },
+                readOnly = true,
+                modifier = Modifier.fillMaxWidth(),
+                colors = OutlinedTextFieldDefaults.colors(
+                    focusedTextColor = Color.White,
+                    unfocusedTextColor = Color.White,
+                    focusedBorderColor = Color.White,
+                    unfocusedBorderColor = Color.White.copy(alpha = 0.7f)
+                ),
+                trailingIcon = {
+                    IconButton(onClick = { showOrgUnitDropdown = !showOrgUnitDropdown }) {
+                        Icon(Icons.Default.ArrowDropDown, contentDescription = null, tint = Color.White)
+                    }
+                }
+            )
+
+            DropdownMenu(
+                expanded = showOrgUnitDropdown,
+                onDismissRequest = { showOrgUnitDropdown = false }
+            ) {
+                OrganizationUnitFilter.entries.forEach { unit ->
+                    DropdownMenuItem(
+                        text = { Text(unit.displayName) },
+                        onClick = {
+                            organizationUnit = unit
+                            showOrgUnitDropdown = false
+                            onApplyFilter(
+                                currentFilter.copy(
+                                    organizationUnit = organizationUnit
+                                )
+                            )
+                        }
+                    )
+                }
+            }
+        }
+
+        // Clear button
+        if (searchQuery.isNotBlank() || datasetPeriodType != DatasetPeriodType.ALL ||
+            organizationUnit != OrganizationUnitFilter.ALL
+        ) {
+            OutlinedButton(
+                onClick = {
+                    searchQuery = ""
+                    datasetPeriodType = DatasetPeriodType.ALL
+                    organizationUnit = OrganizationUnitFilter.ALL
+                    onApplyFilter(FilterState())
+                },
+                modifier = Modifier.align(Alignment.CenterHorizontally),
+                colors = ButtonDefaults.outlinedButtonColors(
+                    contentColor = Color.White
+                ),
+                border = BorderStroke(1.dp, Color.White)
+            ) {
+                Text("Clear All")
+            }
+        }
+    }
+}
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -212,7 +358,8 @@ fun DatasetsScreen(
                         Icon(
                             imageVector = Icons.Default.Sync,
                             contentDescription = "Sync",
-                            tint = TextColor.OnSurface
+                            tint = TextColor.OnSurface,
+                            modifier = Modifier.size(24.dp)
                         )
                     }
                 }
@@ -221,7 +368,8 @@ fun DatasetsScreen(
                     Icon(
                         imageVector = Icons.Default.FilterList,
                         contentDescription = "Filter & Sort",
-                        tint = if (showFilterSection) MaterialTheme.colorScheme.primary else TextColor.OnSurface
+                        tint = if (showFilterSection) Color.White else TextColor.OnSurface,
+                        modifier = Modifier.size(24.dp)
                     )
                 }
             },
@@ -236,34 +384,47 @@ fun DatasetsScreen(
                     Icon(
                         imageVector = Icons.Default.Menu,
                         contentDescription = "Menu",
-                        tint = TextColor.OnSurface
+                        tint = TextColor.OnSurface,
+                        modifier = Modifier.size(24.dp)
                     )
                 }
             }
         ) {
-            // Use OverlayLoader for sync operations
-            OverlayLoader(
-                message = "Syncing datasets...",
-                isVisible = (datasetsState as? DatasetsState.Success)?.isSyncing ?: false,
-                progress = (datasetsState as? DatasetsState.Success)?.syncProgress,
-                progressStep = (datasetsState as? DatasetsState.Success)?.syncStep,
+            // Use DetailedSyncOverlay for enhanced sync operations
+            DetailedSyncOverlay(
+                progress = (datasetsState as? DatasetsState.Success)?.detailedSyncProgress,
+                onNavigateBack = { navController.popBackStack() },
+                onRetry = { viewModel.syncDatasets(uploadFirst = true) },
+                onCancel = { viewModel.dismissSyncOverlay() },
                 modifier = Modifier.fillMaxSize()
             ) {
                 Column {
                     // Pull-down filter section
                     AnimatedVisibility(
                         visible = showFilterSection,
-                        enter = slideInVertically(initialOffsetY = { -it }),
-                        exit = slideOutVertically(targetOffsetY = { -it })
+                        enter = slideInVertically(
+                            initialOffsetY = { -it },
+                            animationSpec = androidx.compose.animation.core.tween(200)
+                        ),
+                        exit = slideOutVertically(
+                            targetOffsetY = { -it },
+                            animationSpec = androidx.compose.animation.core.tween(150)
+                        )
                     ) {
                         Card(
                             modifier = Modifier.fillMaxWidth(),
                             colors = CardDefaults.cardColors(
-                                containerColor = MaterialTheme.colorScheme.surface
+                                containerColor = DHIS2BlueDeep
                             ),
-                            elevation = CardDefaults.cardElevation(defaultElevation = 4.dp)
+                            elevation = CardDefaults.cardElevation(defaultElevation = 6.dp),
+                            shape = RoundedCornerShape(topStart = 0.dp, topEnd = 0.dp, bottomStart = 8.dp, bottomEnd = 8.dp)
                         ) {
-
+                            DatasetsFilterSection(
+                                currentFilter = (datasetsState as? DatasetsState.Success)?.currentFilter ?: FilterState(),
+                                onApplyFilter = { newFilter ->
+                                    viewModel.applyFilter(newFilter)
+                                }
+                            )
                         }
                     }
 
@@ -304,11 +465,6 @@ fun DatasetsScreen(
                                 }
                             }
 
-                            val syncItem = AdditionalInfoItem(
-                                key = "",
-                                value = "",
-                                isConstantItem = true
-                            )
 
                             val datasets = successState.filteredDatasets
                             LazyColumn(
@@ -323,7 +479,10 @@ fun DatasetsScreen(
                                         colors = CardDefaults.cardColors(
                                             containerColor = MaterialTheme.colorScheme.surface
                                         ),
-                                        elevation = CardDefaults.cardElevation(defaultElevation = 2.dp),
+                                        elevation = CardDefaults.cardElevation(
+                                            defaultElevation = 2.dp,
+                                            pressedElevation = 4.dp
+                                        ),
                                         onClick = {
                                             navController.navigate("DatasetInstances/${dataset.id}/${dataset.name}")
                                         }
@@ -451,67 +610,7 @@ fun DatasetsScreen(
                                     popUpTo(0)
                                 }
                             },
-                            colors = androidx.compose.material3.ButtonDefaults.buttonColors(
-                                containerColor = MaterialTheme.colorScheme.error
-                            )
-                        ) {
-                            Text("Delete Account")
-                        }
-                    },
-                    dismissButton = {
-                        TextButton(
-                            onClick = { showDeleteConfirmation = false }
-                        ) {
-                            Text("Cancel")
-                        }
-                    }
-                )
-            }
-
-            // Delete Account Confirmation Dialog
-            if (showDeleteConfirmation) {
-                val context = androidx.compose.ui.platform.LocalContext.current
-
-                AlertDialog(
-                    onDismissRequest = { showDeleteConfirmation = false },
-                    title = {
-                        Text(
-                            "Delete Account",
-                            color = MaterialTheme.colorScheme.error
-                        )
-                    },
-                    text = {
-                        Column {
-                            Text("Are you sure you want to delete your account?")
-                            Spacer(modifier = Modifier.height(8.dp))
-                            Text(
-                                "This will permanently delete:",
-                                style = MaterialTheme.typography.bodyMedium,
-                                fontWeight = FontWeight.Bold
-                            )
-                            Spacer(modifier = Modifier.height(4.dp))
-                            Text("• All saved login credentials")
-                            Text("• All downloaded data")
-                            Text("• All unsaved draft entries")
-                            Spacer(modifier = Modifier.height(8.dp))
-                            Text(
-                                "This action cannot be undone.",
-                                color = MaterialTheme.colorScheme.error,
-                                style = MaterialTheme.typography.bodySmall
-                            )
-                        }
-                    },
-                    confirmButton = {
-                        Button(
-                            onClick = {
-                                viewModel.deleteAccount(context)
-                                showDeleteConfirmation = false
-                                // Navigate to login after deletion
-                                navController.navigate("login") {
-                                    popUpTo(0)
-                                }
-                            },
-                            colors = androidx.compose.material3.ButtonDefaults.buttonColors(
+                            colors = ButtonDefaults.buttonColors(
                                 containerColor = MaterialTheme.colorScheme.error
                             )
                         ) {
@@ -529,450 +628,5 @@ fun DatasetsScreen(
             }
         }
 
-        @OptIn(ExperimentalMaterial3Api::class)
-        @Composable
-        fun FilterDialog(
-            currentFilter: FilterState,
-            onApplyFilter: (FilterState) -> Unit,
-            onDismiss: () -> Unit
-        ) {
-            var searchQuery by remember { mutableStateOf(currentFilter.searchQuery) }
-            var syncStatus by remember { mutableStateOf(currentFilter.syncStatus) }
-            var periodType by remember { mutableStateOf(currentFilter.periodType) }
-            var relativePeriod by remember { mutableStateOf(currentFilter.relativePeriod) }
-
-            var showSyncDropdown by remember { mutableStateOf(false) }
-            var showPeriodDropdown by remember { mutableStateOf(false) }
-
-            AlertDialog(
-                onDismissRequest = onDismiss,
-                title = { Text("Filter & Sort Datasets") },
-                text = {
-                    Column(
-                        modifier = Modifier.fillMaxWidth(),
-                        verticalArrangement = Arrangement.spacedBy(16.dp)
-                    ) {
-                        // Search Query
-                        OutlinedTextField(
-                            value = searchQuery,
-                            onValueChange = { searchQuery = it },
-                            label = { Text("Search datasets") },
-                            placeholder = { Text("Enter dataset name...") },
-                            modifier = Modifier.fillMaxWidth(),
-                            leadingIcon = {
-                                Icon(Icons.Default.Search, contentDescription = null)
-                            }
-                        )
-
-                        // Sync Status Filter
-                        Box {
-                            OutlinedTextField(
-                                value = syncStatus.displayName,
-                                onValueChange = { },
-                                label = { Text("Sync Status") },
-                                readOnly = true,
-                                modifier = Modifier.fillMaxWidth(),
-                                trailingIcon = {
-                                    IconButton(onClick = { showSyncDropdown = !showSyncDropdown }) {
-                                        Icon(Icons.Default.ArrowDropDown, contentDescription = null)
-                                    }
-                                }
-                            )
-
-                            DropdownMenu(
-                                expanded = showSyncDropdown,
-                                onDismissRequest = { showSyncDropdown = false }
-                            ) {
-                                SyncStatus.entries.forEach { status ->
-                                    DropdownMenuItem(
-                                        text = { Text(status.displayName) },
-                                        onClick = {
-                                            syncStatus = status
-                                            showSyncDropdown = false
-                                        }
-                                    )
-                                }
-                            }
-                        }
-
-                        // Period Filter
-                        Box {
-                            OutlinedTextField(
-                                value = when (periodType) {
-                                    PeriodFilterType.ALL -> "All Periods"
-                                    PeriodFilterType.RELATIVE -> relativePeriod?.displayName
-                                        ?: "Select Period"
-
-                                    PeriodFilterType.CUSTOM_RANGE -> "Custom Range"
-                                },
-                                onValueChange = { },
-                                label = { Text("Period") },
-                                readOnly = true,
-                                modifier = Modifier.fillMaxWidth(),
-                                trailingIcon = {
-                                    IconButton(onClick = {
-                                        showPeriodDropdown = !showPeriodDropdown
-                                    }) {
-                                        Icon(Icons.Default.ArrowDropDown, contentDescription = null)
-                                    }
-                                }
-                            )
-
-                            DropdownMenu(
-                                expanded = showPeriodDropdown,
-                                onDismissRequest = { showPeriodDropdown = false }
-                            ) {
-                                DropdownMenuItem(
-                                    text = { Text("All Periods") },
-                                    onClick = {
-                                        periodType = PeriodFilterType.ALL
-                                        relativePeriod = null
-                                        showPeriodDropdown = false
-                                    }
-                                )
-
-                                // Common relative periods
-                                listOf<RelativePeriod>(
-                                    RelativePeriod.THIS_MONTH,
-                                    RelativePeriod.LAST_MONTH,
-                                    RelativePeriod.LAST_3_MONTHS,
-                                    RelativePeriod.THIS_QUARTER,
-                                    RelativePeriod.LAST_QUARTER
-                                ).forEach { period ->
-                                    DropdownMenuItem(
-                                        text = { Text(period.displayName) },
-                                        onClick = {
-                                            periodType = PeriodFilterType.RELATIVE
-                                            relativePeriod = period
-                                            showPeriodDropdown = false
-                                        }
-                                    )
-                                }
-                            }
-                        }
-                    }
-                },
-                confirmButton = {
-                    Row(
-                        horizontalArrangement = Arrangement.spacedBy(8.dp)
-                    ) {
-                        OutlinedButton(
-                            onClick = {
-                                // Reset all filter values to defaults
-                                searchQuery = ""
-                                syncStatus = SyncStatus.ALL
-                                periodType = PeriodFilterType.ALL
-                                relativePeriod = null
-
-                                // Apply cleared filter
-                                onApplyFilter(FilterState())
-                            }
-                        ) {
-                            Text("Clear")
-                        }
-
-                        Button(
-                            onClick = {
-                                onApplyFilter(
-                                    FilterState(
-                                        searchQuery = searchQuery,
-                                        syncStatus = syncStatus,
-                                        periodType = periodType,
-                                        relativePeriod = relativePeriod
-                                    )
-                                )
-                            }
-                        ) {
-                            Text("Apply")
-                        }
-                    }
-                },
-                dismissButton = {
-                    TextButton(onClick = onDismiss) {
-                        Text("Cancel")
-                    }
-                }
-            )
-        }
-
-        @OptIn(ExperimentalMaterial3Api::class)
-        @Composable
-        fun PullDownFilterSection(
-            currentFilter: FilterState,
-            onApplyFilter: (FilterState) -> Unit
-        ) {
-            Column(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(16.dp),
-                verticalArrangement = Arrangement.spacedBy(12.dp)
-            ) {
-                var searchQuery by remember { mutableStateOf(currentFilter.searchQuery) }
-                var syncStatus by remember { mutableStateOf(currentFilter.syncStatus) }
-                var periodType by remember { mutableStateOf(currentFilter.periodType) }
-                var relativePeriod by remember { mutableStateOf(currentFilter.relativePeriod) }
-                var sortBy by remember { mutableStateOf(currentFilter.sortBy) }
-                var sortOrder by remember { mutableStateOf(currentFilter.sortOrder) }
-
-                var showSyncDropdown by remember { mutableStateOf(false) }
-                var showPeriodDropdown by remember { mutableStateOf(false) }
-                var showSortByDropdown by remember { mutableStateOf(false) }
-                var showSortOrderDropdown by remember { mutableStateOf(false) }
-
-                // Search field
-                OutlinedTextField(
-                    value = searchQuery,
-                    onValueChange = {
-                        searchQuery = it
-                        onApplyFilter(
-                            FilterState(
-                                searchQuery = searchQuery,
-                                syncStatus = syncStatus,
-                                periodType = periodType,
-                                relativePeriod = relativePeriod,
-                                sortBy = sortBy,
-                                sortOrder = sortOrder
-                            )
-                        )
-                    },
-                    label = { Text("Search datasets") },
-                    placeholder = { Text("Enter dataset name...") },
-                    modifier = Modifier.fillMaxWidth(),
-                    leadingIcon = {
-                        Icon(Icons.Default.Search, contentDescription = null)
-                    }
-                )
-
-                // Sort Controls Row
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.spacedBy(8.dp)
-                ) {
-                    // Sort By
-                    Box(modifier = Modifier.weight(1f)) {
-                        OutlinedTextField(
-                            value = sortBy.displayName,
-                            onValueChange = { },
-                            label = { Text("Sort By") },
-                            readOnly = true,
-                            modifier = Modifier.fillMaxWidth(),
-                            trailingIcon = {
-                                IconButton(onClick = { showSortByDropdown = !showSortByDropdown }) {
-                                    Icon(Icons.Default.ArrowDropDown, contentDescription = null)
-                                }
-                            }
-                        )
-
-                        DropdownMenu(
-                            expanded = showSortByDropdown,
-                            onDismissRequest = { showSortByDropdown = false }
-                        ) {
-                            SortBy.entries.forEach { sort ->
-                                DropdownMenuItem(
-                                    text = { Text(sort.displayName) },
-                                    onClick = {
-                                        sortBy = sort
-                                        showSortByDropdown = false
-                                        onApplyFilter(
-                                            FilterState(
-                                                searchQuery = searchQuery,
-                                                syncStatus = syncStatus,
-                                                periodType = periodType,
-                                                relativePeriod = relativePeriod,
-                                                sortBy = sortBy,
-                                                sortOrder = sortOrder
-                                            )
-                                        )
-                                    }
-                                )
-                            }
-                        }
-                    }
-
-                    // Sort Order
-                    Box(modifier = Modifier.weight(1f)) {
-                        OutlinedTextField(
-                            value = sortOrder.displayName,
-                            onValueChange = { },
-                            label = { Text("Order") },
-                            readOnly = true,
-                            modifier = Modifier.fillMaxWidth(),
-                            trailingIcon = {
-                                IconButton(onClick = {
-                                    showSortOrderDropdown = !showSortOrderDropdown
-                                }) {
-                                    Icon(Icons.Default.ArrowDropDown, contentDescription = null)
-                                }
-                            }
-                        )
-
-                        DropdownMenu(
-                            expanded = showSortOrderDropdown,
-                            onDismissRequest = { showSortOrderDropdown = false }
-                        ) {
-                            SortOrder.entries.forEach { order ->
-                                DropdownMenuItem(
-                                    text = { Text(order.displayName) },
-                                    onClick = {
-                                        sortOrder = order
-                                        showSortOrderDropdown = false
-                                        onApplyFilter(
-                                            FilterState(
-                                                searchQuery = searchQuery,
-                                                syncStatus = syncStatus,
-                                                periodType = periodType,
-                                                relativePeriod = relativePeriod,
-                                                sortBy = sortBy,
-                                                sortOrder = sortOrder
-                                            )
-                                        )
-                                    }
-                                )
-                            }
-                        }
-                    }
-                }
-
-                // Filter Controls Row
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.spacedBy(8.dp)
-                ) {
-                    // Sync Status Filter
-                    Box(modifier = Modifier.weight(1f)) {
-                        OutlinedTextField(
-                            value = syncStatus.displayName,
-                            onValueChange = { },
-                            label = { Text("Sync Status") },
-                            readOnly = true,
-                            modifier = Modifier.fillMaxWidth(),
-                            trailingIcon = {
-                                IconButton(onClick = { showSyncDropdown = !showSyncDropdown }) {
-                                    Icon(Icons.Default.ArrowDropDown, contentDescription = null)
-                                }
-                            }
-                        )
-
-                        DropdownMenu(
-                            expanded = showSyncDropdown,
-                            onDismissRequest = { showSyncDropdown = false }
-                        ) {
-                            SyncStatus.entries.forEach { status ->
-                                DropdownMenuItem(
-                                    text = { Text(status.displayName) },
-                                    onClick = {
-                                        syncStatus = status
-                                        showSyncDropdown = false
-                                        onApplyFilter(
-                                            FilterState(
-                                                searchQuery = searchQuery,
-                                                syncStatus = syncStatus,
-                                                periodType = periodType,
-                                                relativePeriod = relativePeriod,
-                                                sortBy = sortBy,
-                                                sortOrder = sortOrder
-                                            )
-                                        )
-                                    }
-                                )
-                            }
-                        }
-                    }
-
-                    // Period Filter
-                    Box(modifier = Modifier.weight(1f)) {
-                        OutlinedTextField(
-                            value = when (periodType) {
-                                PeriodFilterType.ALL -> "All Periods"
-                                PeriodFilterType.RELATIVE -> relativePeriod?.displayName
-                                    ?: "Select Period"
-
-                                PeriodFilterType.CUSTOM_RANGE -> "Custom Range"
-                            },
-                            onValueChange = { },
-                            label = { Text("Period") },
-                            readOnly = true,
-                            modifier = Modifier.fillMaxWidth(),
-                            trailingIcon = {
-                                IconButton(onClick = { showPeriodDropdown = !showPeriodDropdown }) {
-                                    Icon(Icons.Default.ArrowDropDown, contentDescription = null)
-                                }
-                            }
-                        )
-
-                        DropdownMenu(
-                            expanded = showPeriodDropdown,
-                            onDismissRequest = { showPeriodDropdown = false }
-                        ) {
-                            DropdownMenuItem(
-                                text = { Text("All Periods") },
-                                onClick = {
-                                    periodType = PeriodFilterType.ALL
-                                    relativePeriod = null
-                                    showPeriodDropdown = false
-                                    onApplyFilter(
-                                        FilterState(
-                                            searchQuery = searchQuery,
-                                            syncStatus = syncStatus,
-                                            periodType = periodType,
-                                            relativePeriod = relativePeriod,
-                                            sortBy = sortBy,
-                                            sortOrder = sortOrder
-                                        )
-                                    )
-                                }
-                            )
-
-                            listOf(
-                                RelativePeriod.THIS_MONTH,
-                                RelativePeriod.LAST_MONTH,
-                                RelativePeriod.LAST_3_MONTHS,
-                                RelativePeriod.THIS_QUARTER,
-                                RelativePeriod.LAST_QUARTER
-                            ).forEach { period ->
-                                DropdownMenuItem(
-                                    text = { Text(period.displayName) },
-                                    onClick = {
-                                        periodType = PeriodFilterType.RELATIVE
-                                        relativePeriod = period
-                                        showPeriodDropdown = false
-                                        onApplyFilter(
-                                            FilterState(
-                                                searchQuery = searchQuery,
-                                                syncStatus = syncStatus,
-                                                periodType = periodType,
-                                                relativePeriod = relativePeriod,
-                                                sortBy = sortBy,
-                                                sortOrder = sortOrder
-                                            )
-                                        )
-                                    }
-                                )
-                            }
-                        }
-                    }
-                }
-
-                // Clear button
-                if (searchQuery.isNotBlank() || syncStatus != SyncStatus.ALL || periodType != PeriodFilterType.ALL ||
-                    sortBy != SortBy.NAME || sortOrder != SortOrder.ASCENDING
-                ) {
-                    OutlinedButton(
-                        onClick = {
-                            searchQuery = ""
-                            syncStatus = SyncStatus.ALL
-                            periodType = PeriodFilterType.ALL
-                            relativePeriod = null
-                            sortBy = SortBy.NAME
-                            sortOrder = SortOrder.ASCENDING
-                            onApplyFilter(FilterState())
-                        },
-                        modifier = Modifier.align(Alignment.CenterHorizontally)
-                    ) {
-                        Text("Clear All")
-                    }
-                }
-            }
         }
     }
-}

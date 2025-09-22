@@ -21,36 +21,96 @@ data class SyncState(
     val error: String? = null
 )
 
+enum class SyncPhase(val title: String, val defaultDetail: String) {
+    INITIALIZING("Initializing Sync", "Preparing data for upload..."),
+    VALIDATING_CONNECTION("Validating Connection", "Checking server connection..."),
+    UPLOADING_DATA("Uploading Data", "Sending data to server..."),
+    DOWNLOADING_UPDATES("Downloading Updates", "Getting latest data..."),
+    FINALIZING("Finalizing", "Completing sync process...")
+}
+
+sealed class SyncError {
+    data class NetworkError(val message: String, val canAutoRetry: Boolean = true) : SyncError()
+    data class ValidationError(val message: String) : SyncError()
+    data class ServerError(val message: String, val statusCode: Int? = null) : SyncError()
+    data class TimeoutError(val message: String, val canAutoRetry: Boolean = true) : SyncError()
+    data class AuthenticationError(val message: String) : SyncError()
+    data class UnknownError(val message: String) : SyncError()
+}
+
+data class DetailedSyncProgress(
+    val phase: SyncPhase,
+    val overallPercentage: Int,
+    val phaseTitle: String,
+    val phaseDetail: String,
+    val canNavigateBack: Boolean = false,
+    val error: SyncError? = null,
+    val isAutoRetrying: Boolean = false,
+    val autoRetryCountdown: Int? = null
+) {
+    companion object {
+        fun initial() = DetailedSyncProgress(
+            phase = SyncPhase.INITIALIZING,
+            overallPercentage = 0,
+            phaseTitle = SyncPhase.INITIALIZING.title,
+            phaseDetail = SyncPhase.INITIALIZING.defaultDetail
+        )
+
+        fun error(error: SyncError) = DetailedSyncProgress(
+            phase = SyncPhase.INITIALIZING,
+            overallPercentage = 0,
+            phaseTitle = "Sync Failed",
+            phaseDetail = when (error) {
+                is SyncError.NetworkError -> error.message
+                is SyncError.ValidationError -> error.message
+                is SyncError.ServerError -> error.message
+                is SyncError.TimeoutError -> error.message
+                is SyncError.AuthenticationError -> error.message
+                is SyncError.UnknownError -> error.message
+            },
+            canNavigateBack = true,
+            error = error
+        )
+    }
+}
+
 @Singleton
 class SyncQueueManager @Inject constructor(
     private val networkStateManager: NetworkStateManager,
     private val sessionManager: SessionManager,
     private val database: AppDatabase
 ) {
-    
+
     private val tag = "SyncQueueManager"
     private val syncScope = CoroutineScope(Dispatchers.IO + SupervisorJob())
-    
+
     private val _syncState = MutableStateFlow(SyncState())
     val syncState: StateFlow<SyncState> = _syncState.asStateFlow()
-    
+
+    private val _detailedProgress = MutableStateFlow<DetailedSyncProgress?>(null)
+    val detailedProgress: StateFlow<DetailedSyncProgress?> = _detailedProgress.asStateFlow()
+
     private var syncJob: Job? = null
     private var networkMonitorJob: Job? = null
-    
-    // Timeout configuration - optimized for upload vs download operations
-    private val uploadTimeoutMs = 180000L // 3 minutes for uploads (server processing intensive)
-    private val downloadTimeoutMs = 60000L // 1 minute for downloads (typically faster)
-    private val connectionTimeoutMs = 30000L // 30 seconds for connection establishment
+    private var autoRetryJob: Job? = null
 
-    // Retry configuration with progressive backoff
-    private val maxRetryAttempts = 3 // Reduced attempts but longer timeouts
-    private val baseRetryDelayMs = 5000L // Start with 5 seconds
-    private val maxRetryDelayMs = 120000L // Up to 2 minutes between retries
+    // Aligned timeout configuration with DHIS2 SDK recommendations
+    private val uploadTimeoutMs = 600000L // 10 minutes - matches DHIS2 SDK expectations
+    private val downloadTimeoutMs = 300000L // 5 minutes - sufficient for metadata downloads
+    private val connectionTimeoutMs = 30000L // 30 seconds - reasonable for connection establishment
+    private val connectionValidationTimeoutMs = 15000L // 15 seconds for connection validation
+    private val overallSyncTimeoutMs = 900000L // 15 minutes max for entire sync process
 
-    // Chunk configuration for large data uploads - adaptive sizing based on network conditions
-    private val baseChunkSize = 25 // Base chunk size for stable networks
-    private val maxChunkSize = 50 // Maximum data values per upload chunk
-    private val minChunkSize = 10 // Minimum chunk size for poor networks
+    // Moderate retry configuration aligned with longer timeouts
+    private val maxRetryAttempts = 2 // Reduce attempts since individual operations have longer timeouts
+    private val baseRetryDelayMs = 5000L // Start with 5 seconds between retries
+    private val maxRetryDelayMs = 20000L // Up to 20 seconds max delay
+    private val maxConsecutiveFailures = 3 // Allow more failures since timeouts are longer
+
+    // Chunk configuration optimized for efficiency with longer timeouts
+    private val baseChunkSize = 25 // Moderate chunk size for better efficiency
+    private val maxChunkSize = 50 // Larger maximum chunks since timeouts are longer
+    private val minChunkSize = 5 // Minimum 5 values per chunk for efficiency
     
     init {
         startNetworkMonitoring()
@@ -85,7 +145,18 @@ class SyncQueueManager @Inject constructor(
 
         syncJob?.cancel()
         syncJob = syncScope.launch {
-            performSync()
+            try {
+                // Add overall sync timeout to prevent hanging during screen lock
+                withTimeout(overallSyncTimeoutMs) { // 15 minutes maximum for entire sync operation
+                    performSync()
+                }
+            } catch (e: TimeoutCancellationException) {
+                Log.e(tag, "Sync operation timed out after ${overallSyncTimeoutMs/1000} seconds")
+                setErrorState(SyncError.TimeoutError("Sync timed out - may be caused by screen lock or network issues"))
+            } catch (e: Exception) {
+                Log.e(tag, "Sync operation failed", e)
+                setErrorState(classifyError(e))
+            }
         }
 
         return try {
@@ -96,6 +167,11 @@ class SyncQueueManager @Inject constructor(
                 Result.failure(Exception(_syncState.value.error))
             }
         } catch (e: Exception) {
+            // Ensure state is reset even if join() fails
+            _syncState.value = _syncState.value.copy(
+                isRunning = false,
+                error = e.message ?: "Sync failed"
+            )
             Result.failure(e)
         }
     }
@@ -113,7 +189,41 @@ class SyncQueueManager @Inject constructor(
 
         syncJob?.cancel()
         syncJob = syncScope.launch {
-            performSyncForInstance(datasetId, period, orgUnit, attributeOptionCombo)
+            try {
+                // Reasonable timeout for instance sync aligned with upload timeout
+                withTimeout(uploadTimeoutMs) { // Use same timeout as regular uploads
+                    performSyncForInstance(datasetId, period, orgUnit, attributeOptionCombo)
+                }
+            } catch (e: TimeoutCancellationException) {
+                Log.e(tag, "Instance sync operation timed out after ${uploadTimeoutMs/1000} seconds")
+                _syncState.value = _syncState.value.copy(
+                    isRunning = false,
+                    error = "Sync timed out - may be caused by screen lock or network issues",
+                    failedAttempts = _syncState.value.failedAttempts + 1
+                )
+                clearDetailedProgress() // CRITICAL: Clear overlay on timeout
+            } catch (e: Exception) {
+                Log.e(tag, "Instance sync operation failed", e)
+                val errorMessage = when (e) {
+                    is kotlinx.coroutines.TimeoutCancellationException -> "Sync timed out"
+                    else -> classifyError(e).let { error ->
+                        when (error) {
+                            is SyncError.NetworkError -> error.message
+                            is SyncError.TimeoutError -> error.message
+                            is SyncError.AuthenticationError -> error.message
+                            is SyncError.ServerError -> error.message
+                            is SyncError.ValidationError -> error.message
+                            is SyncError.UnknownError -> error.message
+                        }
+                    }
+                }
+                _syncState.value = _syncState.value.copy(
+                    isRunning = false,
+                    error = errorMessage,
+                    failedAttempts = _syncState.value.failedAttempts + 1
+                )
+                clearDetailedProgress() // CRITICAL: Clear overlay on any error
+            }
         }
 
         return try {
@@ -124,6 +234,11 @@ class SyncQueueManager @Inject constructor(
                 Result.failure(Exception(_syncState.value.error))
             }
         } catch (e: Exception) {
+            // Ensure state is reset even if join() fails
+            _syncState.value = _syncState.value.copy(
+                isRunning = false,
+                error = e.message ?: "Instance sync failed"
+            )
             Result.failure(e)
         }
     }
@@ -134,37 +249,41 @@ class SyncQueueManager @Inject constructor(
             lastSyncAttempt = System.currentTimeMillis(),
             error = null
         )
-        
+
         try {
-            val d2 = sessionManager.getD2()
-            if (d2 == null) {
-                throw Exception("DHIS2 session not available")
+            // Phase 1: Initialize sync (0-10%)
+            updateProgress(SyncPhase.INITIALIZING, 0)
+
+            // Phase 2: Validate connection (5-10%)
+            if (!validateConnection()) {
+                return // Error state already set in validateConnection()
             }
 
+            val d2 = sessionManager.getD2()!! // Already validated in validateConnection()
 
-            if (!networkStateManager.isOnline()) {
-                throw Exception("No internet connection available")
-            }
-            
             // Get all draft data values to sync
             val drafts = database.dataValueDraftDao().getAllDrafts()
             Log.d(tag, "Starting sync of ${drafts.size} draft values")
 
+            updateProgress(SyncPhase.INITIALIZING, 15, "Found ${drafts.size} data values to sync")
+
             if (drafts.isEmpty()) {
+                updateProgress(SyncPhase.FINALIZING, 100, "No data to sync")
                 _syncState.value = _syncState.value.copy(
                     isRunning = false,
                     queueSize = 0,
                     lastSuccessfulSync = System.currentTimeMillis(),
                     failedAttempts = 0
                 )
+                clearDetailedProgress()
                 return
             }
 
-            // Step 1: Set ALL drafts first in DHIS2 local database
-            Log.d(tag, "Setting ${drafts.size} draft values in DHIS2 local database")
+            // Phase 3: Prepare data for upload (15-30%)
+            updateProgress(SyncPhase.INITIALIZING, 20, "Preparing ${drafts.size} values for upload...")
             val allSuccessfulDrafts = mutableListOf<DataValueDraftEntity>()
 
-            for (draft in drafts) {
+            for ((index, draft) in drafts.withIndex()) {
                 try {
                     // Set the data value in DHIS2 local database
                     d2.dataValueModule().dataValues()
@@ -178,35 +297,52 @@ class SyncQueueManager @Inject constructor(
                         .blockingSet(draft.value)
 
                     allSuccessfulDrafts.add(draft)
+
+                    // Update progress for data preparation
+                    val prepProgress = 20 + ((index + 1) * 10 / drafts.size)
+                    updateProgress(SyncPhase.INITIALIZING, prepProgress, "Prepared ${index + 1} of ${drafts.size} values")
+
                 } catch (e: Exception) {
                     Log.w(tag, "Failed to set draft value for ${draft.dataElement}: ${e.message}")
                 }
             }
 
             if (allSuccessfulDrafts.isEmpty()) {
-                Log.w(tag, "No valid drafts to upload, skipping upload")
+                setErrorState(SyncError.ValidationError("No valid data values to upload"))
                 return
             }
 
             Log.d(tag, "Successfully set ${allSuccessfulDrafts.size} values, starting upload")
 
-            // Step 2: Upload ALL set values ONCE with retry logic
-            var lastException: Exception? = null
+            // Phase 4: Upload data with enhanced retry logic (30-80%)
             var attempt = 0
             var uploadSuccessful = false
 
             while (attempt < maxRetryAttempts && !uploadSuccessful) {
                 try {
+                    val uploadDetail = if (attempt == 0) {
+                        "Uploading ${allSuccessfulDrafts.size} data values..."
+                    } else {
+                        "Upload attempt ${attempt + 1} of $maxRetryAttempts"
+                    }
+
+                    updateProgress(SyncPhase.UPLOADING_DATA, 40, uploadDetail)
+
                     Log.d(tag, "Upload attempt ${attempt + 1} of $maxRetryAttempts for ${allSuccessfulDrafts.size} values")
 
-                    // Use withTimeout to handle long-running upload operations
+                                    // Enhanced upload with shorter timeout and network validation
                     val uploadResult = withTimeout(uploadTimeoutMs) {
+                        // Validate network before upload
+                        if (!networkStateManager.isOnline()) {
+                            throw Exception("Network connection lost before upload")
+                        }
                         d2.dataValueModule().dataValues().blockingUpload()
                     }
-                    Log.d(tag, "Upload result: $uploadResult")
 
-                    // If upload successful, mark as uploaded
+                    Log.d(tag, "Upload result: $uploadResult")
                     uploadSuccessful = true
+
+                    updateProgress(SyncPhase.UPLOADING_DATA, 80, "Upload completed successfully")
 
                     // Remove successfully synced drafts
                     for (draft in allSuccessfulDrafts) {
@@ -216,79 +352,99 @@ class SyncQueueManager @Inject constructor(
                     Log.d(tag, "Upload completed successfully for ${allSuccessfulDrafts.size} values")
 
                 } catch (e: Exception) {
-                    lastException = e
                     attempt++
+                    val error = classifyError(e)
+                    Log.w(tag, "Upload attempt $attempt failed: ${error}", e)
 
-                    // Extract meaningful error message
-                    val errorMessage = extractErrorMessage(e)
-                    Log.w(tag, "Upload attempt $attempt failed: $errorMessage", e)
+                    if (attempt >= maxRetryAttempts) {
+                        setErrorState(error)
+                        return
+                    }
 
-                    // Check if we should retry based on error type
-                    val shouldRetry = shouldRetryForError(e) && attempt < maxRetryAttempts
+                    // Check if we should auto-retry
+                    val shouldAutoRetry = when (error) {
+                        is SyncError.NetworkError -> error.canAutoRetry
+                        is SyncError.TimeoutError -> error.canAutoRetry
+                        else -> false
+                    }
 
-                    if (shouldRetry) {
-                        // Calculate progressive backoff delay - longer for network issues
-                        val baseDelay = if (isNetworkTimeoutError(e)) baseRetryDelayMs * 2 else baseRetryDelayMs
-                        val delay = minOf(
-                            baseDelay * (1L shl (attempt - 1)),
-                            maxRetryDelayMs
-                        )
+                    if (shouldAutoRetry) {
+                        // Exponential backoff with network validation
+                        val retryDelay = calculateRetryDelay(attempt)
+                        Log.w(tag, "Auto-retrying upload in ${retryDelay}ms (attempt ${attempt + 1} of $maxRetryAttempts)")
 
-                        Log.w(tag, "Retrying upload in ${delay}ms (attempt ${attempt + 1} of $maxRetryAttempts)")
-                        delay(delay)
+                        // Show countdown to user
+                        showRetryCountdown(retryDelay, attempt)
 
-                        // Check if network is still available before retry
+                        // Check network before retry
                         if (!networkStateManager.isOnline()) {
-                            throw Exception("Network connection lost during retry")
+                            setErrorState(SyncError.NetworkError("Network connection lost during retry"))
+                            return
                         }
                     } else {
-                        // Don't retry for certain error types
-                        break
+                        setErrorState(error)
+                        return
                     }
                 }
             }
 
-            // If upload failed after all retries, throw the last exception
-            if (!uploadSuccessful && lastException != null) {
-                val errorMessage = extractErrorMessage(lastException)
-                Log.e(tag, "Failed to upload after $maxRetryAttempts attempts: $errorMessage")
-                throw lastException
-            }
-
-            // Download latest data to sync (with timeout) - only if some uploads succeeded
-            if (allSuccessfulDrafts.isNotEmpty()) {
+            // Phase 5: Download updates (80-95%)
+            if (uploadSuccessful) {
                 try {
+                    updateProgress(SyncPhase.DOWNLOADING_UPDATES, 85, "Downloading latest data...")
+
                     withTimeout(downloadTimeoutMs) {
                         d2.dataValueModule().dataValues().get()
                     }
+
+                    updateProgress(SyncPhase.DOWNLOADING_UPDATES, 95, "Download completed")
                 } catch (e: Exception) {
                     Log.w(tag, "Failed to download latest data after upload: ${e.message}")
                     // Don't fail the entire sync just because download failed
+                    updateProgress(SyncPhase.DOWNLOADING_UPDATES, 95, "Download failed but upload succeeded")
                 }
             }
+
+            // Phase 6: Finalize (95-100%)
+            updateProgress(SyncPhase.FINALIZING, 98, "Finalizing sync...")
 
             _syncState.value = _syncState.value.copy(
                 isRunning = false,
                 queueSize = database.dataValueDraftDao().getAllDrafts().size,
-                lastSuccessfulSync = if (allSuccessfulDrafts.isNotEmpty()) System.currentTimeMillis() else _syncState.value.lastSuccessfulSync,
-                failedAttempts = if (allSuccessfulDrafts.isNotEmpty()) 0 else _syncState.value.failedAttempts + 1,
-                error = if (allSuccessfulDrafts.isEmpty()) "Upload failed for all data values" else null
+                lastSuccessfulSync = if (uploadSuccessful) System.currentTimeMillis() else _syncState.value.lastSuccessfulSync,
+                failedAttempts = if (uploadSuccessful) 0 else _syncState.value.failedAttempts + 1,
+                error = null
             )
+
+            updateProgress(SyncPhase.FINALIZING, 100, "Sync completed successfully")
 
             Log.d(tag, "Sync completed - ${allSuccessfulDrafts.size} values uploaded successfully")
 
-            if (allSuccessfulDrafts.isEmpty()) {
-                throw Exception("Failed to upload any data values")
-            }
+            // Clear progress after short delay for user to see completion
+            delay(1500)
+            clearDetailedProgress()
 
         } catch (e: Exception) {
-            val userFriendlyError = extractErrorMessage(e)
-            Log.e(tag, "Sync failed: $userFriendlyError", e)
+            val error = classifyError(e)
+            Log.e(tag, "Sync failed: $error", e)
+
             _syncState.value = _syncState.value.copy(
                 isRunning = false,
                 failedAttempts = _syncState.value.failedAttempts + 1,
-                error = userFriendlyError
+                error = when (error) {
+                    is SyncError.NetworkError -> error.message
+                    is SyncError.TimeoutError -> error.message
+                    is SyncError.AuthenticationError -> error.message
+                    is SyncError.ServerError -> error.message
+                    is SyncError.ValidationError -> error.message
+                    is SyncError.UnknownError -> error.message
+                }
             )
+
+            // Don't clear progress on error - let user see error state and navigate back
+            if (_detailedProgress.value?.error == null) {
+                setErrorState(error)
+            }
         }
     }
 
@@ -449,6 +605,9 @@ class SyncQueueManager @Inject constructor(
 
             Log.d(tag, "Sync completed for instance - ${allSuccessfulDrafts.size} values uploaded successfully")
 
+            // CRITICAL: Always clear detailed progress on successful completion
+            clearDetailedProgress()
+
             if (allSuccessfulDrafts.isEmpty()) {
                 throw Exception("Failed to upload any data values for dataset instance")
             }
@@ -461,15 +620,19 @@ class SyncQueueManager @Inject constructor(
                 failedAttempts = _syncState.value.failedAttempts + 1,
                 error = userFriendlyError
             )
+            // CRITICAL: Always clear detailed progress on instance sync failure
+            clearDetailedProgress()
         }
     }
 
     suspend fun cancelSync() {
         syncJob?.cancel()
+        autoRetryJob?.cancel()
         _syncState.value = _syncState.value.copy(
             isRunning = false,
             error = "Sync cancelled by user"
         )
+        clearDetailedProgress()
     }
     
     suspend fun clearQueue() {
@@ -482,6 +645,270 @@ class SyncQueueManager @Inject constructor(
     fun cleanup() {
         syncJob?.cancel()
         networkMonitorJob?.cancel()
+        autoRetryJob?.cancel()
+    }
+
+    /**
+     * Clear detailed progress state
+     */
+    fun clearDetailedProgress() {
+        _detailedProgress.value = null
+    }
+
+    /**
+     * Update detailed progress with phase information
+     */
+    private suspend fun updateProgress(
+        phase: SyncPhase,
+        percentage: Int,
+        detail: String? = null,
+        canNavigateBack: Boolean = false
+    ) {
+        _detailedProgress.value = DetailedSyncProgress(
+            phase = phase,
+            overallPercentage = percentage,
+            phaseTitle = phase.title,
+            phaseDetail = detail ?: phase.defaultDetail,
+            canNavigateBack = canNavigateBack
+        )
+        delay(100) // Small delay for UI feedback
+    }
+
+    /**
+     * Set error state with navigation capability and reset running state
+     */
+    private fun setErrorState(error: SyncError) {
+        _detailedProgress.value = DetailedSyncProgress.error(error)
+        // Critical fix: Reset isRunning to false when setting error state
+        _syncState.value = _syncState.value.copy(
+            isRunning = false,
+            error = when (error) {
+                is SyncError.NetworkError -> error.message
+                is SyncError.TimeoutError -> error.message
+                is SyncError.AuthenticationError -> error.message
+                is SyncError.ValidationError -> error.message
+                is SyncError.ServerError -> error.message
+                is SyncError.UnknownError -> error.message
+            },
+            failedAttempts = _syncState.value.failedAttempts + 1
+        )
+    }
+
+    /**
+     * Enhanced connection validation using DHIS2 patterns
+     */
+    private suspend fun validateConnection(): Boolean {
+        return try {
+            updateProgress(SyncPhase.VALIDATING_CONNECTION, 5, "Checking DHIS2 session...")
+
+            val d2 = sessionManager.getD2()
+            if (d2 == null) {
+                Log.e(tag, "DHIS2 session is null - authentication required")
+                setErrorState(SyncError.AuthenticationError("DHIS2 session not available. Please log in again."))
+                return false
+            }
+
+            updateProgress(SyncPhase.VALIDATING_CONNECTION, 7, "Checking network connectivity...")
+
+            if (!networkStateManager.isOnline()) {
+                Log.w(tag, "Network not available for sync")
+                setErrorState(SyncError.NetworkError("No internet connection available"))
+                return false
+            }
+
+            updateProgress(SyncPhase.VALIDATING_CONNECTION, 8, "Testing server connection...")
+
+            // Test connection using DHIS2 pattern - lightweight system info call
+            withTimeout(connectionValidationTimeoutMs) {
+                try {
+                    val systemInfo = d2.systemInfoModule().systemInfo().blockingGet()
+                    Log.d(tag, "Connection validated - server version: ${systemInfo?.version()}")
+                } catch (e: Exception) {
+                    Log.w(tag, "System info call failed, trying alternative validation")
+                    // Fallback: try to access user info
+                    d2.userModule().user().blockingGet()
+                }
+            }
+
+            updateProgress(SyncPhase.VALIDATING_CONNECTION, 10, "Connection validated successfully")
+            Log.d(tag, "Connection validation successful")
+            true
+
+        } catch (e: Exception) {
+            Log.e(tag, "Connection validation failed", e)
+
+            val error = when {
+                e is TimeoutCancellationException -> {
+                    Log.w(tag, "Connection validation timed out")
+                    SyncError.TimeoutError("Server connection timed out - check your internet connection")
+                }
+                e.message?.contains("401") == true || e.message?.contains("Unauthorized") == true -> {
+                    Log.e(tag, "Authentication failed during validation")
+                    SyncError.AuthenticationError("Authentication failed. Please log in again.")
+                }
+                e.message?.contains("SocketTimeoutException") == true -> {
+                    Log.w(tag, "Socket timeout during validation")
+                    SyncError.NetworkError("Connection timed out - check your internet connection")
+                }
+                e.message?.contains("Software caused connection abort") == true -> {
+                    Log.w(tag, "Connection abort during validation")
+                    SyncError.NetworkError("Network connection was interrupted")
+                }
+                e.message?.contains("ConnectException") == true -> {
+                    Log.w(tag, "Cannot connect to server")
+                    SyncError.NetworkError("Cannot connect to DHIS2 server")
+                }
+                e.message?.contains("UnknownHostException") == true -> {
+                    Log.w(tag, "Cannot resolve server hostname")
+                    SyncError.NetworkError("Cannot reach DHIS2 server - check internet connection")
+                }
+                else -> {
+                    Log.e(tag, "Unknown validation error: ${e.message}")
+                    SyncError.NetworkError("Connection validation failed: ${e.message}")
+                }
+            }
+
+            setErrorState(error)
+            false
+        }
+    }
+
+    /**
+     * Enhanced error classification using DHIS2 patterns for better retry logic
+     */
+    private fun classifyError(exception: Exception): SyncError {
+        Log.d(tag, "Classifying error: ${exception.javaClass.simpleName} - ${exception.message}")
+
+        return when {
+            // Handle D2Error specifically (DHIS2 SDK errors)
+            exception.message?.contains("D2Error") == true -> {
+                Log.w(tag, "D2Error detected - likely network/server issue")
+                SyncError.NetworkError("DHIS2 server connection issue - this may be caused by screen lock or network interruption", canAutoRetry = true)
+            }
+
+            // Timeout errors - can auto-retry (common during screen lock)
+            exception is kotlinx.coroutines.TimeoutCancellationException -> {
+                Log.w(tag, "Coroutine timeout - likely caused by screen lock or slow network")
+                SyncError.TimeoutError("Sync timed out - may be caused by screen lock or slow network", canAutoRetry = true)
+            }
+            exception.message?.contains("SocketTimeoutException") == true -> {
+                Log.w(tag, "Socket timeout detected")
+                SyncError.TimeoutError("Network timeout - check your internet connection", canAutoRetry = true)
+            }
+            exception.message?.contains("timeout") == true -> {
+                Log.w(tag, "General timeout detected")
+                SyncError.TimeoutError("Operation timed out", canAutoRetry = true)
+            }
+
+            // Socket errors - specific handling for connection abort (main issue from logs)
+            exception.message?.contains("Software caused connection abort") == true ||
+            exception.message?.contains("SocketException") == true -> {
+                Log.w(tag, "Socket connection abort - likely screen lock during sync")
+                SyncError.NetworkError("Network connection was interrupted (often caused by screen lock)", canAutoRetry = true)
+            }
+
+            // Network connection errors - can auto-retry
+            exception.message?.contains("ConnectException") == true -> {
+                Log.w(tag, "Connection exception - cannot connect to server")
+                SyncError.NetworkError("Cannot connect to server", canAutoRetry = true)
+            }
+            exception.message?.contains("UnknownHostException") == true -> {
+                Log.w(tag, "Unknown host - DNS or network issue")
+                SyncError.NetworkError("Cannot reach server - check internet connection", canAutoRetry = true)
+            }
+
+            // Authentication errors - require user action
+            exception.message?.contains("401") == true || exception.message?.contains("Unauthorized") == true -> {
+                Log.e(tag, "Authentication failed")
+                SyncError.AuthenticationError("Authentication failed. Please log in again.")
+            }
+
+            // Server errors - some can retry
+            exception.message?.contains("500") == true -> {
+                Log.w(tag, "Server error 500")
+                SyncError.ServerError("Server error - please try again", statusCode = 500)
+            }
+            exception.message?.contains("503") == true -> {
+                Log.w(tag, "Server unavailable 503")
+                SyncError.ServerError("Server temporarily unavailable", statusCode = 503)
+            }
+            exception.message?.contains("400") == true -> {
+                Log.e(tag, "Bad request 400")
+                SyncError.ValidationError("Invalid data submitted")
+            }
+            exception.message?.contains("404") == true -> {
+                Log.e(tag, "Not found 404")
+                SyncError.ValidationError("Resource not found")
+            }
+
+            // Default handling - be more conservative about retrying
+            else -> {
+                Log.e(tag, "Unknown error type: ${exception.javaClass.simpleName}")
+                SyncError.UnknownError(exception.message ?: "Sync failed. Please try again.")
+            }
+        }
+    }
+
+    /**
+     * Calculate exponential backoff delay for retries
+     */
+    private fun calculateRetryDelay(attempt: Int): Long {
+        return minOf(
+            baseRetryDelayMs * (1L shl (attempt - 1)), // Exponential: 2s, 4s, 8s
+            maxRetryDelayMs
+        )
+    }
+
+    /**
+     * Show retry countdown to user with progress updates
+     */
+    private suspend fun showRetryCountdown(delayMs: Long, attempt: Int) {
+        val seconds = (delayMs / 1000).toInt()
+        for (remaining in seconds downTo 1) {
+            _detailedProgress.value = _detailedProgress.value?.copy(
+                isAutoRetrying = true,
+                autoRetryCountdown = remaining,
+                phaseDetail = "Network error - retrying in $remaining seconds... (attempt ${attempt + 1} of $maxRetryAttempts)"
+            )
+            delay(1000)
+        }
+    }
+
+    /**
+     * Auto-retry logic for network errors
+     */
+    private suspend fun handleAutoRetry(error: SyncError, attempt: Int): Boolean {
+        val canAutoRetry = when (error) {
+            is SyncError.NetworkError -> error.canAutoRetry && attempt < maxRetryAttempts
+            is SyncError.TimeoutError -> error.canAutoRetry && attempt < maxRetryAttempts
+            else -> false
+        }
+
+        if (!canAutoRetry) return false
+
+        val delay = minOf(
+            baseRetryDelayMs * (1L shl (attempt - 1)),
+            maxRetryDelayMs
+        )
+
+        // Show auto-retry countdown
+        repeat((delay / 1000).toInt()) { second ->
+            val remaining = (delay / 1000).toInt() - second
+            _detailedProgress.value = _detailedProgress.value?.copy(
+                isAutoRetrying = true,
+                autoRetryCountdown = remaining,
+                phaseDetail = "Auto-retrying in $remaining seconds... (attempt ${attempt + 1} of $maxRetryAttempts)"
+            )
+            delay(1000)
+        }
+
+        // Check network before retry
+        if (!networkStateManager.isOnline()) {
+            setErrorState(SyncError.NetworkError("Network connection lost during retry"))
+            return false
+        }
+
+        return true
     }
 
     /**

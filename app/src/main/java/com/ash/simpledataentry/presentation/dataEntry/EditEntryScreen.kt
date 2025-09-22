@@ -61,6 +61,9 @@ import androidx.compose.material.icons.filled.Sync
 import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.CheckCircle
 import androidx.compose.ui.platform.LocalContext
+import com.ash.simpledataentry.presentation.core.DetailedSyncOverlay
+import com.ash.simpledataentry.presentation.core.CompletionProgressOverlay
+import com.ash.simpledataentry.presentation.core.CompletionAction
 import kotlin.Pair
 import androidx.compose.runtime.Composable
 import com.google.common.collect.Lists.cartesianProduct
@@ -194,31 +197,44 @@ fun EditEntryScreen(
         )
     }
 
-    // Mark incomplete dialog - shown when dataset is already completed
+    // Enhanced completion action dialog
     if (showCompleteDialog) {
-        AlertDialog(
-            onDismissRequest = { showCompleteDialog = false },
-            title = { Text("Dataset Already Complete") },
-            text = { Text("This dataset is already marked as complete. Do you want to mark it as incomplete so you can edit it?") },
-            confirmButton = {
-                TextButton(onClick = {
-                    showCompleteDialog = false
-                    viewModel.markDatasetIncomplete { success, message ->
-                        coroutineScope.launch {
-                            if (success) {
-                                snackbarHostState.showSnackbar(message ?: "Dataset marked as incomplete.")
-                            } else {
-                                snackbarHostState.showSnackbar(message ?: "Failed to mark as incomplete.")
+        CompletionActionDialog(
+            isCurrentlyComplete = state.isCompleted,
+            onAction = { action ->
+                showCompleteDialog = false
+                when (action) {
+                    CompletionAction.VALIDATE_AND_COMPLETE -> {
+                        viewModel.startValidationForCompletion()
+                    }
+                    CompletionAction.COMPLETE_WITHOUT_VALIDATION -> {
+                        viewModel.completeDatasetAfterValidation { success, message ->
+                            coroutineScope.launch {
+                                if (success) {
+                                    snackbarHostState.showSnackbar(message ?: "Dataset marked as complete.")
+                                } else {
+                                    snackbarHostState.showSnackbar(message ?: "Failed to mark as complete.")
+                                }
                             }
                         }
                     }
-                }) { Text("Mark Incomplete") }
+                    CompletionAction.RERUN_VALIDATION -> {
+                        viewModel.startValidationForCompletion()
+                    }
+                    CompletionAction.MARK_INCOMPLETE -> {
+                        viewModel.markDatasetIncomplete { success, message ->
+                            coroutineScope.launch {
+                                if (success) {
+                                    snackbarHostState.showSnackbar(message ?: "Dataset marked as incomplete.")
+                                } else {
+                                    snackbarHostState.showSnackbar(message ?: "Failed to mark as incomplete.")
+                                }
+                            }
+                        }
+                    }
+                }
             },
-            dismissButton = {
-                TextButton(onClick = {
-                    showCompleteDialog = false
-                }) { Text("Cancel") }
-            }
+            onDismiss = { showCompleteDialog = false }
         )
     }
 
@@ -397,19 +413,14 @@ fun EditEntryScreen(
                     )
                 }
             }
-            // Complete button with improved behavior
+            // Complete button with enhanced completion dialog
             IconButton(
                 onClick = {
-                    if (state.isCompleted) {
-                        // Show dialog asking whether to run validation or mark as incomplete
-                        showCompleteDialog = true
-                    } else {
-                        viewModel.startValidationForCompletion()
-                    }
+                    showCompleteDialog = true
                 },
-                enabled = !state.isLoading && !state.isValidating
+                enabled = !state.isLoading && !state.isValidating && state.completionProgress == null
             ) {
-                if (state.isValidating) {
+                if (state.isValidating || state.completionProgress != null) {
                     CircularProgressIndicator(
                         modifier = Modifier.size(24.dp),
                         strokeWidth = 2.dp,
@@ -425,12 +436,19 @@ fun EditEntryScreen(
             }
         }
     ) {
-        // Use OverlayLoader for sync operations (header actions)
-        OverlayLoader(
-            message = "Syncing...",
-            isVisible = state.isSyncing,
+        // Enhanced sync overlay with dismissal capability
+        DetailedSyncOverlay(
+            progress = state.detailedSyncProgress,
+            onNavigateBack = { viewModel.dismissSyncOverlay() },
+            onCancel = { viewModel.dismissSyncOverlay() },
             modifier = Modifier.fillMaxSize()
         ) {
+            // Completion progress overlay
+            CompletionProgressOverlay(
+                progress = state.completionProgress,
+                onCancel = { viewModel.dismissSyncOverlay() }, // Use existing method for now
+                modifier = Modifier.fillMaxSize()
+            ) {
             if (state.isLoading || !isUIReady) {
                 // Use FullScreenLoader for navigation loading
                 FullScreenLoader(
@@ -753,7 +771,8 @@ fun EditEntryScreen(
                 }
             }
         }
-    }
+            }
+        }
     // Show Snackbar on sync error
     LaunchedEffect(state.error) {
         state.error?.let {

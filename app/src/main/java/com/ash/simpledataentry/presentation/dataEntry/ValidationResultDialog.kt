@@ -22,6 +22,8 @@ import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.window.Dialog
+import androidx.compose.ui.window.DialogProperties
 import com.ash.simpledataentry.domain.model.*
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -35,27 +37,45 @@ fun ValidationResultDialog(
     showCompletionOption: Boolean = false
 ) {
     var selectedTab by remember { mutableIntStateOf(0) }
-    
-    AlertDialog(
+
+    Dialog(
         onDismissRequest = onDismiss,
-        modifier = Modifier
-            .fillMaxWidth()
-            .padding(16.dp),
-        title = {
-            ValidationHeaderSection(validationSummary)
-        },
-        text = {
+        properties = DialogProperties(
+            dismissOnBackPress = true,
+            dismissOnClickOutside = true,
+            usePlatformDefaultWidth = false
+        )
+    ) {
+        Card(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(16.dp),
+            shape = RoundedCornerShape(16.dp),
+            colors = CardDefaults.cardColors(
+                containerColor = MaterialTheme.colorScheme.surface
+            ),
+            elevation = CardDefaults.cardElevation(defaultElevation = 8.dp)
+        ) {
             Column(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .heightIn(max = 500.dp),
-                verticalArrangement = Arrangement.spacedBy(16.dp)
+                    .padding(24.dp),
+                verticalArrangement = Arrangement.spacedBy(20.dp)
             ) {
-                // Summary Statistics
-                ValidationSummaryCard(validationSummary)
-                
-                // Tab selection for issues
-                if (validationSummary.hasIssues) {
+                // Header Section (matching CompletionActionDialog style)
+                ValidationHeaderSection(validationSummary)
+
+                Column(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .heightIn(max = 400.dp),
+                    verticalArrangement = Arrangement.spacedBy(16.dp)
+                ) {
+                    // Summary Statistics
+                    ValidationSummaryCard(validationSummary)
+
+                    // Tab selection for issues
+                    if (validationSummary.hasIssues) {
                     val tabs = buildList {
                         if (validationSummary.hasErrors) add("Errors (${validationSummary.errorCount})")
                         if (validationSummary.hasWarnings) add("Warnings (${validationSummary.warningCount})")
@@ -84,68 +104,89 @@ fun ValidationResultDialog(
                     Spacer(modifier = Modifier.height(8.dp))
                     
                     // Issues List
-                    ValidationIssuesList(
-                        validationSummary = validationSummary,
-                        selectedTab = selectedTab
-                    )
+                        ValidationIssuesList(
+                            validationSummary = validationSummary,
+                            selectedTab = selectedTab
+                        )
+                    }
                 }
+
+                // Action Buttons (matching CompletionActionDialog style)
+                ValidationDialogButtons(
+                    validationSummary = validationSummary,
+                    showCompletionOption = showCompletionOption,
+                    onComplete = onComplete,
+                    onCompleteAnyway = onCompleteAnyway,
+                    onTryAgain = onTryAgain,
+                    onDismiss = onDismiss
+                )
             }
-        },
-        confirmButton = {
-            if (showCompletionOption) {
-                Row(
-                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+        }
+    }
+}
+
+@Composable
+private fun ValidationDialogButtons(
+    validationSummary: ValidationSummary,
+    showCompletionOption: Boolean,
+    onComplete: (() -> Unit)?,
+    onCompleteAnyway: (() -> Unit)?,
+    onTryAgain: (() -> Unit)?,
+    onDismiss: () -> Unit
+) {
+    Row(
+        modifier = Modifier.fillMaxWidth(),
+        horizontalArrangement = Arrangement.spacedBy(12.dp, Alignment.End)
+    ) {
+        // Try Again button (leftmost)
+        if (onTryAgain != null) {
+            TextButton(onClick = onTryAgain) {
+                Text("Try Again")
+            }
+        }
+
+        // Cancel/Close button
+        TextButton(onClick = onDismiss) {
+            Text(if (showCompletionOption) "Cancel" else "Close")
+        }
+
+        // Completion buttons
+        if (showCompletionOption) {
+            if (validationSummary.canComplete) {
+                // If validation passed or has only warnings, show Complete button
+                Button(
+                    onClick = { onComplete?.invoke() },
+                    colors = ButtonDefaults.buttonColors(
+                        containerColor = MaterialTheme.colorScheme.primary
+                    )
                 ) {
-                    if (validationSummary.canComplete) {
-                        // If validation passed or has only warnings, show Complete button
-                        Button(
-                            onClick = { onComplete?.invoke() }
-                        ) {
-                            Text("Complete")
-                        }
-                    } else {
-                        // If validation failed with errors, show Complete Anyway button
-                        OutlinedButton(
-                            onClick = { onCompleteAnyway?.invoke() },
-                            colors = ButtonDefaults.outlinedButtonColors(
-                                contentColor = MaterialTheme.colorScheme.error
-                            ),
-                            border = BorderStroke(1.dp, MaterialTheme.colorScheme.error)
-                        ) {
-                            Text("Complete Anyway")
-                        }
-                    }
-                    
-                    TextButton(onClick = onDismiss) {
-                        Text("Cancel")
-                    }
+                    Text("Complete")
                 }
             } else {
-                TextButton(onClick = onDismiss) {
-                    Text("Close")
+                // If validation failed with errors, show Complete Anyway button
+                Button(
+                    onClick = { onCompleteAnyway?.invoke() },
+                    colors = ButtonDefaults.buttonColors(
+                        containerColor = MaterialTheme.colorScheme.error
+                    )
+                ) {
+                    Text("Complete Anyway")
                 }
             }
-        },
-        dismissButton = if (onTryAgain != null) {
-            {
-                TextButton(onClick = onTryAgain) {
-                    Text("Try Again")
-                }
-            }
-        } else null
-    )
+        }
+    }
 }
 
 @Composable
 private fun ValidationHeaderSection(validationSummary: ValidationSummary) {
     Row(
         verticalAlignment = Alignment.CenterVertically,
-        horizontalArrangement = Arrangement.spacedBy(12.dp)
+        horizontalArrangement = Arrangement.spacedBy(16.dp)
     ) {
         val (icon, color, title) = when {
             !validationSummary.hasIssues -> Triple(
                 Icons.Default.CheckCircle,
-                MaterialTheme.colorScheme.tertiary,
+                MaterialTheme.colorScheme.primary,
                 "Validation Passed"
             )
             validationSummary.hasErrors -> Triple(
@@ -159,11 +200,18 @@ private fun ValidationHeaderSection(validationSummary: ValidationSummary) {
                 "Validation Warning"
             )
         }
-        
+
+        val subtitle = when {
+            !validationSummary.hasIssues -> "All validation rules passed successfully"
+            validationSummary.hasErrors -> "Found ${validationSummary.errorCount} error(s) that need attention"
+            else -> "Found ${validationSummary.warningCount} warning(s) to review"
+        }
+
+        // Status Icon (matching CompletionActionDialog size)
         Box(
             modifier = Modifier
-                .size(48.dp)
-                .clip(CircleShape)
+                .size(56.dp)
+                .clip(RoundedCornerShape(28.dp))
                 .background(color.copy(alpha = 0.1f)),
             contentAlignment = Alignment.Center
         ) {
@@ -171,19 +219,27 @@ private fun ValidationHeaderSection(validationSummary: ValidationSummary) {
                 imageVector = icon,
                 contentDescription = null,
                 tint = color,
-                modifier = Modifier.size(24.dp)
+                modifier = Modifier.size(28.dp)
             )
         }
-        
-        Column {
+
+        // Title and Status
+        Column(modifier = Modifier.weight(1f)) {
             Text(
                 text = title,
-                style = MaterialTheme.typography.titleLarge,
-                fontWeight = FontWeight.Bold
+                style = MaterialTheme.typography.headlineSmall,
+                fontWeight = FontWeight.Bold,
+                color = MaterialTheme.colorScheme.onSurface
+            )
+            Text(
+                text = subtitle,
+                style = MaterialTheme.typography.bodyMedium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
             )
         }
     }
 }
+
 
 @Composable
 private fun ValidationSummaryCard(validationSummary: ValidationSummary) {

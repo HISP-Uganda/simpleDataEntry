@@ -20,6 +20,10 @@ import com.ash.simpledataentry.domain.repository.DatasetInstancesRepository
 import com.ash.simpledataentry.util.NetworkUtils
 import com.ash.simpledataentry.util.PeriodHelper
 import com.ash.simpledataentry.data.local.DataValueDraftDao
+import com.ash.simpledataentry.data.sync.SyncQueueManager
+import com.ash.simpledataentry.data.sync.DetailedSyncProgress
+import com.ash.simpledataentry.presentation.core.NavigationProgress
+import com.ash.simpledataentry.presentation.core.LoadingPhase
 import dagger.hilt.android.lifecycle.HiltViewModel
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -37,7 +41,9 @@ data class DatasetInstancesState(
     val attributeOptionCombos: List<Pair<String, String>> = emptyList(),
     val dataset: com.ash.simpledataentry.domain.model.Dataset? = null,
     val localInstanceCount: Int = 0,
-    val instancesWithDrafts: Set<String> = emptySet() // Set of instance keys that have draft values
+    val instancesWithDrafts: Set<String> = emptySet(), // Set of instance keys that have draft values
+    val detailedSyncProgress: DetailedSyncProgress? = null, // Enhanced sync progress
+    val navigationProgress: NavigationProgress? = null // Enhanced loading progress
 )
 
 @HiltViewModel
@@ -48,6 +54,7 @@ class DatasetInstancesViewModel @Inject constructor(
     private val datasetInstacesRepository: DatasetInstancesRepository,
     private val datasetsRepository: com.ash.simpledataentry.domain.repository.DatasetsRepository,
     private val draftDao: DataValueDraftDao,
+    private val syncQueueManager: SyncQueueManager,
     private val app: Application
 ) : ViewModel() {
     private var datasetId: String = ""
@@ -65,6 +72,18 @@ class DatasetInstancesViewModel @Inject constructor(
     // Filter state
     private val _filterState = MutableStateFlow(DatasetInstanceFilterState())
     val filterState: StateFlow<DatasetInstanceFilterState> = _filterState.asStateFlow()
+
+    init {
+        // Observe sync progress from SyncQueueManager
+        viewModelScope.launch {
+            syncQueueManager.detailedProgress.collect { progress ->
+                _state.value = _state.value.copy(
+                    detailedSyncProgress = progress,
+                    isSyncing = progress != null
+                )
+            }
+        }
+    }
 
     /**
      * Creates a unique key for a dataset instance based on its identity
@@ -92,24 +111,73 @@ class DatasetInstancesViewModel @Inject constructor(
             return
         }
 
-        Log.d("DatasetInstancesVM", "Loading dataset data for ID: $datasetId")
+        Log.d("DatasetInstancesVM", "Enhanced loading dataset data for ID: $datasetId")
         viewModelScope.launch {
-            _state.value = _state.value.copy(isLoading = true, error = null)
+            _state.value = _state.value.copy(
+                isLoading = true,
+                error = null,
+                navigationProgress = NavigationProgress(
+                    phase = LoadingPhase.INITIALIZING,
+                    overallPercentage = 10,
+                    phaseTitle = LoadingPhase.INITIALIZING.title,
+                    phaseDetail = "Preparing to load data..."
+                )
+            )
             try {
+                // Step 1: Load Configuration (10-30%)
+                _state.value = _state.value.copy(
+                    navigationProgress = NavigationProgress(
+                        phase = LoadingPhase.LOADING_DATA,
+                        overallPercentage = 25,
+                        phaseTitle = LoadingPhase.LOADING_DATA.title,
+                        phaseDetail = "Loading configuration..."
+                    )
+                )
+
                 Log.d("DatasetInstancesVM", "Fetching dataset instances")
                 val attributeOptionCombos = dataEntryRepository.getAttributeOptionCombos(datasetId)
                 Log.d("DatasetInstancesVM", "getAttributeOptionCombos returned: $attributeOptionCombos")
                 
+                // Step 2: Get Dataset Information (30-50%)
+                _state.value = _state.value.copy(
+                    navigationProgress = NavigationProgress(
+                        phase = LoadingPhase.LOADING_DATA,
+                        overallPercentage = 40,
+                        phaseTitle = LoadingPhase.LOADING_DATA.title,
+                        phaseDetail = "Fetching dataset information..."
+                    )
+                )
+
                 // Get dataset information
                 var dataset: com.ash.simpledataentry.domain.model.Dataset? = null
                 datasetsRepository.getDatasets().collect { datasets ->
                     dataset = datasets.find { it.id == datasetId }
                 }
                 
+                // Step 3: Load Instances (50-70%)
+                _state.value = _state.value.copy(
+                    navigationProgress = NavigationProgress(
+                        phase = LoadingPhase.LOADING_DATA,
+                        overallPercentage = 60,
+                        phaseTitle = LoadingPhase.LOADING_DATA.title,
+                        phaseDetail = "Loading dataset instances..."
+                    )
+                )
+
                 val instancesResult = getDatasetInstancesUseCase(datasetId)
                 instancesResult.fold(
                     onSuccess = { instances ->
                         Log.d("DatasetInstancesVM", "Received "+instances.size+" instances")
+
+                        // Step 4: Process Draft Status (70-90%)
+                        _state.value = _state.value.copy(
+                            navigationProgress = NavigationProgress(
+                                phase = LoadingPhase.PROCESSING_DATA,
+                                overallPercentage = 80,
+                                phaseTitle = LoadingPhase.PROCESSING_DATA.title,
+                                phaseDetail = "Checking draft status..."
+                            )
+                        )
 
                         // Check for instances with draft values (real sync status)
                         val instancesWithDrafts = mutableSetOf<String>()
@@ -133,6 +201,16 @@ class DatasetInstancesViewModel @Inject constructor(
 
                         Log.d("DatasetInstancesVM", "Found ${instancesWithDrafts.size} instances with local draft values")
 
+                        // Step 5: Finalizing (90-100%)
+                        _state.value = _state.value.copy(
+                            navigationProgress = NavigationProgress(
+                                phase = LoadingPhase.COMPLETING,
+                                overallPercentage = 100,
+                                phaseTitle = LoadingPhase.COMPLETING.title,
+                                phaseDetail = "Ready!"
+                            )
+                        )
+
                         _state.value = _state.value.copy(
                             instances = instances,
                             filteredInstances = applyFilters(orderInstances(instances)),
@@ -141,7 +219,8 @@ class DatasetInstancesViewModel @Inject constructor(
                             attributeOptionCombos = attributeOptionCombos,
                             dataset = dataset,
                             localInstanceCount = instancesWithDrafts.size,
-                            instancesWithDrafts = instancesWithDrafts
+                            instancesWithDrafts = instancesWithDrafts,
+                            navigationProgress = null // Clear progress when done
                         )
                     },
                     onFailure = { error ->
@@ -151,7 +230,8 @@ class DatasetInstancesViewModel @Inject constructor(
                             error = error.message ?: "Failed to load dataset data",
                             attributeOptionCombos = attributeOptionCombos,
                             dataset = dataset,
-                            localInstanceCount = 0
+                            localInstanceCount = 0,
+                            navigationProgress = NavigationProgress.error(error.message ?: "Failed to load dataset data")
                         )
                     }
                 )
@@ -159,7 +239,8 @@ class DatasetInstancesViewModel @Inject constructor(
                 Log.e("DatasetInstancesVM", "Error loading data", e)
                 _state.value = _state.value.copy(
                     isLoading = false,
-                    error = e.message ?: "Failed to load dataset data"
+                    error = e.message ?: "Failed to load dataset data",
+                    navigationProgress = NavigationProgress.error(e.message ?: "Failed to load dataset data")
                 )
             }
         }
@@ -171,65 +252,40 @@ class DatasetInstancesViewModel @Inject constructor(
             return
         }
 
-        Log.d("DatasetInstancesVM", "Starting sync for dataset: $datasetId, uploadFirst: $uploadFirst")
+        Log.d("DatasetInstancesVM", "Starting enhanced sync for dataset: $datasetId, uploadFirst: $uploadFirst")
         viewModelScope.launch {
-            _state.value = _state.value.copy(isSyncing = true, error = null)
             try {
-                if (!NetworkUtils.isNetworkAvailable(app.applicationContext)) {
-                    _state.value = _state.value.copy(
-                        isSyncing = false,
-                        error = "No network connection. Sync will be attempted when online."
-                    )
-                    return@launch
-                }
-                
-                if (uploadFirst) {
-                    Log.d("DatasetInstancesVM", "Step 1: Uploading local data")
-                    // 1. Push all local data (drafts/unsynced) to server first
-                    dataEntryRepository.pushAllLocalData()
-                    Log.d("DatasetInstancesVM", "Step 1 completed: Local data uploaded")
-                }
-                
-                Log.d("DatasetInstancesVM", "Step 2: Pulling remote updates")
-                // 2. Pull updates from server and harmonize
-                val result = syncDatasetInstancesUseCase()
-                result.fold(
+                // Use the enhanced SyncQueueManager which provides detailed progress tracking
+                val syncResult = syncQueueManager.startSync(forceSync = uploadFirst)
+                syncResult.fold(
                     onSuccess = {
+                        Log.d("DatasetInstancesVM", "Enhanced sync completed successfully")
                         loadData() // Reload all data after sync
                         val message = if (uploadFirst) {
-                            "Local data uploaded and remote updates downloaded successfully"
+                            "Data synchronized successfully with enhanced progress tracking"
                         } else {
                             "Dataset instances synced successfully"
                         }
                         _state.value = _state.value.copy(
-                            isSyncing = false,
-                            successMessage = message
+                            successMessage = message,
+                            detailedSyncProgress = null // Clear progress when done
                         )
-                        Log.d("DatasetInstancesVM", "Sync completed successfully")
                     },
                     onFailure = { error ->
-                        Log.e("DatasetInstancesVM", "Sync failed", error)
-                        val errorMessage = if (uploadFirst) {
-                            "Upload succeeded but failed to download updates: ${error.message}"
-                        } else {
-                            error.message ?: "Failed to sync dataset instances"
-                        }
+                        Log.e("DatasetInstancesVM", "Enhanced sync failed", error)
+                        val errorMessage = error.message ?: "Failed to sync dataset instances"
                         _state.value = _state.value.copy(
-                            isSyncing = false,
-                            error = errorMessage
+                            error = errorMessage,
+                            detailedSyncProgress = null // Clear progress on failure
                         )
                     }
                 )
             } catch (e: Exception) {
-                Log.e("DatasetInstancesVM", "Sync failed", e)
-                val errorMessage = if (uploadFirst) {
-                    "Sync failed during ${if (e.message?.contains("upload") == true) "upload" else "download"}: ${e.message}"
-                } else {
-                    e.message ?: "Failed to sync dataset instances"
-                }
+                Log.e("DatasetInstancesVM", "Enhanced sync failed", e)
                 _state.value = _state.value.copy(
                     isSyncing = false,
-                    error = errorMessage
+                    error = e.message ?: "Failed to sync dataset instances",
+                    detailedSyncProgress = null
                 )
             }
         }
@@ -237,6 +293,13 @@ class DatasetInstancesViewModel @Inject constructor(
 
     fun manualRefresh() {
         loadData()
+    }
+
+    fun dismissSyncOverlay() {
+        _state.value = _state.value.copy(
+            detailedSyncProgress = null,
+            isSyncing = false
+        )
     }
 
     fun toggleBulkCompletionMode() {

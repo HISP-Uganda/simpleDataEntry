@@ -11,6 +11,8 @@ import com.ash.simpledataentry.domain.model.SortOrder
 import com.ash.simpledataentry.domain.model.SyncStatus
 import com.ash.simpledataentry.domain.useCase.FilterDatasetsUseCase
 import com.ash.simpledataentry.data.sync.BackgroundSyncManager
+import com.ash.simpledataentry.data.sync.DetailedSyncProgress
+import com.ash.simpledataentry.data.sync.SyncQueueManager
 import com.ash.simpledataentry.domain.useCase.GetDatasetsUseCase
 import com.ash.simpledataentry.domain.useCase.LogoutUseCase
 import com.ash.simpledataentry.domain.useCase.SyncDatasetsUseCase
@@ -37,7 +39,8 @@ sealed class DatasetsState {
         val isSyncing: Boolean = false,
         val syncMessage: String? = null,
         val syncProgress: Int = 0,
-        val syncStep: String? = null
+        val syncStep: String? = null,
+        val detailedSyncProgress: DetailedSyncProgress? = null // Enhanced sync progress
     ) : DatasetsState()
 }
 @HiltViewModel
@@ -49,7 +52,8 @@ class DatasetsViewModel @Inject constructor(
     private val backgroundSyncManager: BackgroundSyncManager,
     private val backgroundDataPrefetcher: BackgroundDataPrefetcher,
     private val sessionManager: SessionManager,
-    private val savedAccountRepository: SavedAccountRepository
+    private val savedAccountRepository: SavedAccountRepository,
+    private val syncQueueManager: SyncQueueManager
 ) : ViewModel() {
 
     private val _uiState = MutableStateFlow<DatasetsState>(DatasetsState.Loading)
@@ -59,6 +63,19 @@ class DatasetsViewModel @Inject constructor(
         loadDatasets()
         // Start background prefetching after datasets are loaded
         backgroundDataPrefetcher.startPrefetching()
+
+        // Observe sync progress from SyncQueueManager
+        viewModelScope.launch {
+            syncQueueManager.detailedProgress.collect { progress ->
+                val currentState = _uiState.value
+                if (currentState is DatasetsState.Success) {
+                    _uiState.value = currentState.copy(
+                        detailedSyncProgress = progress,
+                        isSyncing = progress != null
+                    )
+                }
+            }
+        }
     }
 
     fun loadDatasets() {
@@ -85,20 +102,55 @@ class DatasetsViewModel @Inject constructor(
         }
     }
 
-    fun syncDatasets() {
+    fun syncDatasets(uploadFirst: Boolean = false) {
         val currentState = _uiState.value
         if (currentState is DatasetsState.Success && !currentState.isSyncing) {
-            Log.d("DatasetsViewModel", "=== DATASETS SYNC: Triggering WorkManager sync ===")
-            _uiState.value = currentState.copy(isSyncing = true, syncProgress = 0, syncStep = "Starting sync...")
-
-            // Use WorkManager for background-safe sync and observe progress
-            val workName = backgroundSyncManager.triggerImmediateSync()
+            Log.d("DatasetsViewModel", "Starting enhanced sync for datasets, uploadFirst: $uploadFirst")
 
             viewModelScope.launch {
-                // Set a success message for immediate UI feedback
-                // The actual sync completion will be handled by WorkManager
-                kotlinx.coroutines.delay(2000) // Brief delay to show sync started
-                loadDatasets() // Reload after sync is triggered
+                try {
+                    // Use the enhanced SyncQueueManager which provides detailed progress tracking
+                    val syncResult = syncQueueManager.startSync(forceSync = uploadFirst)
+                    syncResult.fold(
+                        onSuccess = {
+                            Log.d("DatasetsViewModel", "Enhanced sync completed successfully")
+                            loadDatasets() // Reload all data after sync
+                            val message = if (uploadFirst) {
+                                "Data synchronized successfully with enhanced progress tracking"
+                            } else {
+                                "Datasets synced successfully"
+                            }
+                            val state = _uiState.value
+                            if (state is DatasetsState.Success) {
+                                _uiState.value = state.copy(
+                                    syncMessage = message,
+                                    detailedSyncProgress = null // Clear progress when done
+                                )
+                            }
+                        },
+                        onFailure = { error ->
+                            Log.e("DatasetsViewModel", "Enhanced sync failed", error)
+                            val errorMessage = error.message ?: "Failed to sync datasets"
+                            val state = _uiState.value
+                            if (state is DatasetsState.Success) {
+                                _uiState.value = state.copy(
+                                    syncMessage = errorMessage,
+                                    detailedSyncProgress = null // Clear progress on failure
+                                )
+                            }
+                        }
+                    )
+                } catch (e: Exception) {
+                    Log.e("DatasetsViewModel", "Enhanced sync failed", e)
+                    val state = _uiState.value
+                    if (state is DatasetsState.Success) {
+                        _uiState.value = state.copy(
+                            isSyncing = false,
+                            syncMessage = e.message ?: "Failed to sync datasets",
+                            detailedSyncProgress = null
+                        )
+                    }
+                }
             }
         } else {
             Log.w("DatasetsViewModel", "DATASETS SYNC: Cannot sync - already syncing or state is not Success")
@@ -189,6 +241,16 @@ class DatasetsViewModel @Inject constructor(
         val currentState = _uiState.value
         if (currentState is DatasetsState.Success) {
             _uiState.value = currentState.copy(syncMessage = null)
+        }
+    }
+
+    fun dismissSyncOverlay() {
+        val currentState = _uiState.value
+        if (currentState is DatasetsState.Success) {
+            _uiState.value = currentState.copy(
+                detailedSyncProgress = null,
+                isSyncing = false
+            )
         }
     }
 
