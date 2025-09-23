@@ -139,6 +139,125 @@ fun AppNavigation(
         composable(Screen.ReportIssuesScreen.route) {
             ReportIssuesScreen(navController = navController)
         }
+
+        // Tracker Navigation Routes
+
+        // Route for tracker enrollment creation
+        composable(
+            route = "CreateEnrollment/{programId}/{programName}",
+            arguments = listOf(
+                navArgument("programId") { type = NavType.StringType },
+                navArgument("programName") { type = NavType.StringType }
+            )
+        ) { backStackEntry ->
+            val programId = backStackEntry.arguments?.getString("programId") ?: ""
+            val programName = backStackEntry.arguments?.getString("programName") ?: ""
+
+            TrackerEnrollmentScreen(
+                navController = navController,
+                programId = programId,
+                programName = programName,
+                enrollmentId = null // Creating new enrollment
+            )
+        }
+
+        // Route for tracker enrollment editing
+        composable(
+            route = "EditEnrollment/{programId}/{programName}/{enrollmentId}",
+            arguments = listOf(
+                navArgument("programId") { type = NavType.StringType },
+                navArgument("programName") { type = NavType.StringType },
+                navArgument("enrollmentId") { type = NavType.StringType }
+            )
+        ) { backStackEntry ->
+            val programId = backStackEntry.arguments?.getString("programId") ?: ""
+            val programName = backStackEntry.arguments?.getString("programName") ?: ""
+            val enrollmentId = backStackEntry.arguments?.getString("enrollmentId") ?: ""
+
+            TrackerEnrollmentScreen(
+                navController = navController,
+                programId = programId,
+                programName = programName,
+                enrollmentId = enrollmentId
+            )
+        }
+
+        // Route for event creation
+        composable(
+            route = "CreateEvent/{programId}/{programName}/{programStageId?}",
+            arguments = listOf(
+                navArgument("programId") { type = NavType.StringType },
+                navArgument("programName") { type = NavType.StringType },
+                navArgument("programStageId") {
+                    type = NavType.StringType
+                    nullable = true
+                    defaultValue = null
+                }
+            )
+        ) { backStackEntry ->
+            val programId = backStackEntry.arguments?.getString("programId") ?: ""
+            val programName = backStackEntry.arguments?.getString("programName") ?: ""
+            val programStageId = backStackEntry.arguments?.getString("programStageId")
+
+            EventCaptureScreen(
+                navController = navController,
+                programId = programId,
+                programName = programName,
+                programStageId = programStageId,
+                eventId = null,
+                enrollmentId = null
+            )
+        }
+
+        // Route for event editing
+        composable(
+            route = "EditEvent/{programId}/{programName}/{eventId}/{enrollmentId?}",
+            arguments = listOf(
+                navArgument("programId") { type = NavType.StringType },
+                navArgument("programName") { type = NavType.StringType },
+                navArgument("eventId") { type = NavType.StringType },
+                navArgument("enrollmentId") {
+                    type = NavType.StringType
+                    nullable = true
+                    defaultValue = null
+                }
+            )
+        ) { backStackEntry ->
+            val programId = backStackEntry.arguments?.getString("programId") ?: ""
+            val programName = backStackEntry.arguments?.getString("programName") ?: ""
+            val eventId = backStackEntry.arguments?.getString("eventId") ?: ""
+            val enrollmentId = backStackEntry.arguments?.getString("enrollmentId")
+
+            EventCaptureScreen(
+                navController = navController,
+                programId = programId,
+                programName = programName,
+                programStageId = null,
+                eventId = eventId,
+                enrollmentId = enrollmentId
+            )
+        }
+
+        // Route for tracker dashboard (enrollment details with events)
+        composable(
+            route = "TrackerDashboard/{enrollmentId}/{programId}/{programName}",
+            arguments = listOf(
+                navArgument("enrollmentId") { type = NavType.StringType },
+                navArgument("programId") { type = NavType.StringType },
+                navArgument("programName") { type = NavType.StringType }
+            )
+        ) { backStackEntry ->
+            val enrollmentId = backStackEntry.arguments?.getString("enrollmentId") ?: ""
+            val programId = backStackEntry.arguments?.getString("programId") ?: ""
+            val programName = backStackEntry.arguments?.getString("programName") ?: ""
+
+            TrackerDashboardScreen(
+                navController = navController,
+                enrollmentId = enrollmentId,
+                programId = programId,
+                programName = programName
+            )
+        }
     }
 
     }

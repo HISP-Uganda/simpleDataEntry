@@ -3,12 +3,7 @@ package com.ash.simpledataentry.presentation.datasets
 import android.util.Log
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
-import com.ash.simpledataentry.domain.model.Dataset
-import com.ash.simpledataentry.domain.model.FilterState
-import com.ash.simpledataentry.domain.model.PeriodFilterType
-import com.ash.simpledataentry.domain.model.SortBy
-import com.ash.simpledataentry.domain.model.SortOrder
-import com.ash.simpledataentry.domain.model.SyncStatus
+import com.ash.simpledataentry.domain.model.*
 import com.ash.simpledataentry.domain.useCase.FilterDatasetsUseCase
 import com.ash.simpledataentry.data.sync.BackgroundSyncManager
 import com.ash.simpledataentry.data.sync.DetailedSyncProgress
@@ -33,9 +28,10 @@ sealed class DatasetsState {
     data object Loading : DatasetsState()
     data class Error(val message: String) : DatasetsState()
     data class Success(
-        val datasets: List<Dataset>,
-        val filteredDatasets: List<Dataset> = datasets,
+        val programs: List<ProgramItem>,
+        val filteredPrograms: List<ProgramItem> = programs,
         val currentFilter: FilterState = FilterState(),
+        val currentProgramType: ProgramType = ProgramType.ALL,
         val isSyncing: Boolean = false,
         val syncMessage: String? = null,
         val syncProgress: Int = 0,
@@ -45,6 +41,7 @@ sealed class DatasetsState {
 }
 @HiltViewModel
 class DatasetsViewModel @Inject constructor(
+    private val datasetsRepository: com.ash.simpledataentry.domain.repository.DatasetsRepository,
     private val getDatasetsUseCase: GetDatasetsUseCase,
     private val syncDatasetsUseCase: SyncDatasetsUseCase,
     private val filterDatasetsUseCase: FilterDatasetsUseCase,
@@ -60,8 +57,8 @@ class DatasetsViewModel @Inject constructor(
     val uiState: StateFlow<DatasetsState> = _uiState.asStateFlow()
 
     init {
-        loadDatasets()
-        // Start background prefetching after datasets are loaded
+        loadPrograms()
+        // Start background prefetching after programs are loaded
         backgroundDataPrefetcher.startPrefetching()
 
         // Observe sync progress from SyncQueueManager
@@ -78,21 +75,21 @@ class DatasetsViewModel @Inject constructor(
         }
     }
 
-    fun loadDatasets() {
+    fun loadPrograms() {
         viewModelScope.launch {
             _uiState.value = DatasetsState.Loading
-            getDatasetsUseCase()
+            datasetsRepository.getAllPrograms()
                 .catch { exception ->
                     _uiState.value = DatasetsState.Error(
-                        message = exception.message ?: "Failed to load datasets"
+                        message = exception.message ?: "Failed to load programs"
                     )
                 }
-                .collect { datasets ->
+                .collect { programs ->
                     val currentState = _uiState.value
                     val wasSyncing = (currentState as? DatasetsState.Success)?.isSyncing == true
                     _uiState.value = DatasetsState.Success(
-                        datasets = datasets,
-                        filteredDatasets = datasets,
+                        programs = programs,
+                        filteredPrograms = programs,
                         isSyncing = false,
                         syncMessage = if (wasSyncing) "Sync completed successfully!" else null,
                         syncProgress = 0,
@@ -114,7 +111,7 @@ class DatasetsViewModel @Inject constructor(
                     syncResult.fold(
                         onSuccess = {
                             Log.d("DatasetsViewModel", "Enhanced sync completed successfully")
-                            loadDatasets() // Reload all data after sync
+                            loadPrograms() // Reload all data after sync
                             val message = if (uploadFirst) {
                                 "Data synchronized successfully with enhanced progress tracking"
                             } else {
@@ -168,7 +165,7 @@ class DatasetsViewModel @Inject constructor(
                     syncResult.fold(
                         onSuccess = {
                             Log.d("DatasetsViewModel", "Download-only sync completed successfully")
-                            loadDatasets() // Reload all data after download
+                            loadPrograms() // Reload all data after download
                             val state = _uiState.value
                             if (state is DatasetsState.Success) {
                                 _uiState.value = state.copy(
@@ -209,68 +206,68 @@ class DatasetsViewModel @Inject constructor(
     fun applyFilter(filterState: FilterState) {
         val currentState = _uiState.value
         if (currentState is DatasetsState.Success) {
-            val filteredDatasets = filterDatasets(currentState.datasets, filterState)
+            val filteredPrograms = filterPrograms(currentState.programs, filterState, currentState.currentProgramType)
             _uiState.value = currentState.copy(
-                filteredDatasets = filteredDatasets,
+                filteredPrograms = filteredPrograms,
                 currentFilter = filterState
             )
         }
     }
 
-    private fun filterDatasets(datasets: List<Dataset>, filterState: FilterState): List<Dataset> {
-        val periodHelper = PeriodHelper()
-        val periodIds = when (filterState.periodType) {
-            PeriodFilterType.RELATIVE -> filterState.relativePeriod?.let {
-                periodHelper.getPeriodIds(it)
-            } ?: emptyList()
-            PeriodFilterType.CUSTOM_RANGE -> {
-                if (filterState.customFromDate != null && filterState.customToDate != null) {
-                    periodHelper.getPeriodIds(filterState.customFromDate, filterState.customToDate)
-                } else emptyList()
-            }
-            else -> emptyList()
+    fun filterByProgramType(programType: ProgramType) {
+        val currentState = _uiState.value
+        if (currentState is DatasetsState.Success) {
+            val filteredPrograms = filterPrograms(currentState.programs, currentState.currentFilter, programType)
+            _uiState.value = currentState.copy(
+                filteredPrograms = filteredPrograms,
+                currentProgramType = programType
+            )
+        }
+    }
+
+    private fun filterPrograms(programs: List<ProgramItem>, filterState: FilterState, programType: ProgramType): List<ProgramItem> {
+        // First filter by program type
+        val typeFiltered = if (programType == ProgramType.ALL) {
+            programs
+        } else {
+            programs.filter { it.programType == programType }
         }
 
-        val filteredDatasets = datasets.filter { dataset ->
-            // Search query filter
-            val matchesSearch = if (filterState.searchQuery.isBlank()) {
-                true
-            } else {
-                dataset.name.contains(filterState.searchQuery, ignoreCase = true) ||
-                dataset.description?.contains(filterState.searchQuery, ignoreCase = true) == true
+        // Apply search filter
+        val searchFiltered = if (filterState.searchQuery.isBlank()) {
+            typeFiltered
+        } else {
+            typeFiltered.filter { program ->
+                program.name.contains(filterState.searchQuery, ignoreCase = true) ||
+                program.description?.contains(filterState.searchQuery, ignoreCase = true) == true
             }
+        }
 
-            // Period filter
-            val matchesPeriod = if (filterState.periodType == PeriodFilterType.ALL) {
-                true
-            } else {
-                // This is a simplified check. A real implementation would need to check
-                // if the dataset's period type is compatible with the selected periods.
-                // For now, we assume all datasets can be filtered by any period.
-                true
-            }
+        // Period filter - for datasets only, simplified implementation
+        val periodFiltered = if (filterState.periodType == PeriodFilterType.ALL) {
+            searchFiltered
+        } else {
+            // For now, we assume all programs can be filtered by any period
+            // In a real implementation, you would check period compatibility
+            searchFiltered
+        }
 
-            // Sync status filter
-            val matchesSyncStatus = when (filterState.syncStatus) {
-                SyncStatus.ALL -> true
-                // In a real scenario, you would check the sync status of the dataset instances
-                // related to this dataset. For now, we assume this information is not available
-                // at the dataset level and we will not filter by sync status.
-                else -> true
-            }
-
-            matchesSearch && matchesPeriod && matchesSyncStatus
+        // Sync status filter - simplified implementation
+        val syncFiltered = when (filterState.syncStatus) {
+            SyncStatus.ALL -> periodFiltered
+            // In a real scenario, you would check the sync status of the program instances
+            else -> periodFiltered
         }
 
         // Apply sorting
-        return sortDatasets(filteredDatasets, filterState.sortBy, filterState.sortOrder)
+        return sortPrograms(syncFiltered, filterState.sortBy, filterState.sortOrder)
     }
 
-    private fun sortDatasets(datasets: List<Dataset>, sortBy: SortBy, sortOrder: SortOrder): List<Dataset> {
+    private fun sortPrograms(programs: List<ProgramItem>, sortBy: SortBy, sortOrder: SortOrder): List<ProgramItem> {
         val sorted = when (sortBy) {
-            SortBy.NAME -> datasets.sortedBy { it.name.lowercase() }
-            SortBy.CREATED_DATE -> datasets.sortedBy { it.id } // Use ID as fallback since no created date field
-            SortBy.ENTRY_COUNT -> datasets.sortedBy { it.instanceCount }
+            SortBy.NAME -> programs.sortedBy { it.name.lowercase() }
+            SortBy.CREATED_DATE -> programs.sortedBy { it.id } // Use ID as fallback since no created date field
+            SortBy.ENTRY_COUNT -> programs.sortedBy { it.instanceCount }
         }
 
         return if (sortOrder == SortOrder.DESCENDING) sorted.reversed() else sorted
@@ -280,8 +277,9 @@ class DatasetsViewModel @Inject constructor(
         val currentState = _uiState.value
         if (currentState is DatasetsState.Success) {
             _uiState.value = currentState.copy(
-                filteredDatasets = currentState.datasets,
-                currentFilter = FilterState()
+                filteredPrograms = currentState.programs,
+                currentFilter = FilterState(),
+                currentProgramType = ProgramType.ALL
             )
         }
     }

@@ -47,7 +47,12 @@ import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Snackbar
 import androidx.compose.material3.SnackbarHost
 import androidx.compose.material3.SnackbarHostState
+import androidx.compose.material3.ScrollableTabRow
+import androidx.compose.material3.Tab
+import androidx.compose.material3.TabRowDefaults
+import androidx.compose.material3.TabRowDefaults.tabIndicatorOffset
 import androidx.compose.material3.Text
+import androidx.compose.material3.Surface
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.rememberDrawerState
 import androidx.compose.foundation.BorderStroke
@@ -72,6 +77,8 @@ import com.ash.simpledataentry.data.SessionManager
 import com.ash.simpledataentry.domain.model.FilterState
 import com.ash.simpledataentry.domain.model.DatasetPeriodType
 import com.ash.simpledataentry.domain.model.OrganizationUnitFilter
+import com.ash.simpledataentry.domain.model.ProgramItem
+import com.ash.simpledataentry.domain.model.ProgramType as DomainProgramType
 import com.ash.simpledataentry.navigation.Screen
 import com.ash.simpledataentry.presentation.core.BaseScreen
 import kotlinx.coroutines.launch
@@ -428,6 +435,82 @@ fun DatasetsScreen(
                         }
                     }
 
+                    // Program type filter tabs
+                    if (datasetsState is DatasetsState.Success) {
+                        val successState = datasetsState as DatasetsState.Success
+
+                        ScrollableTabRow(
+                            selectedTabIndex = when (successState.currentProgramType) {
+                                DomainProgramType.ALL -> 0
+                                DomainProgramType.DATASET -> 1
+                                DomainProgramType.TRACKER -> 2
+                                DomainProgramType.EVENT -> 3
+                            },
+                            modifier = Modifier.fillMaxWidth(),
+                            containerColor = MaterialTheme.colorScheme.surface,
+                            contentColor = MaterialTheme.colorScheme.onSurface,
+                            indicator = { tabPositions ->
+                                TabRowDefaults.Indicator(
+                                    modifier = Modifier.tabIndicatorOffset(tabPositions[when (successState.currentProgramType) {
+                                        DomainProgramType.ALL -> 0
+                                        DomainProgramType.DATASET -> 1
+                                        DomainProgramType.TRACKER -> 2
+                                        DomainProgramType.EVENT -> 3
+                                    }]),
+                                    color = MaterialTheme.colorScheme.primary
+                                )
+                            }
+                        ) {
+                            // All Programs Tab
+                            Tab(
+                                selected = successState.currentProgramType == DomainProgramType.ALL,
+                                onClick = { viewModel.filterByProgramType(DomainProgramType.ALL) },
+                                text = {
+                                    Text(
+                                        text = "All",
+                                        style = MaterialTheme.typography.labelMedium
+                                    )
+                                }
+                            )
+
+                            // Datasets Tab
+                            Tab(
+                                selected = successState.currentProgramType == DomainProgramType.DATASET,
+                                onClick = { viewModel.filterByProgramType(DomainProgramType.DATASET) },
+                                text = {
+                                    Text(
+                                        text = "Datasets",
+                                        style = MaterialTheme.typography.labelMedium
+                                    )
+                                }
+                            )
+
+                            // Tracker Programs Tab
+                            Tab(
+                                selected = successState.currentProgramType == DomainProgramType.TRACKER,
+                                onClick = { viewModel.filterByProgramType(DomainProgramType.TRACKER) },
+                                text = {
+                                    Text(
+                                        text = "Tracker",
+                                        style = MaterialTheme.typography.labelMedium
+                                    )
+                                }
+                            )
+
+                            // Event Programs Tab
+                            Tab(
+                                selected = successState.currentProgramType == DomainProgramType.EVENT,
+                                onClick = { viewModel.filterByProgramType(DomainProgramType.EVENT) },
+                                text = {
+                                    Text(
+                                        text = "Events",
+                                        style = MaterialTheme.typography.labelMedium
+                                    )
+                                }
+                            )
+                        }
+                    }
+
                     // Main content
                     when (datasetsState) {
                         is DatasetsState.Loading -> {
@@ -466,13 +549,13 @@ fun DatasetsScreen(
                             }
 
 
-                            val datasets = successState.filteredDatasets
+                            val programs = successState.filteredPrograms
                             LazyColumn(
                                 modifier = Modifier.fillMaxSize(),
                                 contentPadding = PaddingValues(16.dp),
                                 verticalArrangement = Arrangement.spacedBy(8.dp)
                             ) {
-                                items(datasets) { dataset ->
+                                items(programs) { program ->
 
                                     Card(
                                         modifier = Modifier.fillMaxWidth(),
@@ -484,7 +567,7 @@ fun DatasetsScreen(
                                             pressedElevation = 4.dp
                                         ),
                                         onClick = {
-                                            navController.navigate("DatasetInstances/${dataset.id}/${dataset.name}")
+                                            navController.navigate("DatasetInstances/${program.id}/${program.name}")
                                         }
                                     ) {
                                         Row(
@@ -496,9 +579,17 @@ fun DatasetsScreen(
                                         ) {
                                             // Icon
                                             DatasetIcon(
-                                                style = dataset.style,
+                                                style = when (program) {
+                                                    is ProgramItem.DatasetProgram -> program.style
+                                                    else -> null
+                                                },
                                                 size = 40.dp,
-                                                programType = ProgramType.DATASET
+                                                programType = when (program.programType) {
+                                                    DomainProgramType.DATASET -> com.ash.simpledataentry.presentation.datasets.components.ProgramType.DATASET
+                                                    DomainProgramType.TRACKER -> com.ash.simpledataentry.presentation.datasets.components.ProgramType.TRACKER_PROGRAM
+                                                    DomainProgramType.EVENT -> com.ash.simpledataentry.presentation.datasets.components.ProgramType.EVENT_PROGRAM
+                                                    else -> com.ash.simpledataentry.presentation.datasets.components.ProgramType.DATASET
+                                                }
                                             )
 
                                             // Content column
@@ -506,33 +597,72 @@ fun DatasetsScreen(
                                                 modifier = Modifier.weight(1f),
                                                 verticalArrangement = Arrangement.spacedBy(4.dp)
                                             ) {
-                                                // Title
-                                                Text(
-                                                    text = dataset.name,
-                                                    style = MaterialTheme.typography.titleMedium,
-                                                    color = MaterialTheme.colorScheme.onSurface,
-                                                    maxLines = 2
-                                                )
+                                                // Title with program type badge
+                                                Row(
+                                                    verticalAlignment = Alignment.CenterVertically,
+                                                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                                                ) {
+                                                    Text(
+                                                        text = program.name,
+                                                        style = MaterialTheme.typography.titleMedium,
+                                                        color = MaterialTheme.colorScheme.onSurface,
+                                                        maxLines = 2,
+                                                        modifier = Modifier.weight(1f, fill = false)
+                                                    )
+
+                                                    // Program type badge
+                                                    if (program.programType != DomainProgramType.ALL) {
+                                                        Surface(
+                                                            color = when (program.programType) {
+                                                                DomainProgramType.DATASET -> MaterialTheme.colorScheme.primaryContainer
+                                                                DomainProgramType.TRACKER -> MaterialTheme.colorScheme.secondaryContainer
+                                                                DomainProgramType.EVENT -> MaterialTheme.colorScheme.tertiaryContainer
+                                                                else -> MaterialTheme.colorScheme.surfaceVariant
+                                                            },
+                                                            contentColor = when (program.programType) {
+                                                                DomainProgramType.DATASET -> MaterialTheme.colorScheme.onPrimaryContainer
+                                                                DomainProgramType.TRACKER -> MaterialTheme.colorScheme.onSecondaryContainer
+                                                                DomainProgramType.EVENT -> MaterialTheme.colorScheme.onTertiaryContainer
+                                                                else -> MaterialTheme.colorScheme.onSurfaceVariant
+                                                            },
+                                                            shape = RoundedCornerShape(12.dp),
+                                                            modifier = Modifier.padding(0.dp)
+                                                        ) {
+                                                            Text(
+                                                                text = when (program.programType) {
+                                                                    DomainProgramType.DATASET -> "Dataset"
+                                                                    DomainProgramType.TRACKER -> "Tracker"
+                                                                    DomainProgramType.EVENT -> "Event"
+                                                                    else -> ""
+                                                                },
+                                                                style = MaterialTheme.typography.labelSmall,
+                                                                modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp)
+                                                            )
+                                                        }
+                                                    }
+                                                }
 
                                                 // Description (if available)
-                                                if (dataset.description?.isNotBlank() == true) {
-                                                    Text(
-                                                        text = dataset.description,
+                                                program.description?.let { description ->
+                                                    if (description.isNotBlank()) {
+                                                        Text(
+                                                            text = description,
                                                         style = MaterialTheme.typography.bodyMedium,
                                                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                                                         maxLines = 2
                                                     )
+                                                    }
                                                 }
                                             }
 
                                             // Entry count display
-                                            if (dataset.instanceCount > 0) {
+                                            if (program.instanceCount > 0) {
                                                 Column(
                                                     horizontalAlignment = Alignment.End,
                                                     verticalArrangement = Arrangement.spacedBy(2.dp)
                                                 ) {
                                                     Text(
-                                                        text = "${dataset.instanceCount} entries",
+                                                        text = "${program.instanceCount} entries",
                                                         style = MaterialTheme.typography.bodySmall,
                                                         color = MaterialTheme.colorScheme.onSurfaceVariant
                                                     )

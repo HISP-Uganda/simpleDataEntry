@@ -498,19 +498,38 @@ fun DatasetInstancesScreen(
                                     Log.e("DatasetInstancesScreen", "Error parsing date: ", e)
                                     "N/A"
                                 }
-                                val periodText =
-                                    instance.period.toString().replace("Period(id=", "")
-                                        .replace(")", "")
-                                val attrComboName =
-                                    state.attributeOptionCombos.find { it.first == instance.attributeOptionCombo }?.second
-                                        ?: instance.attributeOptionCombo
-                                val showAttrCombo =
-                                    !attrComboName.equals("default", ignoreCase = true)
-                                val isComplete = instance.state == DatasetInstanceState.COMPLETE
+                                val periodText = when (instance) {
+                                    is com.ash.simpledataentry.domain.model.ProgramInstance.DatasetInstance ->
+                                        instance.period.toString().replace("Period(id=", "").replace(")", "")
+                                    is com.ash.simpledataentry.domain.model.ProgramInstance.TrackerEnrollment ->
+                                        java.text.SimpleDateFormat("MMM dd, yyyy", java.util.Locale.getDefault()).format(instance.enrollmentDate)
+                                    is com.ash.simpledataentry.domain.model.ProgramInstance.EventInstance ->
+                                        instance.eventDate?.let { java.text.SimpleDateFormat("MMM dd, yyyy", java.util.Locale.getDefault()).format(it) } ?: "No date"
+                                }
+
+                                val attrComboName = when (instance) {
+                                    is com.ash.simpledataentry.domain.model.ProgramInstance.DatasetInstance -> {
+                                        state.attributeOptionCombos.find { it.first == instance.attributeOptionCombo }?.second
+                                            ?: instance.attributeOptionCombo
+                                    }
+                                    else -> ""
+                                }
+                                val showAttrCombo = when (instance) {
+                                    is com.ash.simpledataentry.domain.model.ProgramInstance.DatasetInstance ->
+                                        !attrComboName.equals("default", ignoreCase = true)
+                                    else -> false
+                                }
+                                val isComplete = instance.state == com.ash.simpledataentry.domain.model.ProgramInstanceState.COMPLETED
 
                                 // Check if this instance has local draft values (real sync status)
-                                val instanceKey =
-                                    "${instance.datasetId}|${instance.period.id}|${instance.organisationUnit.id}|${instance.attributeOptionCombo}"
+                                val instanceKey = when (instance) {
+                                    is com.ash.simpledataentry.domain.model.ProgramInstance.DatasetInstance ->
+                                        "${instance.programId}|${instance.period.id}|${instance.organisationUnit.id}|${instance.attributeOptionCombo}"
+                                    is com.ash.simpledataentry.domain.model.ProgramInstance.TrackerEnrollment ->
+                                        "${instance.programId}|${instance.trackedEntityInstance}|${instance.organisationUnit.id}"
+                                    is com.ash.simpledataentry.domain.model.ProgramInstance.EventInstance ->
+                                        "${instance.programId}|${instance.programStage}|${instance.organisationUnit.id}|${instance.eventDate?.time ?: 0}"
+                                }
                                 val hasLocalChanges =
                                     state.instancesWithDrafts.contains(instanceKey)
 
@@ -556,12 +575,16 @@ fun DatasetInstancesScreen(
                                                         URLEncoder.encode(datasetId, "UTF-8")
                                                     val encodedDatasetName =
                                                         URLEncoder.encode(datasetName, "UTF-8")
-                                                    navController.navigate("EditEntry/$encodedDatasetId/${instance.period.id}/${instance.organisationUnit.id}/${instance.attributeOptionCombo}/$encodedDatasetName") {
-                                                        launchSingleTop = true
-                                                        popUpTo("DatasetInstances/{datasetId}/{datasetName}") {
-                                                            saveState = true
+                                                    // Only navigate to data entry for dataset instances for now
+                                                    if (instance is com.ash.simpledataentry.domain.model.ProgramInstance.DatasetInstance) {
+                                                        navController.navigate("EditEntry/$encodedDatasetId/${instance.period.id}/${instance.organisationUnit.id}/${instance.attributeOptionCombo}/$encodedDatasetName") {
+                                                            launchSingleTop = true
+                                                            popUpTo("DatasetInstances/{datasetId}/{datasetName}") {
+                                                                saveState = true
+                                                            }
                                                         }
                                                     }
+                                                    // TODO: Add navigation for tracker enrollments and events
                                                 }
                                             }
                                         ) {

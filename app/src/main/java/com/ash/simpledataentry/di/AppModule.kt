@@ -237,9 +237,10 @@ object AppModule {
     fun provideSyncQueueManager(
         networkStateManager: NetworkStateManager,
         sessionManager: SessionManager,
-        database: AppDatabase
+        database: AppDatabase,
+        @ApplicationContext context: Context
     ): SyncQueueManager {
-        return SyncQueueManager(networkStateManager, sessionManager, database)
+        return SyncQueueManager(networkStateManager, sessionManager, database, context)
     }
 
     @Provides

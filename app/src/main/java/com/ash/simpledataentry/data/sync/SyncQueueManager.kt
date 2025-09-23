@@ -1,5 +1,7 @@
 package com.ash.simpledataentry.data.sync
 
+import android.content.Context
+import android.os.PowerManager
 import android.util.Log
 import com.ash.simpledataentry.data.SessionManager
 import com.ash.simpledataentry.data.local.AppDatabase
@@ -78,11 +80,16 @@ data class DetailedSyncProgress(
 class SyncQueueManager @Inject constructor(
     private val networkStateManager: NetworkStateManager,
     private val sessionManager: SessionManager,
-    private val database: AppDatabase
+    private val database: AppDatabase,
+    private val context: Context
 ) {
 
     private val tag = "SyncQueueManager"
     private val syncScope = CoroutineScope(Dispatchers.IO + SupervisorJob())
+
+    // Wake lock for sync resilience
+    private val powerManager = context.getSystemService(Context.POWER_SERVICE) as PowerManager
+    private var wakeLock: PowerManager.WakeLock? = null
 
     private val _syncState = MutableStateFlow(SyncState())
     val syncState: StateFlow<SyncState> = _syncState.asStateFlow()
@@ -94,23 +101,27 @@ class SyncQueueManager @Inject constructor(
     private var networkMonitorJob: Job? = null
     private var autoRetryJob: Job? = null
 
-    // Aligned timeout configuration with DHIS2 SDK recommendations - optimized for 2G compatibility
-    private val uploadTimeoutMs = 900000L // 15 minutes - extended for slow 2G connections
-    private val downloadTimeoutMs = 450000L // 7.5 minutes - extended for slow connections
-    private val connectionTimeoutMs = 45000L // 45 seconds - more generous for slow connections
-    private val connectionValidationTimeoutMs = 15000L // 15 seconds for connection validation
-    private val overallSyncTimeoutMs = 900000L // 15 minutes max for entire sync process
+    // DHIS2 SDK standard timeout configuration (v1.3.1+)
+    private val uploadTimeoutMs = 600000L // 10 minutes - DHIS2 Android SDK standard since v1.3.1
+    private val downloadTimeoutMs = 300000L // 5 minutes - proportional to upload timeout
+    private val connectionTimeoutMs = 45000L // 45 seconds - reasonable for connection establishment
+    private val connectionValidationTimeoutMs = 15000L // 15 seconds for validation calls
+    private val overallSyncTimeoutMs = 600000L // 10 minutes max - aligned with DHIS2 standard
 
-    // Moderate retry configuration - reduced aggressiveness to avoid persistent failed dialogs
-    private val maxRetryAttempts = 1 // Single retry attempt to reduce dialog persistence
+    // Robust retry configuration for field conditions
+    private val maxRetryAttempts = 5 // Multiple attempts for robust sync resilience
     private val baseRetryDelayMs = 3000L // Shorter initial delay
-    private val maxRetryDelayMs = 10000L // Shorter max delay to fail faster
-    private val maxConsecutiveFailures = 2 // Reduced to avoid persistent failures
+    private val maxRetryDelayMs = 15000L // Allow longer delays for network recovery
+    private val maxConsecutiveFailures = 3 // Allow more failures before giving up
 
-    // Chunk configuration optimized for efficiency with longer timeouts
-    private val baseChunkSize = 25 // Moderate chunk size for better efficiency
-    private val maxChunkSize = 50 // Larger maximum chunks since timeouts are longer
-    private val minChunkSize = 5 // Minimum 5 values per chunk for efficiency
+    // Chunked upload configuration for reliability
+    private val maxChunkSize = 50 // Maximum data values per chunk to prevent timeouts
+    private val minChunkSize = 10 // Minimum chunk size for failed conditions
+    private val baseChunkSize = 30 // Base chunk size for normal conditions
+    private val chunkUploadTimeoutMs = 45000L // 45 seconds per chunk
+
+    // Wake lock timeout aligned with DHIS2 sync timeout (10 minutes)
+    private val wakeLockTimeoutMs = 600000L
     
     init {
         startNetworkMonitoring()
@@ -286,9 +297,12 @@ class SyncQueueManager @Inject constructor(
             error = null
         )
 
+        // Acquire wake lock to prevent interruption
+        acquireWakeLock()
+
         try {
             // Phase 1: Initialize sync (0-10%)
-            updateProgress(SyncPhase.INITIALIZING, 0)
+            updateProgress(SyncPhase.INITIALIZING, 0, "Acquiring sync lock...")
 
             // Phase 2: Validate connection (5-10%)
             if (!validateConnection()) {
@@ -332,7 +346,27 @@ class SyncQueueManager @Inject constructor(
                         )
                         .blockingSet(draft.value)
 
-                    allSuccessfulDrafts.add(draft)
+                    // DHIS2 Security: Validate data state before marking for upload
+                    val dataValue = d2.dataValueModule().dataValues()
+                        .value(
+                            period = draft.period,
+                            organisationUnit = draft.orgUnit,
+                            dataElement = draft.dataElement,
+                            categoryOptionCombo = draft.categoryOptionCombo,
+                            attributeOptionCombo = draft.attributeOptionCombo
+                        )
+                        .blockingGet()
+
+                    // Only add to upload queue if state allows upload (not ERROR or WARNING)
+                    val syncState = dataValue?.syncState()
+                    if (syncState != null && (syncState.name == "ERROR" || syncState.name == "WARNING")) {
+                        Log.w(tag, "Skipping data value in ${syncState.name} state: ${draft.dataElement}")
+                        Log.d(tag, "Data value details - Period: ${draft.period}, OrgUnit: ${draft.orgUnit}, Value: ${draft.value}")
+                        // Don't add to successful drafts - requires resolution first
+                    } else {
+                        allSuccessfulDrafts.add(draft)
+                        Log.d(tag, "Added data value for upload: ${draft.dataElement} (State: ${syncState?.name ?: "UNKNOWN"})")
+                    }
 
                     // Update progress for data preparation
                     val prepProgress = 20 + ((index + 1) * 10 / drafts.size)
@@ -350,97 +384,43 @@ class SyncQueueManager @Inject constructor(
 
             Log.d(tag, "Successfully set ${allSuccessfulDrafts.size} values, starting upload")
 
-            // Phase 4: Upload data with enhanced retry logic (30-80%)
-            var attempt = 0
-            var uploadSuccessful = false
+            // Phase 4: Upload data with chunked strategy (30-80%)
+            updateProgress(SyncPhase.UPLOADING_DATA, 35, "Preparing chunked upload for ${allSuccessfulDrafts.size} values...")
 
-            while (attempt < maxRetryAttempts && !uploadSuccessful) {
-                try {
-                    val uploadDetail = if (attempt == 0) {
-                        "Uploading ${allSuccessfulDrafts.size} data values..."
-                    } else {
-                        "Upload attempt ${attempt + 1} of $maxRetryAttempts"
-                    }
+            // Create chunks for reliable upload
+            val chunks = chunkDataValues(allSuccessfulDrafts)
+            Log.d(tag, "Uploading ${allSuccessfulDrafts.size} values in ${chunks.size} chunks")
 
-                    updateProgress(SyncPhase.UPLOADING_DATA, 40, uploadDetail)
-
-                    Log.d(tag, "Upload attempt ${attempt + 1} of $maxRetryAttempts for ${allSuccessfulDrafts.size} values")
-
-                                    // Enhanced upload with shorter timeout and network validation
-                    val uploadResult = withTimeout(uploadTimeoutMs) {
-                        // Validate network before upload - permissive check for 2G compatibility
-                        val networkState = networkStateManager.networkState.value
-                        if (!networkState.isConnected || !networkState.hasInternet) {
-                            throw Exception("Network connection lost before upload")
-                        }
-                        d2.dataValueModule().dataValues().blockingUpload()
-                    }
-
-                    Log.d(tag, "Upload result: $uploadResult")
-                    uploadSuccessful = true
-
-                    updateProgress(SyncPhase.UPLOADING_DATA, 80, "Upload completed successfully")
-
-                    // Remove successfully synced drafts
-                    for (draft in allSuccessfulDrafts) {
-                        database.dataValueDraftDao().deleteDraft(draft)
-                    }
-
-                    Log.d(tag, "Upload completed successfully for ${allSuccessfulDrafts.size} values")
-
-                } catch (e: Exception) {
-                    attempt++
-                    val error = classifyError(e)
-                    Log.w(tag, "Upload attempt $attempt failed: ${error}", e)
-
-                    if (attempt >= maxRetryAttempts) {
-                        setErrorState(error)
-                        return
-                    }
-
-                    // Check if we should auto-retry
-                    val shouldAutoRetry = when (error) {
-                        is SyncError.NetworkError -> error.canAutoRetry
-                        is SyncError.TimeoutError -> error.canAutoRetry
-                        else -> false
-                    }
-
-                    if (shouldAutoRetry) {
-                        // Exponential backoff with network validation
-                        val retryDelay = calculateRetryDelay(attempt)
-                        Log.w(tag, "Auto-retrying upload in ${retryDelay}ms (attempt ${attempt + 1} of $maxRetryAttempts)")
-
-                        // Show countdown to user
-                        showRetryCountdown(retryDelay, attempt)
-
-                        // Check network before retry - permissive for 2G
-                        val networkState = networkStateManager.networkState.value
-                        if (!networkState.isConnected || !networkState.hasInternet) {
-                            setErrorState(SyncError.NetworkError("Network connection lost during retry"))
-                            return
-                        }
-                    } else {
-                        setErrorState(error)
-                        return
-                    }
-                }
+            // Upload data using chunked strategy with retry logic
+            val uploadResult = uploadDataValuesInChunks(chunks) { phase, percentage, detail ->
+                updateProgress(phase, percentage, detail)
             }
 
-            // Phase 5: Download updates (80-95%)
-            if (uploadSuccessful) {
-                try {
-                    updateProgress(SyncPhase.DOWNLOADING_UPDATES, 85, "Downloading latest data...")
-
-                    withTimeout(downloadTimeoutMs) {
-                        d2.dataValueModule().dataValues().get()
-                    }
-
-                    updateProgress(SyncPhase.DOWNLOADING_UPDATES, 95, "Download completed")
-                } catch (e: Exception) {
-                    Log.w(tag, "Failed to download latest data after upload: ${e.message}")
-                    // Don't fail the entire sync just because download failed
-                    updateProgress(SyncPhase.DOWNLOADING_UPDATES, 95, "Download failed but upload succeeded")
+            uploadResult.fold(
+                onSuccess = {
+                    updateProgress(SyncPhase.UPLOADING_DATA, 80, "Upload completed successfully")
+                    Log.d(tag, "Chunked upload completed successfully for ${allSuccessfulDrafts.size} values")
+                },
+                onFailure = { error ->
+                    Log.e(tag, "Chunked upload failed: ${error.message}")
+                    setErrorState(classifyError(error as Exception))
+                    return
                 }
+            )
+
+            // Phase 5: Download updates (80-95%)
+            try {
+                updateProgress(SyncPhase.DOWNLOADING_UPDATES, 85, "Downloading latest data...")
+
+                withTimeout(downloadTimeoutMs) {
+                    d2.dataValueModule().dataValues().get()
+                }
+
+                updateProgress(SyncPhase.DOWNLOADING_UPDATES, 95, "Download completed")
+            } catch (e: Exception) {
+                Log.w(tag, "Failed to download latest data after upload: ${e.message}")
+                // Don't fail the entire sync just because download failed
+                updateProgress(SyncPhase.DOWNLOADING_UPDATES, 95, "Download failed but upload succeeded")
             }
 
             // Phase 6: Finalize (95-100%)
@@ -449,8 +429,8 @@ class SyncQueueManager @Inject constructor(
             _syncState.value = _syncState.value.copy(
                 isRunning = false,
                 queueSize = database.dataValueDraftDao().getAllDrafts().size,
-                lastSuccessfulSync = if (uploadSuccessful) System.currentTimeMillis() else _syncState.value.lastSuccessfulSync,
-                failedAttempts = if (uploadSuccessful) 0 else _syncState.value.failedAttempts + 1,
+                lastSuccessfulSync = System.currentTimeMillis(),
+                failedAttempts = 0,
                 error = null
             )
 
@@ -483,6 +463,9 @@ class SyncQueueManager @Inject constructor(
             if (_detailedProgress.value?.error == null) {
                 setErrorState(error)
             }
+        } finally {
+            // Always release wake lock
+            releaseWakeLock()
         }
     }
 
@@ -808,6 +791,20 @@ class SyncQueueManager @Inject constructor(
                 return false
             }
 
+            // Validate session is still active (DHIS2 security best practice)
+            try {
+                val isAuthenticated = d2.userModule().isLogged().blockingGet()
+                if (!isAuthenticated) {
+                    Log.e(tag, "DHIS2 session expired - re-authentication required")
+                    setErrorState(SyncError.AuthenticationError("Session expired. Please log in again."))
+                    return false
+                }
+            } catch (e: Exception) {
+                Log.e(tag, "Failed to validate session status", e)
+                setErrorState(SyncError.AuthenticationError("Unable to validate session. Please log in again."))
+                return false
+            }
+
             updateProgress(SyncPhase.VALIDATING_CONNECTION, 7, "Checking network connectivity...")
 
             // More permissive network check - allow any connection type including 2G
@@ -885,10 +882,29 @@ class SyncQueueManager @Inject constructor(
         Log.d(tag, "Classifying error: ${exception.javaClass.simpleName} - ${exception.message}")
 
         return when {
-            // Handle D2Error specifically (DHIS2 SDK errors)
-            exception.message?.contains("D2Error") == true -> {
-                Log.w(tag, "D2Error detected - likely network/server issue")
-                SyncError.NetworkError("DHIS2 server connection issue - this may be caused by screen lock or network interruption", canAutoRetry = true)
+            // Handle D2Error specifically (DHIS2 SDK errors) - proper detection including wrapped errors
+            exception.message?.contains("D2Error") == true ||
+            exception.cause?.javaClass?.name?.contains("D2Error") == true ||
+            exception.javaClass.name.contains("D2Error") -> {
+                Log.w(tag, "D2Error detected - DHIS2 SDK specific error")
+
+                // Extract the actual error message from nested D2Error
+                val actualMessage = exception.message ?: exception.cause?.message ?: "Unknown D2Error"
+
+                // Check if it's a network/timeout-related D2Error that can be retried
+                val canRetry = actualMessage.let { msg ->
+                    msg.contains("Network", ignoreCase = true) ||
+                    msg.contains("Connection", ignoreCase = true) ||
+                    msg.contains("Timeout", ignoreCase = true) ||
+                    msg.contains("Socket", ignoreCase = true) ||
+                    msg.contains("SocketTimeoutException", ignoreCase = true)
+                }
+
+                if (canRetry) {
+                    SyncError.TimeoutError("DHIS2 upload timeout - ${actualMessage}", canAutoRetry = true)
+                } else {
+                    SyncError.ServerError("DHIS2 server error - ${actualMessage}")
+                }
             }
 
             // Timeout errors - can auto-retry (common during screen lock)
@@ -1104,5 +1120,164 @@ class SyncQueueManager @Inject constructor(
             exception.message?.contains("timeout") == true -> true
             else -> false
         }
+    }
+
+    /**
+     * Acquire wake lock to prevent sync interruption during screen lock
+     * Includes proper permission validation for security compliance
+     */
+    private fun acquireWakeLock() {
+        try {
+            // Check for WAKE_LOCK permission (security best practice)
+            if (!hasWakeLockPermission()) {
+                Log.w(tag, "WAKE_LOCK permission not granted - sync may be interrupted during screen lock")
+                return
+            }
+
+            if (wakeLock == null) {
+                wakeLock = powerManager.newWakeLock(
+                    PowerManager.PARTIAL_WAKE_LOCK,
+                    "SimpleDataEntry:SyncQueueManager"
+                ).apply {
+                    acquire(wakeLockTimeoutMs)
+                }
+                Log.d(tag, "Wake lock acquired for sync operation")
+            }
+        } catch (e: Exception) {
+            Log.w(tag, "Failed to acquire wake lock: ${e.message}")
+        }
+    }
+
+    /**
+     * Check if the app has WAKE_LOCK permission
+     */
+    private fun hasWakeLockPermission(): Boolean {
+        return try {
+            context.checkSelfPermission(android.Manifest.permission.WAKE_LOCK) ==
+                android.content.pm.PackageManager.PERMISSION_GRANTED
+        } catch (e: Exception) {
+            Log.w(tag, "Failed to check WAKE_LOCK permission", e)
+            false
+        }
+    }
+
+    /**
+     * Release wake lock after sync completion
+     */
+    private fun releaseWakeLock() {
+        try {
+            wakeLock?.let {
+                if (it.isHeld) {
+                    it.release()
+                    Log.d(tag, "Wake lock released")
+                }
+                wakeLock = null
+            }
+        } catch (e: Exception) {
+            Log.w(tag, "Failed to release wake lock: ${e.message}")
+        }
+    }
+
+    /**
+     * Split data values into chunks for reliable upload
+     */
+    private fun chunkDataValues(drafts: List<DataValueDraftEntity>): List<List<DataValueDraftEntity>> {
+        if (drafts.size <= maxChunkSize) {
+            return listOf(drafts)
+        }
+
+        val chunks = mutableListOf<List<DataValueDraftEntity>>()
+        var startIndex = 0
+
+        while (startIndex < drafts.size) {
+            val endIndex = minOf(startIndex + maxChunkSize, drafts.size)
+            chunks.add(drafts.subList(startIndex, endIndex))
+            startIndex = endIndex
+        }
+
+        Log.d(tag, "Split ${drafts.size} data values into ${chunks.size} chunks")
+        return chunks
+    }
+
+    /**
+     * Upload data values in chunks with retry logic
+     */
+    private suspend fun uploadDataValuesInChunks(
+        chunks: List<List<DataValueDraftEntity>>,
+        updateProgress: suspend (SyncPhase, Int, String) -> Unit
+    ): Result<Unit> {
+        var successfulChunks = 0
+        val totalChunks = chunks.size
+
+        for ((chunkIndex, chunk) in chunks.withIndex()) {
+            var chunkAttempt = 0
+            var chunkUploaded = false
+
+            while (chunkAttempt < maxRetryAttempts && !chunkUploaded) {
+                try {
+                    val progressPercentage = 40 + (30 * (successfulChunks + 0.5f) / totalChunks).toInt()
+                    val progressDetail = if (totalChunks > 1) {
+                        "Uploading chunk ${chunkIndex + 1} of $totalChunks (${chunk.size} values)${if (chunkAttempt > 0) " - attempt ${chunkAttempt + 1}" else ""}"
+                    } else {
+                        "Uploading ${chunk.size} data values${if (chunkAttempt > 0) " - attempt ${chunkAttempt + 1}" else ""}"
+                    }
+
+                    updateProgress(SyncPhase.UPLOADING_DATA, progressPercentage, progressDetail)
+
+                    // Set chunk data values in DHIS2
+                    for (draft in chunk) {
+                        val d2 = sessionManager.getD2() ?: throw Exception("DHIS2 session not available")
+                        d2.dataValueModule().dataValues()
+                            .value(
+                                period = draft.period,
+                                organisationUnit = draft.orgUnit,
+                                dataElement = draft.dataElement,
+                                categoryOptionCombo = draft.categoryOptionCombo,
+                                attributeOptionCombo = draft.attributeOptionCombo
+                            )
+                            .blockingSet(draft.value)
+                    }
+
+                    // Upload chunk with timeout
+                    withTimeout(chunkUploadTimeoutMs) {
+                        val d2 = sessionManager.getD2() ?: throw Exception("DHIS2 session not available")
+                        d2.dataValueModule().dataValues().blockingUpload()
+                    }
+
+                    chunkUploaded = true
+                    successfulChunks++
+
+                    // Remove successfully uploaded drafts
+                    for (draft in chunk) {
+                        database.dataValueDraftDao().deleteDraft(draft)
+                    }
+
+                    Log.d(tag, "Successfully uploaded chunk ${chunkIndex + 1}/${totalChunks} with ${chunk.size} values")
+
+                } catch (e: Exception) {
+                    chunkAttempt++
+                    val error = classifyError(e)
+
+                    Log.w(tag, "Chunk ${chunkIndex + 1} upload attempt $chunkAttempt failed: ${error.javaClass.simpleName} - ${e.message}")
+
+                    if (chunkAttempt >= maxRetryAttempts) {
+                        Log.e(tag, "Failed to upload chunk ${chunkIndex + 1} after $maxRetryAttempts attempts")
+                        return Result.failure(Exception("Chunk upload failed: ${e.message}"))
+                    }
+
+                    // Progressive retry delay for chunks
+                    val retryDelay = calculateRetryDelay(chunkAttempt)
+                    Log.w(tag, "Retrying chunk ${chunkIndex + 1} in ${retryDelay}ms")
+
+                    val retryProgressPercentage = 40 + (30 * successfulChunks / totalChunks).toInt()
+                    val retryProgressDetail = "Chunk ${chunkIndex + 1} failed, retrying in ${retryDelay / 1000} seconds..."
+                    updateProgress(SyncPhase.UPLOADING_DATA, retryProgressPercentage, retryProgressDetail)
+
+                    delay(retryDelay)
+                }
+            }
+        }
+
+        return Result.success(Unit)
     }
 }

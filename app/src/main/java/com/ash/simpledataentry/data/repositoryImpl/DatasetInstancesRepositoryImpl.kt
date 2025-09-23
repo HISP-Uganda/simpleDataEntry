@@ -209,4 +209,336 @@ class DatasetInstancesRepositoryImpl @Inject constructor(
             }
         }
     }
+
+    // New unified program instance methods
+    override suspend fun getProgramInstances(
+        programId: String,
+        programType: com.ash.simpledataentry.domain.model.ProgramType
+    ): kotlinx.coroutines.flow.Flow<List<com.ash.simpledataentry.domain.model.ProgramInstance>> =
+        kotlinx.coroutines.flow.flow {
+            when (programType) {
+                com.ash.simpledataentry.domain.model.ProgramType.DATASET -> {
+                    val datasetInstances = getDatasetInstances(programId)
+                    val programInstances = datasetInstances.map { datasetInstance ->
+                        com.ash.simpledataentry.domain.model.ProgramInstance.DatasetInstance(
+                            id = datasetInstance.id,
+                            programId = datasetInstance.datasetId,
+                            programName = "Dataset", // TODO: Get actual dataset name
+                            organisationUnit = datasetInstance.organisationUnit,
+                            lastUpdated = try {
+                                java.text.SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss.SSS", java.util.Locale.getDefault())
+                                    .parse(datasetInstance.lastUpdated ?: java.text.SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss.SSS", java.util.Locale.getDefault()).format(java.util.Date()))
+                            } catch (e: Exception) {
+                                java.util.Date()
+                            },
+                            state = when (datasetInstance.state) {
+                                DatasetInstanceState.OPEN -> com.ash.simpledataentry.domain.model.ProgramInstanceState.ACTIVE
+                                DatasetInstanceState.COMPLETE -> com.ash.simpledataentry.domain.model.ProgramInstanceState.COMPLETED
+                                DatasetInstanceState.APPROVED -> com.ash.simpledataentry.domain.model.ProgramInstanceState.APPROVED
+                                DatasetInstanceState.LOCKED -> com.ash.simpledataentry.domain.model.ProgramInstanceState.LOCKED
+                            },
+                            syncStatus = com.ash.simpledataentry.domain.model.SyncStatus.SYNCED, // TODO: Determine actual sync status
+                            period = datasetInstance.period,
+                            attributeOptionCombo = datasetInstance.attributeOptionCombo,
+                            originalDatasetInstance = datasetInstance
+                        )
+                    }
+                    emit(programInstances)
+                }
+                com.ash.simpledataentry.domain.model.ProgramType.TRACKER -> {
+                    getTrackerEnrollments(programId).collect { enrollments ->
+                        emit(enrollments.map { it as com.ash.simpledataentry.domain.model.ProgramInstance })
+                    }
+                }
+                com.ash.simpledataentry.domain.model.ProgramType.EVENT -> {
+                    getEventInstances(programId).collect { events ->
+                        emit(events.map { it as com.ash.simpledataentry.domain.model.ProgramInstance })
+                    }
+                }
+                else -> emit(emptyList())
+            }
+        }
+
+    override suspend fun getProgramInstanceCount(
+        programId: String,
+        programType: com.ash.simpledataentry.domain.model.ProgramType
+    ): Int {
+        return when (programType) {
+            com.ash.simpledataentry.domain.model.ProgramType.DATASET -> getDatasetInstanceCount(programId)
+            com.ash.simpledataentry.domain.model.ProgramType.TRACKER -> {
+                withContext(Dispatchers.IO) {
+                    try {
+                        d2.trackedEntityModule().trackedEntityInstances()
+                            .byProgramUids(listOf(programId))
+                            .blockingCount()
+                    } catch (e: Exception) {
+                        Log.e(TAG, "Failed to get tracker enrollment count for program $programId", e)
+                        0
+                    }
+                }
+            }
+            com.ash.simpledataentry.domain.model.ProgramType.EVENT -> {
+                withContext(Dispatchers.IO) {
+                    try {
+                        d2.eventModule().events()
+                            .byProgramUid().eq(programId)
+                            .blockingCount()
+                    } catch (e: Exception) {
+                        Log.e(TAG, "Failed to get event count for program $programId", e)
+                        0
+                    }
+                }
+            }
+            else -> 0
+        }
+    }
+
+    override suspend fun syncProgramInstances(
+        programId: String,
+        programType: com.ash.simpledataentry.domain.model.ProgramType
+    ): Result<Unit> {
+        return withContext(Dispatchers.IO) {
+            try {
+                when (programType) {
+                    com.ash.simpledataentry.domain.model.ProgramType.DATASET -> {
+                        syncDatasetInstances()
+                    }
+                    com.ash.simpledataentry.domain.model.ProgramType.TRACKER -> {
+                        // Sync tracker enrollments and events
+                        // Use the synchronization calls for tracker data
+                        d2.trackedEntityModule().trackedEntityInstances().blockingGet()
+                        d2.eventModule().events().blockingGet()
+                    }
+                    com.ash.simpledataentry.domain.model.ProgramType.EVENT -> {
+                        // Sync events
+                        d2.eventModule().events().blockingGet()
+                    }
+                    else -> { /* Do nothing */ }
+                }
+                Result.success(Unit)
+            } catch (e: Exception) {
+                Log.e(TAG, "Failed to sync program instances for $programId", e)
+                Result.failure(e)
+            }
+        }
+    }
+
+    // Tracker-specific methods
+    override suspend fun getTrackerEnrollments(programId: String): kotlinx.coroutines.flow.Flow<List<com.ash.simpledataentry.domain.model.ProgramInstance.TrackerEnrollment>> =
+        kotlinx.coroutines.flow.flow {
+            withContext(Dispatchers.IO) {
+                try {
+                    val enrollments = d2.enrollmentModule().enrollments()
+                        .byProgram().eq(programId)
+                        .blockingGet()
+
+                    val programInstances = enrollments.map { enrollment ->
+                        val orgUnit = d2.organisationUnitModule().organisationUnits()
+                            .uid(enrollment.organisationUnit())
+                            .blockingGet()
+
+                        val program = d2.programModule().programs()
+                            .uid(programId)
+                            .blockingGet()
+
+                        com.ash.simpledataentry.domain.model.ProgramInstance.TrackerEnrollment(
+                            id = enrollment.uid(),
+                            programId = programId,
+                            programName = program?.displayName() ?: program?.name() ?: "Unknown Program",
+                            organisationUnit = com.ash.simpledataentry.domain.model.OrganisationUnit(
+                                id = orgUnit?.uid() ?: "",
+                                name = orgUnit?.displayName() ?: "Unknown"
+                            ),
+                            lastUpdated = enrollment.lastUpdated() ?: java.util.Date(),
+                            state = when (enrollment.status()) {
+                                org.hisp.dhis.android.core.enrollment.EnrollmentStatus.ACTIVE ->
+                                    com.ash.simpledataentry.domain.model.ProgramInstanceState.ACTIVE
+                                org.hisp.dhis.android.core.enrollment.EnrollmentStatus.COMPLETED ->
+                                    com.ash.simpledataentry.domain.model.ProgramInstanceState.COMPLETED
+                                org.hisp.dhis.android.core.enrollment.EnrollmentStatus.CANCELLED ->
+                                    com.ash.simpledataentry.domain.model.ProgramInstanceState.CANCELLED
+                                else -> com.ash.simpledataentry.domain.model.ProgramInstanceState.ACTIVE
+                            },
+                            syncStatus = when (enrollment.aggregatedSyncState()) {
+                                org.hisp.dhis.android.core.common.State.SYNCED -> com.ash.simpledataentry.domain.model.SyncStatus.SYNCED
+                                org.hisp.dhis.android.core.common.State.TO_UPDATE -> com.ash.simpledataentry.domain.model.SyncStatus.NOT_SYNCED
+                                org.hisp.dhis.android.core.common.State.TO_POST -> com.ash.simpledataentry.domain.model.SyncStatus.NOT_SYNCED
+                                else -> com.ash.simpledataentry.domain.model.SyncStatus.SYNCED
+                            },
+                            trackedEntityInstance = enrollment.trackedEntityInstance() ?: "",
+                            enrollmentDate = enrollment.enrollmentDate() ?: java.util.Date(),
+                            incidentDate = enrollment.incidentDate(),
+                            followUp = enrollment.followUp() ?: false,
+                            completedDate = enrollment.completedDate()
+                        )
+                    }
+                    emit(programInstances)
+                } catch (e: Exception) {
+                    Log.e(TAG, "Failed to get tracker enrollments for program $programId", e)
+                    emit(emptyList())
+                }
+            }
+        }
+
+    override suspend fun createTrackerEnrollment(
+        programId: String,
+        trackedEntityId: String,
+        orgUnitId: String
+    ): Result<String> {
+        return withContext(Dispatchers.IO) {
+            try {
+                val enrollmentUid = d2.enrollmentModule().enrollments()
+                    .blockingAdd(
+                        org.hisp.dhis.android.core.enrollment.EnrollmentCreateProjection.builder()
+                            .program(programId)
+                            .organisationUnit(orgUnitId)
+                            .trackedEntityInstance(trackedEntityId)
+                            .build()
+                    )
+                Result.success(enrollmentUid)
+            } catch (e: Exception) {
+                Log.e(TAG, "Failed to create tracker enrollment", e)
+                Result.failure(e)
+            }
+        }
+    }
+
+    override suspend fun completeEnrollment(enrollmentId: String): Result<Unit> {
+        return withContext(Dispatchers.IO) {
+            try {
+                d2.enrollmentModule().enrollments().uid(enrollmentId)
+                    .setStatus(org.hisp.dhis.android.core.enrollment.EnrollmentStatus.COMPLETED)
+                Result.success(Unit)
+            } catch (e: Exception) {
+                Log.e(TAG, "Failed to complete enrollment", e)
+                Result.failure(e)
+            }
+        }
+    }
+
+    override suspend fun cancelEnrollment(enrollmentId: String): Result<Unit> {
+        return withContext(Dispatchers.IO) {
+            try {
+                d2.enrollmentModule().enrollments().uid(enrollmentId)
+                    .setStatus(org.hisp.dhis.android.core.enrollment.EnrollmentStatus.CANCELLED)
+                Result.success(Unit)
+            } catch (e: Exception) {
+                Log.e(TAG, "Failed to cancel enrollment", e)
+                Result.failure(e)
+            }
+        }
+    }
+
+    // Event-specific methods
+    override suspend fun getEventInstances(programId: String): kotlinx.coroutines.flow.Flow<List<com.ash.simpledataentry.domain.model.ProgramInstance.EventInstance>> =
+        kotlinx.coroutines.flow.flow {
+            withContext(Dispatchers.IO) {
+                try {
+                    val events = d2.eventModule().events()
+                        .byProgramUid().eq(programId)
+                        .blockingGet()
+
+                    val programInstances = events.map { event ->
+                        val orgUnit = d2.organisationUnitModule().organisationUnits()
+                            .uid(event.organisationUnit())
+                            .blockingGet()
+
+                        val program = d2.programModule().programs()
+                            .uid(programId)
+                            .blockingGet()
+
+                        com.ash.simpledataentry.domain.model.ProgramInstance.EventInstance(
+                            id = event.uid(),
+                            programId = programId,
+                            programName = program?.displayName() ?: program?.name() ?: "Unknown Program",
+                            organisationUnit = com.ash.simpledataentry.domain.model.OrganisationUnit(
+                                id = orgUnit?.uid() ?: "",
+                                name = orgUnit?.displayName() ?: "Unknown"
+                            ),
+                            lastUpdated = event.lastUpdated() ?: java.util.Date(),
+                            state = when (event.status()) {
+                                org.hisp.dhis.android.core.event.EventStatus.ACTIVE ->
+                                    com.ash.simpledataentry.domain.model.ProgramInstanceState.ACTIVE
+                                org.hisp.dhis.android.core.event.EventStatus.COMPLETED ->
+                                    com.ash.simpledataentry.domain.model.ProgramInstanceState.COMPLETED
+                                org.hisp.dhis.android.core.event.EventStatus.OVERDUE ->
+                                    com.ash.simpledataentry.domain.model.ProgramInstanceState.OVERDUE
+                                org.hisp.dhis.android.core.event.EventStatus.SCHEDULE ->
+                                    com.ash.simpledataentry.domain.model.ProgramInstanceState.SCHEDULED
+                                org.hisp.dhis.android.core.event.EventStatus.SKIPPED ->
+                                    com.ash.simpledataentry.domain.model.ProgramInstanceState.SKIPPED
+                                else -> com.ash.simpledataentry.domain.model.ProgramInstanceState.ACTIVE
+                            },
+                            syncStatus = when (event.aggregatedSyncState()) {
+                                org.hisp.dhis.android.core.common.State.SYNCED -> com.ash.simpledataentry.domain.model.SyncStatus.SYNCED
+                                org.hisp.dhis.android.core.common.State.TO_UPDATE -> com.ash.simpledataentry.domain.model.SyncStatus.NOT_SYNCED
+                                org.hisp.dhis.android.core.common.State.TO_POST -> com.ash.simpledataentry.domain.model.SyncStatus.NOT_SYNCED
+                                else -> com.ash.simpledataentry.domain.model.SyncStatus.SYNCED
+                            },
+                            programStage = event.programStage() ?: "",
+                            eventDate = event.eventDate(),
+                            dueDate = event.dueDate(),
+                            completedDate = event.completedDate(),
+                            coordinates = event.geometry()?.let { geometry ->
+                                // Convert DHIS2 geometry to coordinates if needed
+                                null // TODO: Implement geometry conversion
+                            }
+                        )
+                    }
+                    emit(programInstances)
+                } catch (e: Exception) {
+                    Log.e(TAG, "Failed to get event instances for program $programId", e)
+                    emit(emptyList())
+                }
+            }
+        }
+
+    override suspend fun createEventInstance(
+        programId: String,
+        programStageId: String,
+        orgUnitId: String
+    ): Result<String> {
+        return withContext(Dispatchers.IO) {
+            try {
+                val eventUid = d2.eventModule().events()
+                    .blockingAdd(
+                        org.hisp.dhis.android.core.event.EventCreateProjection.builder()
+                            .program(programId)
+                            .programStage(programStageId)
+                            .organisationUnit(orgUnitId)
+                            .build()
+                    )
+                Result.success(eventUid)
+            } catch (e: Exception) {
+                Log.e(TAG, "Failed to create event instance", e)
+                Result.failure(e)
+            }
+        }
+    }
+
+    override suspend fun completeEvent(eventId: String): Result<Unit> {
+        return withContext(Dispatchers.IO) {
+            try {
+                d2.eventModule().events().uid(eventId)
+                    .setStatus(org.hisp.dhis.android.core.event.EventStatus.COMPLETED)
+                Result.success(Unit)
+            } catch (e: Exception) {
+                Log.e(TAG, "Failed to complete event", e)
+                Result.failure(e)
+            }
+        }
+    }
+
+    override suspend fun skipEvent(eventId: String): Result<Unit> {
+        return withContext(Dispatchers.IO) {
+            try {
+                d2.eventModule().events().uid(eventId)
+                    .setStatus(org.hisp.dhis.android.core.event.EventStatus.SKIPPED)
+                Result.success(Unit)
+            } catch (e: Exception) {
+                Log.e(TAG, "Failed to skip event", e)
+                Result.failure(e)
+            }
+        }
+    }
 }

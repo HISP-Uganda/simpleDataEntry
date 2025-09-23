@@ -100,7 +100,7 @@ class BackgroundSyncWorker @AssistedInject constructor(
                 updateProgress("Uploading pending data values...", 80)
                 Log.d(TAG, "Uploading pending data values...")
                 // Use SyncQueueManager to handle all pending uploads
-                val syncQueueManager = SyncQueueManager(networkStateManager, sessionManager, database)
+                val syncQueueManager = SyncQueueManager(networkStateManager, sessionManager, database, applicationContext)
                 syncQueueManager.startSync()
                 updateProgress("Data upload completed", 95)
                 Log.d(TAG, "Pending data upload completed")

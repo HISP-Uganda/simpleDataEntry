@@ -13,6 +13,9 @@ import com.ash.simpledataentry.domain.model.PeriodFilterType
 import com.ash.simpledataentry.domain.model.DatasetInstanceState
 import com.ash.simpledataentry.domain.model.SortOrder
 import com.ash.simpledataentry.domain.model.SyncStatus
+import com.ash.simpledataentry.domain.model.ProgramInstance
+import com.ash.simpledataentry.domain.model.ProgramType
+import com.ash.simpledataentry.domain.model.asDatasetInstance
 import com.ash.simpledataentry.domain.useCase.GetDatasetInstancesUseCase
 import com.ash.simpledataentry.domain.useCase.SyncDatasetInstancesUseCase
 import com.ash.simpledataentry.domain.repository.DataEntryRepository
@@ -32,14 +35,16 @@ import kotlinx.coroutines.launch
 import javax.inject.Inject
 
 data class DatasetInstancesState(
-    val instances: List<DatasetInstance> = emptyList(),
-    val filteredInstances: List<DatasetInstance> = emptyList(),
+    val instances: List<ProgramInstance> = emptyList(),
+    val filteredInstances: List<ProgramInstance> = emptyList(),
     val isLoading: Boolean = false,
     val isSyncing: Boolean = false,
     val error: String? = null,
     val successMessage: String? = null,
     val attributeOptionCombos: List<Pair<String, String>> = emptyList(),
     val dataset: com.ash.simpledataentry.domain.model.Dataset? = null,
+    val program: com.ash.simpledataentry.domain.model.Program? = null,
+    val programType: ProgramType = ProgramType.DATASET,
     val localInstanceCount: Int = 0,
     val instancesWithDrafts: Set<String> = emptySet(), // Set of instance keys that have draft values
     val detailedSyncProgress: DetailedSyncProgress? = null, // Enhanced sync progress
@@ -57,7 +62,8 @@ class DatasetInstancesViewModel @Inject constructor(
     private val syncQueueManager: SyncQueueManager,
     private val app: Application
 ) : ViewModel() {
-    private var datasetId: String = ""
+    private var programId: String = ""
+    private var currentProgramType: ProgramType = ProgramType.DATASET
 
     private val _state = MutableStateFlow(DatasetInstancesState())
     val state: StateFlow<DatasetInstancesState> = _state.asStateFlow()
@@ -86,16 +92,43 @@ class DatasetInstancesViewModel @Inject constructor(
     }
 
     /**
-     * Creates a unique key for a dataset instance based on its identity
+     * Creates a unique key for a program instance based on its identity and type
+     */
+    private fun createInstanceKey(programInstance: ProgramInstance): String {
+        return when (programInstance) {
+            is ProgramInstance.DatasetInstance -> {
+                "${programInstance.programId}|${programInstance.period.id}|${programInstance.organisationUnit.id}|${programInstance.attributeOptionCombo}"
+            }
+            is ProgramInstance.TrackerEnrollment -> {
+                "${programInstance.programId}|${programInstance.trackedEntityInstance}|${programInstance.organisationUnit.id}"
+            }
+            is ProgramInstance.EventInstance -> {
+                "${programInstance.programId}|${programInstance.programStage}|${programInstance.organisationUnit.id}|${programInstance.eventDate?.time ?: 0}"
+            }
+        }
+    }
+
+    /**
+     * Creates a unique key for a dataset instance based on its identity (legacy method for backward compatibility)
      */
     private fun createInstanceKey(datasetId: String, period: String, orgUnit: String, attributeOptionCombo: String): String {
         return "$datasetId|$period|$orgUnit|$attributeOptionCombo"
     }
 
     fun setDatasetId(id: String) {
-        if (id.isNotEmpty() && id != datasetId) {
-            datasetId = id
-            Log.d("DatasetInstancesVM", "Initializing ViewModel with dataset: $datasetId")
+        if (id.isNotEmpty() && id != programId) {
+            programId = id
+            currentProgramType = ProgramType.DATASET
+            Log.d("DatasetInstancesVM", "Initializing ViewModel with dataset: $programId")
+            loadData()
+        }
+    }
+
+    fun setProgramId(id: String, programType: ProgramType) {
+        if (id.isNotEmpty() && (id != programId || programType != currentProgramType)) {
+            programId = id
+            currentProgramType = programType
+            Log.d("DatasetInstancesVM", "Initializing ViewModel with program: $programId, type: $programType")
             loadData()
         }
     }
@@ -106,12 +139,12 @@ class DatasetInstancesViewModel @Inject constructor(
     }
 
     private fun loadData() {
-        if (datasetId.isEmpty()) {
-            Log.e("DatasetInstancesVM", "Cannot load data: datasetId is empty")
+        if (programId.isEmpty()) {
+            Log.e("DatasetInstancesVM", "Cannot load data: programId is empty")
             return
         }
 
-        Log.d("DatasetInstancesVM", "Enhanced loading dataset data for ID: $datasetId")
+        Log.d("DatasetInstancesVM", "Enhanced loading program data for ID: $programId, type: $currentProgramType")
         viewModelScope.launch {
             _state.value = _state.value.copy(
                 isLoading = true,
@@ -134,24 +167,48 @@ class DatasetInstancesViewModel @Inject constructor(
                     )
                 )
 
-                Log.d("DatasetInstancesVM", "Fetching dataset instances")
-                val attributeOptionCombos = dataEntryRepository.getAttributeOptionCombos(datasetId)
+                Log.d("DatasetInstancesVM", "Fetching program instances")
+                // Get attribute option combos only for datasets
+                val attributeOptionCombos = if (currentProgramType == ProgramType.DATASET) {
+                    dataEntryRepository.getAttributeOptionCombos(programId)
+                } else {
+                    emptyList()
+                }
                 Log.d("DatasetInstancesVM", "getAttributeOptionCombos returned: $attributeOptionCombos")
                 
-                // Step 2: Get Dataset Information (30-50%)
+                // Step 2: Get Program Information (30-50%)
                 _state.value = _state.value.copy(
                     navigationProgress = NavigationProgress(
                         phase = LoadingPhase.LOADING_DATA,
                         overallPercentage = 40,
                         phaseTitle = LoadingPhase.LOADING_DATA.title,
-                        phaseDetail = "Fetching dataset information..."
+                        phaseDetail = "Fetching program information..."
                     )
                 )
 
-                // Get dataset information
+                // Get program information based on type
                 var dataset: com.ash.simpledataentry.domain.model.Dataset? = null
-                datasetsRepository.getDatasets().collect { datasets ->
-                    dataset = datasets.find { it.id == datasetId }
+                var program: com.ash.simpledataentry.domain.model.Program? = null
+
+                when (currentProgramType) {
+                    ProgramType.DATASET -> {
+                        datasetsRepository.getDatasets().collect { datasets ->
+                            dataset = datasets.find { it.id == programId }
+                        }
+                    }
+                    ProgramType.TRACKER -> {
+                        datasetsRepository.getTrackerPrograms().collect { programs ->
+                            program = programs.find { it.id == programId }
+                        }
+                    }
+                    ProgramType.EVENT -> {
+                        datasetsRepository.getEventPrograms().collect { programs ->
+                            program = programs.find { it.id == programId }
+                        }
+                    }
+                    ProgramType.ALL -> {
+                        // Should not happen in this context
+                    }
                 }
                 
                 // Step 3: Load Instances (50-70%)
@@ -160,11 +217,74 @@ class DatasetInstancesViewModel @Inject constructor(
                         phase = LoadingPhase.LOADING_DATA,
                         overallPercentage = 60,
                         phaseTitle = LoadingPhase.LOADING_DATA.title,
-                        phaseDetail = "Loading dataset instances..."
+                        phaseDetail = "Loading program instances..."
                     )
                 )
 
-                val instancesResult = getDatasetInstancesUseCase(datasetId)
+                // Load instances based on program type
+                val instancesResult = when (currentProgramType) {
+                    ProgramType.DATASET -> {
+                        // Convert existing dataset instances to unified ProgramInstance
+                        try {
+                            val datasetInstances = getDatasetInstancesUseCase(programId)
+                            datasetInstances.fold(
+                                onSuccess = { instances ->
+                                    val programInstances = instances.map { datasetInstance ->
+                                        ProgramInstance.DatasetInstance(
+                                            id = datasetInstance.id,
+                                            programId = datasetInstance.datasetId,
+                                            programName = dataset?.name ?: "Unknown Dataset",
+                                            organisationUnit = datasetInstance.organisationUnit,
+                                            lastUpdated = datasetInstance.lastUpdated?.let {
+                                                try {
+                                                    java.text.SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss.SSS", java.util.Locale.ENGLISH).parse(it)
+                                                } catch (e: Exception) {
+                                                    java.util.Date()
+                                                }
+                                            } ?: java.util.Date(),
+                                            state = when (datasetInstance.state) {
+                                                DatasetInstanceState.COMPLETE -> com.ash.simpledataentry.domain.model.ProgramInstanceState.COMPLETED
+                                                DatasetInstanceState.OPEN -> com.ash.simpledataentry.domain.model.ProgramInstanceState.ACTIVE
+                                                else -> com.ash.simpledataentry.domain.model.ProgramInstanceState.ACTIVE
+                                            },
+                                            syncStatus = SyncStatus.SYNCED, // Dataset instances are always considered synced initially
+                                            period = datasetInstance.period,
+                                            attributeOptionCombo = datasetInstance.attributeOptionCombo,
+                                            originalDatasetInstance = datasetInstance
+                                        )
+                                    }
+                                    Result.success(programInstances)
+                                },
+                                onFailure = { Result.failure(it) }
+                            )
+                        } catch (e: Exception) {
+                            Result.failure(e)
+                        }
+                    }
+                    ProgramType.TRACKER -> {
+                        try {
+                            var trackerInstances: List<ProgramInstance> = emptyList()
+                            datasetInstacesRepository.getProgramInstances(programId, currentProgramType).collect { instances ->
+                                trackerInstances = instances
+                            }
+                            Result.success(trackerInstances)
+                        } catch (e: Exception) {
+                            Result.failure(e)
+                        }
+                    }
+                    ProgramType.EVENT -> {
+                        try {
+                            var eventInstances: List<ProgramInstance> = emptyList()
+                            datasetInstacesRepository.getProgramInstances(programId, currentProgramType).collect { instances ->
+                                eventInstances = instances
+                            }
+                            Result.success(eventInstances)
+                        } catch (e: Exception) {
+                            Result.failure(e)
+                        }
+                    }
+                    ProgramType.ALL -> Result.success(emptyList()) // Should not happen
+                }
                 instancesResult.fold(
                     onSuccess = { instances ->
                         Log.d("DatasetInstancesVM", "Received "+instances.size+" instances")
@@ -179,23 +299,26 @@ class DatasetInstancesViewModel @Inject constructor(
                             )
                         )
 
-                        // Check for instances with draft values (real sync status)
+                        // Check for instances with draft values (only applies to dataset instances)
                         val instancesWithDrafts = mutableSetOf<String>()
                         for (instance in instances) {
-                            val draftCount = draftDao.getDraftCountForInstance(
-                                datasetId = instance.datasetId,
-                                period = instance.period.id,
-                                orgUnit = instance.organisationUnit.id,
-                                attributeOptionCombo = instance.attributeOptionCombo
-                            )
-                            if (draftCount > 0) {
-                                val instanceKey = createInstanceKey(
-                                    instance.datasetId,
-                                    instance.period.id,
-                                    instance.organisationUnit.id,
-                                    instance.attributeOptionCombo
-                                )
-                                instancesWithDrafts.add(instanceKey)
+                            when (instance) {
+                                is ProgramInstance.DatasetInstance -> {
+                                    val draftCount = draftDao.getDraftCountForInstance(
+                                        datasetId = instance.programId,
+                                        period = instance.period.id,
+                                        orgUnit = instance.organisationUnit.id,
+                                        attributeOptionCombo = instance.attributeOptionCombo
+                                    )
+                                    if (draftCount > 0) {
+                                        val instanceKey = createInstanceKey(instance)
+                                        instancesWithDrafts.add(instanceKey)
+                                    }
+                                }
+                                is ProgramInstance.TrackerEnrollment, is ProgramInstance.EventInstance -> {
+                                    // TODO: Implement draft detection for tracker/event instances
+                                    // For now, they are considered synced
+                                }
                             }
                         }
 
@@ -218,6 +341,8 @@ class DatasetInstancesViewModel @Inject constructor(
                             error = null,
                             attributeOptionCombos = attributeOptionCombos,
                             dataset = dataset,
+                            program = program,
+                            programType = currentProgramType,
                             localInstanceCount = instancesWithDrafts.size,
                             instancesWithDrafts = instancesWithDrafts,
                             navigationProgress = null // Clear progress when done
@@ -227,11 +352,13 @@ class DatasetInstancesViewModel @Inject constructor(
                         Log.e("DatasetInstancesVM", "Error loading data", error)
                         _state.value = _state.value.copy(
                             isLoading = false,
-                            error = error.message ?: "Failed to load dataset data",
+                            error = error.message ?: "Failed to load program data",
                             attributeOptionCombos = attributeOptionCombos,
                             dataset = dataset,
+                            program = program,
+                            programType = currentProgramType,
                             localInstanceCount = 0,
-                            navigationProgress = NavigationProgress.error(error.message ?: "Failed to load dataset data")
+                            navigationProgress = NavigationProgress.error(error.message ?: "Failed to load program data")
                         )
                     }
                 )
@@ -239,20 +366,20 @@ class DatasetInstancesViewModel @Inject constructor(
                 Log.e("DatasetInstancesVM", "Error loading data", e)
                 _state.value = _state.value.copy(
                     isLoading = false,
-                    error = e.message ?: "Failed to load dataset data",
-                    navigationProgress = NavigationProgress.error(e.message ?: "Failed to load dataset data")
+                    error = e.message ?: "Failed to load program data",
+                    navigationProgress = NavigationProgress.error(e.message ?: "Failed to load program data")
                 )
             }
         }
     }
 
     fun syncDatasetInstances(uploadFirst: Boolean = false) {
-        if (datasetId.isEmpty()) {
-            Log.e("DatasetInstancesVM", "Cannot sync: datasetId is empty")
+        if (programId.isEmpty()) {
+            Log.e("DatasetInstancesVM", "Cannot sync: programId is empty")
             return
         }
 
-        Log.d("DatasetInstancesVM", "Starting enhanced sync for dataset: $datasetId, uploadFirst: $uploadFirst")
+        Log.d("DatasetInstancesVM", "Starting enhanced sync for program: $programId, type: $currentProgramType, uploadFirst: $uploadFirst")
         viewModelScope.launch {
             try {
                 // Use the enhanced SyncQueueManager which provides detailed progress tracking
@@ -329,27 +456,31 @@ class DatasetInstancesViewModel @Inject constructor(
             _state.value = _state.value.copy(isLoading = true, error = null)
             var anyError: String? = null
             for ((uid, instance) in allInstances) {
-                val shouldBeComplete = selected.contains(uid) || instance.state == com.ash.simpledataentry.domain.model.DatasetInstanceState.COMPLETE
-                val isComplete = instance.state == com.ash.simpledataentry.domain.model.DatasetInstanceState.COMPLETE
-                val result: Result<Unit>? = when {
-                    shouldBeComplete && !isComplete -> datasetInstacesRepository.completeDatasetInstance(
-                        datasetId = instance.datasetId,
-                        period = instance.period.id,
-                        orgUnit = instance.organisationUnit.id,
-                        attributeOptionCombo = instance.attributeOptionCombo
-                    )
-                    !shouldBeComplete && isComplete -> datasetInstacesRepository.markDatasetInstanceIncomplete(
-                        datasetId = instance.datasetId,
-                        period = instance.period.id,
-                        orgUnit = instance.organisationUnit.id,
-                        attributeOptionCombo = instance.attributeOptionCombo
-                    )
-                    else -> null // No action needed
+                // Only handle completion for dataset instances for now
+                if (instance is ProgramInstance.DatasetInstance) {
+                    val shouldBeComplete = selected.contains(uid) || instance.state == com.ash.simpledataentry.domain.model.ProgramInstanceState.COMPLETED
+                    val isComplete = instance.state == com.ash.simpledataentry.domain.model.ProgramInstanceState.COMPLETED
+                    val result: Result<Unit>? = when {
+                        shouldBeComplete && !isComplete -> datasetInstacesRepository.completeDatasetInstance(
+                            datasetId = instance.programId,
+                            period = instance.period.id,
+                            orgUnit = instance.organisationUnit.id,
+                            attributeOptionCombo = instance.attributeOptionCombo
+                        )
+                        !shouldBeComplete && isComplete -> datasetInstacesRepository.markDatasetInstanceIncomplete(
+                            datasetId = instance.programId,
+                            period = instance.period.id,
+                            orgUnit = instance.organisationUnit.id,
+                            attributeOptionCombo = instance.attributeOptionCombo
+                        )
+                        else -> null // No action needed
+                    }
+                    if (result != null && result.isFailure) {
+                        anyError = result.exceptionOrNull()?.message ?: "Unknown error"
+                        break
+                    }
                 }
-                if (result != null && result.isFailure) {
-                    anyError = result.exceptionOrNull()?.message ?: "Unknown error"
-                    break
-                }
+                // TODO: Handle tracker enrollments and events completion
             }
             _state.value = _state.value.copy(isLoading = false)
             if (anyError != null) {
@@ -363,11 +494,11 @@ class DatasetInstancesViewModel @Inject constructor(
     fun markDatasetInstanceIncomplete(uid: String, onResult: (Boolean, String?) -> Unit) {
         val allInstances = _state.value.instances.associateBy { it.id }
         val instance = allInstances[uid]
-        if (instance != null) {
+        if (instance is ProgramInstance.DatasetInstance) {
             viewModelScope.launch {
                 _state.value = _state.value.copy(isLoading = true, error = null)
                 val result = datasetInstacesRepository.markDatasetInstanceIncomplete(
-                    datasetId = instance.datasetId,
+                    datasetId = instance.programId,
                     period = instance.period.id,
                     orgUnit = instance.organisationUnit.id,
                     attributeOptionCombo = instance.attributeOptionCombo
@@ -379,6 +510,8 @@ class DatasetInstancesViewModel @Inject constructor(
                     onResult(true, null)
                 }
             }
+        } else {
+            onResult(false, "Operation not supported for this instance type")
         }
     }
 
@@ -389,9 +522,9 @@ class DatasetInstancesViewModel @Inject constructor(
             var anyError: String? = null
             for (uid in uids) {
                 val instance = allInstances[uid]
-                if (instance != null) {
+                if (instance is ProgramInstance.DatasetInstance) {
                     val result = datasetInstacesRepository.markDatasetInstanceIncomplete(
-                        datasetId = instance.datasetId,
+                        datasetId = instance.programId,
                         period = instance.period.id,
                         orgUnit = instance.organisationUnit.id,
                         attributeOptionCombo = instance.attributeOptionCombo
@@ -401,6 +534,7 @@ class DatasetInstancesViewModel @Inject constructor(
                         break
                     }
                 }
+                // TODO: Handle tracker enrollments and events
             }
             _state.value = _state.value.copy(isLoading = false)
             if (anyError != null) {
@@ -414,11 +548,11 @@ class DatasetInstancesViewModel @Inject constructor(
     fun markDatasetInstanceComplete(uid: String, onResult: (Boolean, String?) -> Unit) {
         val allInstances = _state.value.instances.associateBy { it.id }
         val instance = allInstances[uid]
-        if (instance != null) {
+        if (instance is ProgramInstance.DatasetInstance) {
             viewModelScope.launch {
                 _state.value = _state.value.copy(isLoading = true, error = null)
                 val result = datasetInstacesRepository.completeDatasetInstance(
-                    datasetId = instance.datasetId,
+                    datasetId = instance.programId,
                     period = instance.period.id,
                     orgUnit = instance.organisationUnit.id,
                     attributeOptionCombo = instance.attributeOptionCombo
@@ -430,6 +564,8 @@ class DatasetInstancesViewModel @Inject constructor(
                     onResult(true, null)
                 }
             }
+        } else {
+            onResult(false, "Operation not supported for this instance type")
         }
     }
 
@@ -442,7 +578,7 @@ class DatasetInstancesViewModel @Inject constructor(
         )
     }
 
-    private fun applyFilters(instances: List<DatasetInstance>): List<DatasetInstance> {
+    private fun applyFilters(instances: List<ProgramInstance>): List<ProgramInstance> {
         val filter = _filterState.value
         val periodHelper = PeriodHelper()
 
@@ -459,15 +595,16 @@ class DatasetInstancesViewModel @Inject constructor(
         }
 
         return instances.filter { instance ->
-            val periodMatches = if (filter.periodType == PeriodFilterType.ALL) true else instance.period.id in periodIds
+            // Period filtering only applies to dataset instances
+            val periodMatches = when (instance) {
+                is ProgramInstance.DatasetInstance -> {
+                    if (filter.periodType == PeriodFilterType.ALL) true else instance.period.id in periodIds
+                }
+                is ProgramInstance.TrackerEnrollment, is ProgramInstance.EventInstance -> true // No period filtering for tracker/events
+            }
 
             // Check sync status based on draft data values
-            val instanceKey = createInstanceKey(
-                instance.datasetId,
-                instance.period.id,
-                instance.organisationUnit.id,
-                instance.attributeOptionCombo
-            )
+            val instanceKey = createInstanceKey(instance)
             val hasDraftValues = _state.value.instancesWithDrafts.contains(instanceKey)
 
             val syncStatusMatches = when (filter.syncStatus) {
@@ -475,23 +612,54 @@ class DatasetInstancesViewModel @Inject constructor(
                 SyncStatus.SYNCED -> !hasDraftValues // No draft values = synced
                 SyncStatus.NOT_SYNCED -> hasDraftValues // Has draft values = not synced
             }
+
             val completionMatches = when (filter.completionStatus) {
                 CompletionStatus.ALL -> true
-                CompletionStatus.COMPLETE -> instance.state == DatasetInstanceState.COMPLETE
-                CompletionStatus.INCOMPLETE -> instance.state == DatasetInstanceState.OPEN
+                CompletionStatus.COMPLETE -> when (instance.state) {
+                    com.ash.simpledataentry.domain.model.ProgramInstanceState.COMPLETED,
+                    com.ash.simpledataentry.domain.model.ProgramInstanceState.APPROVED -> true
+                    else -> false
+                }
+                CompletionStatus.INCOMPLETE -> when (instance.state) {
+                    com.ash.simpledataentry.domain.model.ProgramInstanceState.ACTIVE,
+                    com.ash.simpledataentry.domain.model.ProgramInstanceState.SCHEDULED,
+                    com.ash.simpledataentry.domain.model.ProgramInstanceState.OVERDUE -> true
+                    else -> false
+                }
             }
-            val attributeOptionComboMatches = if (filter.attributeOptionCombo == null) {
-                true
-            } else {
-                instance.attributeOptionCombo == filter.attributeOptionCombo
+
+            // Attribute option combo filtering only applies to dataset instances
+            val attributeOptionComboMatches = when (instance) {
+                is ProgramInstance.DatasetInstance -> {
+                    if (filter.attributeOptionCombo == null) {
+                        true
+                    } else {
+                        instance.attributeOptionCombo == filter.attributeOptionCombo
+                    }
+                }
+                is ProgramInstance.TrackerEnrollment, is ProgramInstance.EventInstance -> true
             }
+
             val searchMatches = if (filter.searchQuery.isBlank()) {
                 true
             } else {
                 val query = filter.searchQuery.lowercase()
-                instance.organisationUnit.name.lowercase().contains(query) ||
-                        instance.period.id.lowercase().contains(query)
+                when (instance) {
+                    is ProgramInstance.DatasetInstance -> {
+                        instance.organisationUnit.name.lowercase().contains(query) ||
+                                instance.period.id.lowercase().contains(query)
+                    }
+                    is ProgramInstance.TrackerEnrollment -> {
+                        instance.organisationUnit.name.lowercase().contains(query) ||
+                                instance.trackedEntityInstance.lowercase().contains(query)
+                    }
+                    is ProgramInstance.EventInstance -> {
+                        instance.organisationUnit.name.lowercase().contains(query) ||
+                                instance.programStage.lowercase().contains(query)
+                    }
+                }
             }
+
             periodMatches && syncStatusMatches && completionMatches && attributeOptionComboMatches && searchMatches
         }
     }
@@ -504,22 +672,27 @@ class DatasetInstancesViewModel @Inject constructor(
         )
     }
 
-    private fun orderInstances(instances: List<DatasetInstance>): List<DatasetInstance> {
+    private fun orderInstances(instances: List<ProgramInstance>): List<ProgramInstance> {
         val filter = _filterState.value
 
         val sorted = when (filter.sortBy) {
             InstanceSortBy.ORGANISATION_UNIT -> instances.sortedBy { it.organisationUnit.name.lowercase() }
             InstanceSortBy.PERIOD -> instances.sortedWith(
-                compareBy<DatasetInstance> { parseDhis2PeriodToDate(it.period.id)?.time ?: 0L }
-                    .thenBy { it.attributeOptionCombo }
+                compareBy<ProgramInstance> { instance ->
+                    when (instance) {
+                        is ProgramInstance.DatasetInstance -> parseDhis2PeriodToDate(instance.period.id)?.time ?: 0L
+                        is ProgramInstance.TrackerEnrollment -> instance.enrollmentDate.time
+                        is ProgramInstance.EventInstance -> instance.eventDate?.time ?: 0L
+                    }
+                }.thenBy { instance ->
+                    when (instance) {
+                        is ProgramInstance.DatasetInstance -> instance.attributeOptionCombo
+                        is ProgramInstance.TrackerEnrollment -> instance.trackedEntityInstance
+                        is ProgramInstance.EventInstance -> instance.programStage
+                    }
+                }
             )
-            InstanceSortBy.LAST_UPDATED -> instances.sortedBy {
-                it.lastUpdated?.toString()?.let { dateStr ->
-                    try {
-                        java.text.SimpleDateFormat("EEE MMM dd HH:mm:ss zzz yyyy", java.util.Locale.ENGLISH).parse(dateStr)?.time
-                    } catch (e: Exception) { 0L }
-                } ?: 0L
-            }
+            InstanceSortBy.LAST_UPDATED -> instances.sortedBy { it.lastUpdated.time }
             InstanceSortBy.COMPLETION_STATUS -> instances.sortedBy { it.state.ordinal }
         }
 
