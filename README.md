@@ -10,40 +10,43 @@
 
 > **Streamlined offline-first DHIS2 data collection with modern Android architecture**
 
-SimpleDataEntry is a production-ready Android application built for efficient DHIS2 data collection with comprehensive offline capabilities. Designed for field workers, health professionals, and data collectors who need reliable, fast, and intuitive data entry tools that work seamlessly both online and offline.
+SimpleDataEntry is a production-ready Android application built for efficient DHIS2 data collection with comprehensive offline capabilities and universal DHIS2 program support. Designed for field workers, health professionals, and data collectors who need reliable, fast, and intuitive data entry tools that work seamlessly both online and offline. Supports aggregate datasets, tracker programs, and event programs with robust foreign key constraint violation handling.
 
 ---
 
 ## Features
 
-- **Offline-First Architecture:**
-  - All metadata (datasets, data elements, category combos, option combos, org units) and data drafts are cached in a local Room database.
-  - The app always loads from Room first for instant, robust offline use.
-  - After login/sync, the app hydrates its Room cache from the DHIS2 SDK.
-  - The app only fetches from the DHIS2 SDK/server if Room is empty and the device is online.
-- **Datasets Listing:**
-  - View available datasets for the logged-in user and organization unit.
-- **Data Entries Listing:**
-  - View available data entries for the logged-in user and organization unit.
-  - See last updated dates and attribute option combos for each instance.
-- **Create New Data Entry:**
-  - Guided workflow to create a new data entry for a dataset, period, org unit, and attribute option combo.
-- **Edit Existing Data Entry:**
-  - Edit all data values for a dataset instance, grouped by section and category.
-  - Accordion UI for easy navigation between sections and category groups.
-  - Data fields support text, numbers, integers, percentages, dates, coordinates, and yes/no (boolean) types.
-- **Immediate Value Persistence:**
-  - Each field saves immediately as a local draft, with optimistic UI updates and error handling.
-- **Validation:**
-  - Built-in validation for value types (number, integer, percentage, etc.) and required fields.
-- **Manual Refresh & Sync:**
-  - Users can manually refresh dataset instances and data values to ensure up-to-date information.
-- **Performance Optimizations:**
-  - Efficient Compose state management and Room caching for instant UI and minimal lag.
-- **Error Handling:**
-  - User-friendly error messages for failed saves, validation errors, and sync issues.
-- **DHIS2 Integration:**
-  - Uses DHIS2 Android SDK for authentication, data value management, and metadata sync.
+### **Universal DHIS2 Program Support**
+- **Aggregate Datasets:** Full support for traditional DHIS2 dataset data entry
+- **Tracker Programs:** Support for individual-based programs with enrollment creation
+- **Event Programs:** Support for standalone event programs with event creation
+- **Unified Interface:** Single app interface supporting all DHIS2 program types
+
+### **Offline-First Architecture**
+- All metadata (datasets, data elements, category combos, option combos, org units) and data drafts are cached in a local Room database
+- The app always loads from Room first for instant, robust offline use
+- After login/sync, the app hydrates its Room cache from the DHIS2 SDK
+- The app only fetches from the DHIS2 SDK/server if Room is empty and the device is online
+
+### **DHIS2 SDK Foreign Key Constraint Resolution**
+- **Comprehensive FK Violation Handling:** Automatic detection and resolution of CategoryOptionCombo foreign key violations
+- **Expanded Metadata Scope:** Enhanced metadata synchronization including all dependencies
+- **Multi-Data Type Support:** Works for aggregate datasets, tracker programs, and event programs
+- **Real-Time Detection:** Inspection and automatic resolution of database constraint violations
+
+### **Data Management**
+- **Programs Listing:** View available datasets, tracker programs, and event programs for the logged-in user
+- **Instance Management:** View and manage data entries, enrollments, and events with filtering and search
+- **Create New Entries:** Guided workflow for creating new instances across all program types
+- **Edit Existing Data:** Full editing capabilities for all data types with accordion UI navigation
+- **Data Type Support:** Text, numbers, integers, percentages, dates, coordinates, and yes/no fields
+
+### **Reliability & Performance**
+- **Immediate Value Persistence:** Each field saves immediately as local draft with optimistic UI updates
+- **Built-in Validation:** Value type validation and required field checking
+- **Manual Refresh & Sync:** User-controlled sync with detailed progress tracking
+- **Performance Optimizations:** Efficient Compose state management and Room caching
+- **Error Handling:** Comprehensive error messages for saves, validation, and sync issues
 
 ---
 
@@ -197,8 +200,10 @@ Test the offline-first flow by:
 
 ## Known Issues & Limitations
 
-1. Data entries UX needs more polish
-2. Some advanced DHIS2 features (e.g., tracker, events) are not yet supported
+1. **Tracker Data Entry:** Full tracker data entry screens are in Phase 3 development
+2. **Event Data Entry:** Event-specific data entry forms are in Phase 3 development
+3. **Advanced Features:** Program rules, relationships, and tracker-specific sync features are planned for future releases
+4. **UI Polish:** Some data entry UX elements need additional refinement
 
 ---
 

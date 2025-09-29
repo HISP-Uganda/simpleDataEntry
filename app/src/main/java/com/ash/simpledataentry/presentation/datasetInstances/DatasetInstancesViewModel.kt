@@ -31,6 +31,7 @@ import dagger.hilt.android.lifecycle.HiltViewModel
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
 import javax.inject.Inject
 
@@ -60,6 +61,7 @@ class DatasetInstancesViewModel @Inject constructor(
     private val datasetsRepository: com.ash.simpledataentry.domain.repository.DatasetsRepository,
     private val draftDao: DataValueDraftDao,
     private val syncQueueManager: SyncQueueManager,
+    private val sessionManager: com.ash.simpledataentry.data.SessionManager,
     private val app: Application
 ) : ViewModel() {
     private var programId: String = ""
@@ -130,6 +132,86 @@ class DatasetInstancesViewModel @Inject constructor(
             currentProgramType = programType
             Log.d("DatasetInstancesVM", "Initializing ViewModel with program: $programId, type: $programType")
             loadData()
+        }
+    }
+
+    /**
+     * CRITICAL FIX: Auto-detect program type and initialize appropriately
+     * This solves the tracker/event data display issue
+     */
+    fun initializeWithProgramId(id: String) {
+        if (id.isEmpty()) return
+
+        viewModelScope.launch {
+            try {
+                Log.d("DatasetInstancesVM", "Auto-detecting program type for ID: $id using DHIS2 SDK directly")
+
+                // Use DHIS2 SDK directly to avoid Flow issues
+                val d2 = sessionManager.getD2()
+
+                if (d2 == null) {
+                    Log.e("DatasetInstancesVM", "D2 not initialized, defaulting to DATASET")
+                    setDatasetId(id)
+                    return@launch
+                }
+
+                var foundType: ProgramType? = null
+
+                // Check datasets directly via DHIS2 SDK
+                try {
+                    val datasets = d2.dataSetModule().dataSets().blockingGet()
+                    if (datasets.any { it.uid() == id }) {
+                        foundType = ProgramType.DATASET
+                        Log.d("DatasetInstancesVM", "Found as dataset: $id")
+                    }
+                } catch (e: Exception) {
+                    Log.w("DatasetInstancesVM", "Error checking datasets via SDK: ${e.message}")
+                }
+
+                // Check tracker programs directly via DHIS2 SDK
+                if (foundType == null) {
+                    try {
+                        val programs = d2.programModule().programs()
+                            .byProgramType().eq(org.hisp.dhis.android.core.program.ProgramType.WITH_REGISTRATION)
+                            .blockingGet()
+                        if (programs.any { it.uid() == id }) {
+                            foundType = ProgramType.TRACKER
+                            Log.d("DatasetInstancesVM", "Found as tracker program: $id")
+                        }
+                    } catch (e: Exception) {
+                        Log.w("DatasetInstancesVM", "Error checking tracker programs via SDK: ${e.message}")
+                    }
+                }
+
+                // Check event programs directly via DHIS2 SDK
+                if (foundType == null) {
+                    try {
+                        val programs = d2.programModule().programs()
+                            .byProgramType().eq(org.hisp.dhis.android.core.program.ProgramType.WITHOUT_REGISTRATION)
+                            .blockingGet()
+                        if (programs.any { it.uid() == id }) {
+                            foundType = ProgramType.EVENT
+                            Log.d("DatasetInstancesVM", "Found as event program: $id")
+                        }
+                    } catch (e: Exception) {
+                        Log.w("DatasetInstancesVM", "Error checking event programs via SDK: ${e.message}")
+                    }
+                }
+
+                // Use the detected type or default to DATASET
+                val detectedType = foundType ?: ProgramType.DATASET
+                Log.d("DatasetInstancesVM", "Auto-detected program type: $detectedType for ID: $id")
+
+                // Now initialize with the correct type
+                if (detectedType == ProgramType.DATASET) {
+                    setDatasetId(id)
+                } else {
+                    setProgramId(id, detectedType)
+                }
+            } catch (e: Exception) {
+                Log.e("DatasetInstancesVM", "Failed to auto-detect program type for $id, defaulting to DATASET", e)
+                setDatasetId(id)
+            }
         }
     }
 
@@ -382,36 +464,87 @@ class DatasetInstancesViewModel @Inject constructor(
         Log.d("DatasetInstancesVM", "Starting enhanced sync for program: $programId, type: $currentProgramType, uploadFirst: $uploadFirst")
         viewModelScope.launch {
             try {
-                // Use the enhanced SyncQueueManager which provides detailed progress tracking
-                val syncResult = syncQueueManager.startSync(forceSync = uploadFirst)
-                syncResult.fold(
-                    onSuccess = {
-                        Log.d("DatasetInstancesVM", "Enhanced sync completed successfully")
-                        loadData() // Reload all data after sync
-                        val message = if (uploadFirst) {
-                            "Data synchronized successfully with enhanced progress tracking"
-                        } else {
-                            "Dataset instances synced successfully"
-                        }
-                        _state.value = _state.value.copy(
-                            successMessage = message,
-                            detailedSyncProgress = null // Clear progress when done
-                        )
-                    },
-                    onFailure = { error ->
-                        Log.e("DatasetInstancesVM", "Enhanced sync failed", error)
-                        val errorMessage = error.message ?: "Failed to sync dataset instances"
-                        _state.value = _state.value.copy(
-                            error = errorMessage,
-                            detailedSyncProgress = null // Clear progress on failure
+                when (currentProgramType) {
+                    com.ash.simpledataentry.domain.model.ProgramType.TRACKER -> {
+                        Log.d("DatasetInstancesVM", "Syncing tracker program data from server")
+                        val syncResult = datasetInstacesRepository.syncProgramInstances(programId, currentProgramType)
+                        syncResult.fold(
+                            onSuccess = {
+                                Log.d("DatasetInstancesVM", "Tracker data sync completed successfully")
+                                loadData() // Reload all data after sync
+                                _state.value = _state.value.copy(
+                                    successMessage = "Tracker enrollments synced successfully from server",
+                                    detailedSyncProgress = null
+                                )
+                            },
+                            onFailure = { error ->
+                                Log.e("DatasetInstancesVM", "Tracker sync failed", error)
+                                _state.value = _state.value.copy(
+                                    error = "Failed to sync tracker data: ${error.message}",
+                                    detailedSyncProgress = null
+                                )
+                            }
                         )
                     }
-                )
+                    com.ash.simpledataentry.domain.model.ProgramType.EVENT -> {
+                        Log.d("DatasetInstancesVM", "Syncing event program data from server")
+                        val syncResult = datasetInstacesRepository.syncProgramInstances(programId, currentProgramType)
+                        syncResult.fold(
+                            onSuccess = {
+                                Log.d("DatasetInstancesVM", "Event data sync completed successfully")
+                                loadData() // Reload all data after sync
+                                _state.value = _state.value.copy(
+                                    successMessage = "Event instances synced successfully from server",
+                                    detailedSyncProgress = null
+                                )
+                            },
+                            onFailure = { error ->
+                                Log.e("DatasetInstancesVM", "Event sync failed", error)
+                                _state.value = _state.value.copy(
+                                    error = "Failed to sync event data: ${error.message}",
+                                    detailedSyncProgress = null
+                                )
+                            }
+                        )
+                    }
+                    com.ash.simpledataentry.domain.model.ProgramType.DATASET -> {
+                        // Use the enhanced SyncQueueManager for dataset synchronization
+                        val syncResult = syncQueueManager.startSync(forceSync = uploadFirst)
+                        syncResult.fold(
+                            onSuccess = {
+                                Log.d("DatasetInstancesVM", "Dataset sync completed successfully")
+                                loadData() // Reload all data after sync
+                                val message = if (uploadFirst) {
+                                    "Data synchronized successfully with enhanced progress tracking"
+                                } else {
+                                    "Dataset instances synced successfully"
+                                }
+                                _state.value = _state.value.copy(
+                                    successMessage = message,
+                                    detailedSyncProgress = null
+                                )
+                            },
+                            onFailure = { error ->
+                                Log.e("DatasetInstancesVM", "Dataset sync failed", error)
+                                _state.value = _state.value.copy(
+                                    error = error.message ?: "Failed to sync dataset instances",
+                                    detailedSyncProgress = null
+                                )
+                            }
+                        )
+                    }
+                    else -> {
+                        Log.w("DatasetInstancesVM", "Unknown program type for sync: $currentProgramType")
+                        _state.value = _state.value.copy(
+                            error = "Cannot sync: Unknown program type"
+                        )
+                    }
+                }
             } catch (e: Exception) {
-                Log.e("DatasetInstancesVM", "Enhanced sync failed", e)
+                Log.e("DatasetInstancesVM", "Sync failed", e)
                 _state.value = _state.value.copy(
                     isSyncing = false,
-                    error = e.message ?: "Failed to sync dataset instances",
+                    error = e.message ?: "Failed to sync data",
                     detailedSyncProgress = null
                 )
             }

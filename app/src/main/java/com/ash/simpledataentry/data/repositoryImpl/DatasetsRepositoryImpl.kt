@@ -119,7 +119,15 @@ class DatasetsRepositoryImpl(
             val programs = d2Instance.programModule().programs()
                 .byProgramType().eq(SdkProgramType.WITH_REGISTRATION)
                 .blockingGet()
-                .map { it.toDomainModel() }
+                .map { sdkProgram ->
+                    val domainProgram = sdkProgram.toDomainModel()
+                    // Get actual enrollment count from repository
+                    val enrollmentCount = datasetInstancesRepository.getProgramInstanceCount(
+                        domainProgram.id,
+                        com.ash.simpledataentry.domain.model.ProgramType.TRACKER
+                    )
+                    domainProgram.copy(enrollmentCount = enrollmentCount)
+                }
 
             Log.d(TAG, "Retrieved ${programs.size} tracker programs from SDK")
             emit(programs)
@@ -135,7 +143,15 @@ class DatasetsRepositoryImpl(
             val programs = d2Instance.programModule().programs()
                 .byProgramType().eq(SdkProgramType.WITHOUT_REGISTRATION)
                 .blockingGet()
-                .map { it.toDomainModel() }
+                .map { sdkProgram ->
+                    val domainProgram = sdkProgram.toDomainModel()
+                    // Get actual event count from repository
+                    val eventCount = datasetInstancesRepository.getProgramInstanceCount(
+                        domainProgram.id,
+                        com.ash.simpledataentry.domain.model.ProgramType.EVENT
+                    )
+                    domainProgram.copy(enrollmentCount = eventCount)
+                }
 
             Log.d(TAG, "Retrieved ${programs.size} event programs from SDK")
             emit(programs)

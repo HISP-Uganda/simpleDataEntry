@@ -131,12 +131,12 @@ fun ProgramInstance.asEvent(): Event? = when (this) {
         completedDate = this.completedDate,
         coordinates = this.coordinates,
         status = when (this.state) {
-            ProgramInstanceState.ACTIVE -> EventStatus.ACTIVE
-            ProgramInstanceState.COMPLETED -> EventStatus.COMPLETED
-            ProgramInstanceState.OVERDUE -> EventStatus.OVERDUE
-            ProgramInstanceState.SCHEDULED -> EventStatus.SCHEDULE
-            ProgramInstanceState.SKIPPED -> EventStatus.SKIPPED
-            else -> EventStatus.ACTIVE
+            ProgramInstanceState.ACTIVE -> "ACTIVE"
+            ProgramInstanceState.COMPLETED -> "COMPLETED"
+            ProgramInstanceState.OVERDUE -> "OVERDUE"
+            ProgramInstanceState.SCHEDULED -> "SCHEDULE"
+            ProgramInstanceState.SKIPPED -> "SKIPPED"
+            else -> "ACTIVE"
         },
         lastUpdated = this.lastUpdated,
         dataValues = this.dataValues

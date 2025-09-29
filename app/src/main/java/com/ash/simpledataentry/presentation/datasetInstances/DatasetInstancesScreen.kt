@@ -318,8 +318,11 @@ fun DatasetInstancesScreen(
     var showSyncDialog by remember { mutableStateOf(false) }
     var showFilterSection by remember { mutableStateOf(false) }
 
+    // CRITICAL FIX: Detect program type and call appropriate method
     LaunchedEffect(datasetId) {
-        viewModel.setDatasetId(datasetId)
+        // First, we need to determine what type of program this is
+        // We'll let the ViewModel detect the program type based on the ID
+        viewModel.initializeWithProgramId(datasetId)
     }
 
     // Refresh data when the screen is resumed (e.g., coming back from EditEntryScreen)
@@ -401,17 +404,50 @@ fun DatasetInstancesScreen(
                 FloatingActionButton(
                     onClick = {
                         val encodedDatasetName = URLEncoder.encode(datasetName, "UTF-8")
-                        navController.navigate("CreateDataEntry/$datasetId/$encodedDatasetName") {
-                            launchSingleTop = true
-                            popUpTo("DatasetInstances/{datasetId}/{datasetName}") {
-                                saveState = true
+                        when (state.programType) {
+                            com.ash.simpledataentry.domain.model.ProgramType.DATASET -> {
+                                navController.navigate("CreateDataEntry/$datasetId/$encodedDatasetName") {
+                                    launchSingleTop = true
+                                    popUpTo("DatasetInstances/{datasetId}/{datasetName}") {
+                                        saveState = true
+                                    }
+                                }
+                            }
+                            com.ash.simpledataentry.domain.model.ProgramType.TRACKER -> {
+                                navController.navigate("CreateEnrollment/$datasetId/$encodedDatasetName") {
+                                    launchSingleTop = true
+                                    popUpTo("DatasetInstances/{datasetId}/{datasetName}") {
+                                        saveState = true
+                                    }
+                                }
+                            }
+                            com.ash.simpledataentry.domain.model.ProgramType.EVENT -> {
+                                navController.navigate("CreateEvent/$datasetId/$encodedDatasetName") {
+                                    launchSingleTop = true
+                                    popUpTo("DatasetInstances/{datasetId}/{datasetName}") {
+                                        saveState = true
+                                    }
+                                }
+                            }
+                            else -> {
+                                // Default to dataset creation for unknown types
+                                navController.navigate("CreateDataEntry/$datasetId/$encodedDatasetName") {
+                                    launchSingleTop = true
+                                    popUpTo("DatasetInstances/{datasetId}/{datasetName}") {
+                                        saveState = true
+                                    }
+                                }
                             }
                         }
                     }
                 ) {
                     Icon(
                         imageVector = Icons.Default.Add,
-                        contentDescription = "Create Data Entry"
+                        contentDescription = when (state.programType) {
+                            com.ash.simpledataentry.domain.model.ProgramType.TRACKER -> "Create Enrollment"
+                            com.ash.simpledataentry.domain.model.ProgramType.EVENT -> "Create Event"
+                            else -> "Create Data Entry"
+                        }
                     )
                 }
             }
@@ -480,19 +516,9 @@ fun DatasetInstancesScreen(
                             items(state.filteredInstances) { instance ->
                                 var isLoading by remember { mutableStateOf(false) }
                                 val formattedDate = try {
-                                    instance.lastUpdated?.let { dateStr ->
-                                        if (dateStr is String) {
-                                            val inputFormat = SimpleDateFormat(
-                                                "EEE MMM dd HH:mm:ss zzz yyyy",
-                                                Locale.ENGLISH
-                                            )
-                                            val outputFormat =
-                                                SimpleDateFormat("dd/MM/yyyy", Locale.ENGLISH)
-                                            val date = inputFormat.parse(dateStr)
-                                            date?.let { outputFormat.format(it) } ?: "N/A"
-                                        } else {
-                                            "N/A"
-                                        }
+                                    instance.lastUpdated?.let { date ->
+                                        val outputFormat = SimpleDateFormat("dd/MM/yyyy", Locale.ENGLISH)
+                                        outputFormat.format(date)
                                     } ?: "N/A"
                                 } catch (e: Exception) {
                                     Log.e("DatasetInstancesScreen", "Error parsing date: ", e)
@@ -575,16 +601,33 @@ fun DatasetInstancesScreen(
                                                         URLEncoder.encode(datasetId, "UTF-8")
                                                     val encodedDatasetName =
                                                         URLEncoder.encode(datasetName, "UTF-8")
-                                                    // Only navigate to data entry for dataset instances for now
-                                                    if (instance is com.ash.simpledataentry.domain.model.ProgramInstance.DatasetInstance) {
-                                                        navController.navigate("EditEntry/$encodedDatasetId/${instance.period.id}/${instance.organisationUnit.id}/${instance.attributeOptionCombo}/$encodedDatasetName") {
-                                                            launchSingleTop = true
-                                                            popUpTo("DatasetInstances/{datasetId}/{datasetName}") {
-                                                                saveState = true
+                                                    // Navigate based on program instance type
+                                                    when (instance) {
+                                                        is com.ash.simpledataentry.domain.model.ProgramInstance.DatasetInstance -> {
+                                                            navController.navigate("EditEntry/$encodedDatasetId/${instance.period.id}/${instance.organisationUnit.id}/${instance.attributeOptionCombo}/$encodedDatasetName") {
+                                                                launchSingleTop = true
+                                                                popUpTo("DatasetInstances/{datasetId}/{datasetName}") {
+                                                                    saveState = true
+                                                                }
+                                                            }
+                                                        }
+                                                        is com.ash.simpledataentry.domain.model.ProgramInstance.TrackerEnrollment -> {
+                                                            navController.navigate("TrackerDashboard/${instance.id}/$encodedDatasetId/$encodedDatasetName") {
+                                                                launchSingleTop = true
+                                                                popUpTo("DatasetInstances/{datasetId}/{datasetName}") {
+                                                                    saveState = true
+                                                                }
+                                                            }
+                                                        }
+                                                        is com.ash.simpledataentry.domain.model.ProgramInstance.EventInstance -> {
+                                                            navController.navigate("EditEvent/$encodedDatasetId/$encodedDatasetName/${instance.id}/") {
+                                                                launchSingleTop = true
+                                                                popUpTo("DatasetInstances/{datasetId}/{datasetName}") {
+                                                                    saveState = true
+                                                                }
                                                             }
                                                         }
                                                     }
-                                                    // TODO: Add navigation for tracker enrollments and events
                                                 }
                                             }
                                         ) {
@@ -840,5 +883,5 @@ fun DatasetInstancesScreen(
                 null
             }
         }
-    }
-}
+}}
+

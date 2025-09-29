@@ -25,6 +25,9 @@ import com.ash.simpledataentry.presentation.datasets.DatasetsScreen
 import com.ash.simpledataentry.presentation.issues.ReportIssuesScreen
 import com.ash.simpledataentry.presentation.login.LoginScreen
 import com.ash.simpledataentry.presentation.settings.SettingsScreen
+import com.ash.simpledataentry.presentation.tracker.TrackerEnrollmentScreen
+import com.ash.simpledataentry.presentation.tracker.EventCaptureScreen
+import com.ash.simpledataentry.presentation.tracker.TrackerDashboardScreen
 
 sealed class Screen(val route: String) {
 
@@ -202,7 +205,6 @@ fun AppNavigation(
             EventCaptureScreen(
                 navController = navController,
                 programId = programId,
-                programName = programName,
                 programStageId = programStageId,
                 eventId = null,
                 enrollmentId = null
@@ -231,10 +233,29 @@ fun AppNavigation(
             EventCaptureScreen(
                 navController = navController,
                 programId = programId,
-                programName = programName,
                 programStageId = null,
                 eventId = eventId,
                 enrollmentId = enrollmentId
+            )
+        }
+
+        // Route for event creation (standalone events)
+        composable(
+            route = "CreateEvent/{programId}/{programName}",
+            arguments = listOf(
+                navArgument("programId") { type = NavType.StringType },
+                navArgument("programName") { type = NavType.StringType }
+            )
+        ) { backStackEntry ->
+            val programId = backStackEntry.arguments?.getString("programId") ?: ""
+            val programName = backStackEntry.arguments?.getString("programName") ?: ""
+
+            EventCaptureScreen(
+                navController = navController,
+                programId = programId,
+                programStageId = null, // Will be determined from program
+                eventId = null, // Creating new event
+                enrollmentId = null // Standalone event
             )
         }
 

@@ -20,12 +20,25 @@ data class TrackedEntity(
 )
 
 /**
+ * Tracked entity attribute definition
+ */
+data class TrackedEntityAttribute(
+    val id: String,
+    val displayName: String,
+    val description: String? = null,
+    val valueType: String = "TEXT",
+    val mandatory: Boolean = false
+)
+
+/**
  * Tracked entity attribute value
  */
 data class TrackedEntityAttributeValue(
-    val trackedEntityAttribute: String,
-    val trackedEntityInstance: String,
-    val value: String?,
+    val id: String = "",
+    val displayName: String = "",
+    val trackedEntityAttribute: String = "",
+    val trackedEntityInstance: String = "",
+    val value: String? = null,
     val created: Date = Date(),
     val lastUpdated: Date = Date()
 )
@@ -57,19 +70,23 @@ data class Enrollment(
  */
 data class Event(
     val id: String,
-    val enrollment: String? = null, // Null for event programs
-    val program: String,
-    val programStage: String,
-    val organisationUnit: String,
+    val programId: String = "",
+    val programStageId: String = "",
+    val programStageName: String? = null,
+    val enrollmentId: String? = null, // Null for event programs
+    val program: String = "",
+    val programStage: String = "",
+    val organisationUnitId: String = "",
+    val organisationUnit: String = "",
     val eventDate: Date? = null,
     val dueDate: Date? = null,
     val completedDate: Date? = null,
     val coordinates: Coordinates? = null,
     val featureType: FeatureType = FeatureType.NONE,
-    val status: EventStatus = EventStatus.ACTIVE,
+    val status: String = "ACTIVE",
     val assignedUser: String? = null,
     val created: Date = Date(),
-    val lastUpdated: Date = Date(),
+    val lastUpdated: Date? = null,
     val deleted: Boolean = false,
     val dataValues: List<TrackedEntityDataValue> = emptyList(),
     val notes: List<Note> = emptyList()
@@ -176,7 +193,7 @@ fun Enrollment.getEvents(programStageId: String? = null): List<Event> {
 }
 
 fun Enrollment.getLatestEvent(): Event? {
-    return events.maxByOrNull { it.lastUpdated }
+    return events.maxByOrNull { it.lastUpdated ?: Date(0) }
 }
 
 fun Event.getDataValue(dataElementId: String): String? {
@@ -184,10 +201,10 @@ fun Event.getDataValue(dataElementId: String): String? {
 }
 
 fun Event.isOverdue(): Boolean {
-    return status == EventStatus.OVERDUE ||
-           (dueDate != null && dueDate.before(Date()) && status != EventStatus.COMPLETED)
+    return status == "OVERDUE" ||
+           (dueDate != null && dueDate.before(Date()) && status != "COMPLETED")
 }
 
 fun Event.isCompleted(): Boolean {
-    return status == EventStatus.COMPLETED || completedDate != null
+    return status == "COMPLETED" || completedDate != null
 }
