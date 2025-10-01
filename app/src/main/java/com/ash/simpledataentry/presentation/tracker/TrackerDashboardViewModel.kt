@@ -43,6 +43,11 @@ data class TrackerDashboardUiState(
     // Events
     val events: List<Event> = emptyList(),
 
+    // Program Stages (for event creation)
+    val programStages: List<com.ash.simpledataentry.domain.model.ProgramStage> = emptyList(),
+    val eventCountsByStage: Map<String, Int> = emptyMap(),  // programStageId -> count
+    val showStageSelectionDialog: Boolean = false,
+
     // Sync functionality (reuse DataEntry patterns)
     val isSyncing: Boolean = false,
     val detailedSyncProgress: DetailedSyncProgress? = null
@@ -110,6 +115,13 @@ class TrackerDashboardViewModel @Inject constructor(
                 // Load events for this enrollment
                 val events = loadEnrollmentEvents(d2Instance, enrollmentId)
 
+                // Load program stages
+                val programStages = loadProgramStages(d2Instance, enrollment.program()!!)
+
+                // Calculate event counts by stage
+                val eventCountsByStage = events.groupBy { it.programStageId }
+                    .mapValues { it.value.size }
+
                 _uiState.value = _uiState.value.copy(
                     isLoading = false,
                     enrollmentId = enrollmentId,
@@ -123,7 +135,9 @@ class TrackerDashboardViewModel @Inject constructor(
                     enrollmentStatus = enrollment.status()?.name ?: "UNKNOWN",
                     canAddEvents = enrollment.status()?.name == "ACTIVE",
                     trackedEntityAttributes = trackedEntityAttributes,
-                    events = events
+                    events = events,
+                    programStages = programStages,
+                    eventCountsByStage = eventCountsByStage
                 )
 
             } catch (e: Exception) {
@@ -197,5 +211,33 @@ class TrackerDashboardViewModel @Inject constructor(
                 lastUpdated = event.lastUpdated()
             )
         }
+    }
+
+    private fun loadProgramStages(d2: D2, programId: String): List<com.ash.simpledataentry.domain.model.ProgramStage> {
+        val stages = d2.programModule().programStages()
+            .byProgramUid().eq(programId)
+            .orderBySortOrder(org.hisp.dhis.android.core.arch.repositories.scope.RepositoryScope.OrderByDirection.ASC)
+            .blockingGet()
+
+        return stages.map { stage ->
+            com.ash.simpledataentry.domain.model.ProgramStage(
+                id = stage.uid(),
+                name = stage.displayName() ?: stage.name() ?: "",
+                description = stage.description(),
+                programId = programId,
+                repeatable = stage.repeatable() ?: false,
+                sortOrder = stage.sortOrder() ?: 0,
+                executionDateLabel = stage.executionDateLabel(),
+                dueDateLabel = stage.dueDateLabel()
+            )
+        }
+    }
+
+    fun showStageSelectionDialog() {
+        _uiState.update { it.copy(showStageSelectionDialog = true) }
+    }
+
+    fun hideStageSelectionDialog() {
+        _uiState.update { it.copy(showStageSelectionDialog = false) }
     }
 }

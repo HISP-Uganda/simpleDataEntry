@@ -326,6 +326,7 @@ fun FullScreenLoader(
     animationType: LoadingAnimationType = LoadingConfig.primaryAnimation,
     progress: Int? = null,
     progressStep: String? = null,
+    showBackgroundWarning: Boolean = false,
     modifier: Modifier = Modifier
 ) {
     if (isVisible) {
@@ -337,7 +338,8 @@ fun FullScreenLoader(
         ) {
             Column(
                 horizontalAlignment = Alignment.CenterHorizontally,
-                verticalArrangement = Arrangement.Center
+                verticalArrangement = Arrangement.Center,
+                modifier = Modifier.padding(horizontal = 32.dp)
             ) {
                 LoadingAnimation(type = animationType, size = 32.dp)
                 Spacer(modifier = Modifier.height(24.dp))
@@ -365,6 +367,36 @@ fun FullScreenLoader(
                         style = MaterialTheme.typography.bodyLarge,
                         color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.7f)
                     )
+                }
+
+                // Background warning for login operations
+                if (showBackgroundWarning) {
+                    Spacer(modifier = Modifier.height(24.dp))
+                    Surface(
+                        color = MaterialTheme.colorScheme.tertiaryContainer,
+                        shape = MaterialTheme.shapes.medium,
+                        modifier = Modifier.padding(horizontal = 16.dp)
+                    ) {
+                        Row(
+                            modifier = Modifier.padding(12.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.Center
+                        ) {
+                            Icon(
+                                imageVector = Icons.Default.Info,
+                                contentDescription = "Warning",
+                                tint = MaterialTheme.colorScheme.onTertiaryContainer,
+                                modifier = Modifier.size(20.dp)
+                            )
+                            Spacer(modifier = Modifier.width(8.dp))
+                            Text(
+                                text = "Please keep the app open during login",
+                                style = MaterialTheme.typography.bodyMedium,
+                                color = MaterialTheme.colorScheme.onTertiaryContainer,
+                                textAlign = TextAlign.Center
+                            )
+                        }
+                    }
                 }
             }
         }

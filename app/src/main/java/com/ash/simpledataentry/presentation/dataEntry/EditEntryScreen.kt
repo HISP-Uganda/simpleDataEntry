@@ -584,15 +584,56 @@ fun EditEntryScreen(
                                                     .padding(horizontal = 16.dp),
                                                 verticalArrangement = Arrangement.spacedBy(8.dp)
                                             ) {
+                                                // Collect all data elements for this section
+                                                val allDataElements = elementGroups.values.flatten()
+
+                                                // Track which fields are part of grouped radio buttons
+                                                val fieldsInGroups = state.radioButtonGroups.values.flatten().toSet()
+
+                                                // Render grouped radio buttons first
+                                                state.radioButtonGroups.forEach { (groupTitle, dataElementIds) ->
+                                                    // Only render groups where at least one field is in this section
+                                                    val groupFields = allDataElements.filter { it.dataElement in dataElementIds }
+                                                    if (groupFields.isNotEmpty()) {
+                                                        val optionSet = groupFields.firstOrNull()?.let { state.optionSets[it.dataElement] }
+                                                        if (optionSet != null) {
+                                                            // Find which field (if any) has value "YES" or "true"
+                                                            val selectedFieldId = groupFields.firstOrNull {
+                                                                it.value?.lowercase() in listOf("yes", "true", "1")
+                                                            }?.dataElement
+
+                                                            com.ash.simpledataentry.presentation.dataEntry.components.GroupedRadioButtons(
+                                                                groupTitle = groupTitle,
+                                                                fields = groupFields,
+                                                                selectedFieldId = selectedFieldId,
+                                                                optionSet = optionSet,
+                                                                enabled = true,
+                                                                onFieldSelected = { selectedDataElementId ->
+                                                                    // Set selected field to YES, others to NO
+                                                                    groupFields.forEach { field ->
+                                                                        val newValue = if (field.dataElement == selectedDataElementId) "true" else "false"
+                                                                        onValueChange(newValue, field)
+                                                                    }
+                                                                },
+                                                                modifier = Modifier.fillMaxWidth()
+                                                            )
+                                                        }
+                                                    }
+                                                }
+
+                                                // Then render individual fields (excluding grouped ones)
                                                 elementGroups.entries
                                                     .sortedBy { dataElementOrder[it.key] ?: Int.MAX_VALUE } // Sort by dataset section order
                                                     .forEach { (_, dataValues) ->
                                                         dataValues.forEach { dataValue ->
-                                                            DataValueField(
-                                                                dataValue = dataValue,
-                                                                onValueChange = { value -> onValueChange(value, dataValue) },
-                                                                viewModel = viewModel
-                                                            )
+                                                            // Skip if this field is part of a radio button group
+                                                            if (dataValue.dataElement !in fieldsInGroups) {
+                                                                DataValueField(
+                                                                    dataValue = dataValue,
+                                                                    onValueChange = { value -> onValueChange(value, dataValue) },
+                                                                    viewModel = viewModel
+                                                                )
+                                                            }
                                                         }
                                                     }
                                             }
@@ -1290,12 +1331,34 @@ fun DataValueField(
         viewModel.initializeFieldState(dataValue)
     }
     val fieldState = viewModel.fieldStates[key] ?: androidx.compose.ui.text.input.TextFieldValue(dataValue.value ?: "")
+
+    // Get option set and render type from state
+    val state by viewModel.state.collectAsState()
+    val optionSet = state.optionSets[dataValue.dataElement]
+    val renderType = state.renderTypes[dataValue.dataElement] ?: optionSet?.computeRenderType()
+
+    // Check program rule effects
+    val isHidden = state.hiddenFields.contains(dataValue.dataElement)
+    val isDisabledByRule = state.disabledFields.contains(dataValue.dataElement)
+    val isMandatoryByRule = state.mandatoryFields.contains(dataValue.dataElement)
+    val warning = state.fieldWarnings[dataValue.dataElement]
+    val error = state.fieldErrors[dataValue.dataElement]
+    val calculatedValue = state.calculatedValues[dataValue.dataElement]
+
+    // If field is hidden by program rules, don't render it
+    if (isHidden) {
+        return
+    }
+
+    // Effective enabled state (disabled if field is disabled OR disabled by rule)
+    val effectiveEnabled = enabled && !isDisabledByRule
+
     Column(
         modifier = Modifier
             .fillMaxWidth()
             .padding(horizontal = 16.dp, vertical = 4.dp)
             .let { base ->
-                if (!enabled) {
+                if (!effectiveEnabled) {
                     base.background(
                         MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f),
                         MaterialTheme.shapes.small
@@ -1303,8 +1366,74 @@ fun DataValueField(
                 } else base
             }
     ) {
-        when (dataValue.dataEntryType) {
-            DataEntryType.YES_NO -> {
+        // Check if this data element has an option set first
+        when {
+            optionSet != null && renderType != null -> {
+                when (renderType) {
+                    com.ash.simpledataentry.domain.model.RenderType.DROPDOWN -> {
+                        com.ash.simpledataentry.presentation.dataEntry.components.OptionSetDropdown(
+                            optionSet = optionSet,
+                            selectedCode = calculatedValue ?: dataValue.value,
+                            title = dataValue.dataElementName + if (isMandatoryByRule) " *" else "",
+                            isRequired = isMandatoryByRule,
+                            enabled = effectiveEnabled,
+                            onOptionSelected = { selectedCode ->
+                                if (selectedCode != null) {
+                                    onValueChange(selectedCode)
+                                }
+                            },
+                            modifier = Modifier.fillMaxWidth()
+                        )
+                    }
+                    com.ash.simpledataentry.domain.model.RenderType.RADIO_BUTTONS -> {
+                        com.ash.simpledataentry.presentation.dataEntry.components.OptionSetRadioGroup(
+                            optionSet = optionSet,
+                            selectedCode = calculatedValue ?: dataValue.value,
+                            title = dataValue.dataElementName + if (isMandatoryByRule) " *" else "",
+                            isRequired = isMandatoryByRule,
+                            enabled = effectiveEnabled,
+                            onOptionSelected = { selectedCode ->
+                                if (selectedCode != null) {
+                                    onValueChange(selectedCode)
+                                }
+                            },
+                            modifier = Modifier.fillMaxWidth()
+                        )
+                    }
+                    com.ash.simpledataentry.domain.model.RenderType.YES_NO_BUTTONS -> {
+                        com.ash.simpledataentry.presentation.dataEntry.components.YesNoButtons(
+                            selectedValue = calculatedValue ?: dataValue.value,
+                            title = dataValue.dataElementName + if (isMandatoryByRule) " *" else "",
+                            isRequired = isMandatoryByRule,
+                            enabled = effectiveEnabled,
+                            onValueChanged = { newValue ->
+                                if (newValue != null) {
+                                    onValueChange(newValue)
+                                }
+                            },
+                            modifier = Modifier.fillMaxWidth()
+                        )
+                    }
+                    else -> {
+                        // Default to dropdown for other render types
+                        com.ash.simpledataentry.presentation.dataEntry.components.OptionSetDropdown(
+                            optionSet = optionSet,
+                            selectedCode = calculatedValue ?: dataValue.value,
+                            title = dataValue.dataElementName + if (isMandatoryByRule) " *" else "",
+                            isRequired = isMandatoryByRule,
+                            enabled = effectiveEnabled,
+                            onOptionSelected = { selectedCode ->
+                                if (selectedCode != null) {
+                                    onValueChange(selectedCode)
+                                }
+                            },
+                            modifier = Modifier.fillMaxWidth()
+                        )
+                    }
+                }
+            }
+            // No option set - use standard input types based on dataEntryType
+            dataValue.dataEntryType == DataEntryType.YES_NO -> {
                 Row(
                     modifier = Modifier.fillMaxWidth(),
                     horizontalArrangement = Arrangement.spacedBy(4.dp)
@@ -1314,52 +1443,52 @@ fun DataValueField(
                         style = if (dataValue.value == "true") ButtonStyle.FILLED else ButtonStyle.OUTLINED,
                         colorStyle = ColorStyle.DEFAULT,
                         modifier = Modifier.weight(1f),
-                        enabled = enabled,
-                        onClick = { if (enabled) onValueChange("true") }
+                        enabled = effectiveEnabled,
+                        onClick = { if (effectiveEnabled) onValueChange("true") }
                     )
                     Button(
                         text = "No",
                         style = if (dataValue.value == "false") ButtonStyle.FILLED else ButtonStyle.OUTLINED,
                         colorStyle = ColorStyle.DEFAULT,
                         modifier = Modifier.weight(1f),
-                        enabled = enabled,
-                        onClick = { if (enabled) onValueChange("false") }
+                        enabled = effectiveEnabled,
+                        onClick = { if (effectiveEnabled) onValueChange("false") }
                     )
                 }
             }
-            DataEntryType.NUMBER, 
-            DataEntryType.INTEGER,
-            DataEntryType.POSITIVE_INTEGER,
-            DataEntryType.NEGATIVE_INTEGER -> {
+            dataValue.dataEntryType == DataEntryType.NUMBER ||
+            dataValue.dataEntryType == DataEntryType.INTEGER ||
+            dataValue.dataEntryType == DataEntryType.POSITIVE_INTEGER ||
+            dataValue.dataEntryType == DataEntryType.NEGATIVE_INTEGER -> {
                 InputNumber(
-                    title = dataValue.dataElementName,
+                    title = dataValue.dataElementName + if (isMandatoryByRule) " *" else "",
                     state = when {
-                        !enabled -> InputShellState.DISABLED
-                        dataValue.validationState == ValidationState.ERROR -> InputShellState.ERROR
-                        dataValue.validationState == ValidationState.WARNING -> InputShellState.WARNING
+                        !effectiveEnabled -> InputShellState.DISABLED
+                        dataValue.validationState == ValidationState.ERROR || error != null -> InputShellState.ERROR
+                        dataValue.validationState == ValidationState.WARNING || warning != null -> InputShellState.WARNING
                         else -> InputShellState.UNFOCUSED
                     },
                     inputTextFieldValue = fieldState,
-                    onValueChanged = { newValue -> 
-                        if (newValue != null && enabled) viewModel.onFieldValueChange(newValue, dataValue)
+                    onValueChanged = { newValue ->
+                        if (newValue != null && effectiveEnabled) viewModel.onFieldValueChange(newValue, dataValue)
                     },
                     modifier = Modifier
                         .fillMaxWidth()
                         .padding(horizontal = 0.dp)
                 )
             }
-            DataEntryType.PERCENTAGE -> {
+            dataValue.dataEntryType == DataEntryType.PERCENTAGE -> {
                 InputText(
-                    title = dataValue.dataElementName,
+                    title = dataValue.dataElementName + if (isMandatoryByRule) " *" else "",
                     state = when {
-                        !enabled -> InputShellState.DISABLED
-                        dataValue.validationState == ValidationState.ERROR -> InputShellState.ERROR
-                        dataValue.validationState == ValidationState.WARNING -> InputShellState.WARNING
+                        !effectiveEnabled -> InputShellState.DISABLED
+                        dataValue.validationState == ValidationState.ERROR || error != null -> InputShellState.ERROR
+                        dataValue.validationState == ValidationState.WARNING || warning != null -> InputShellState.WARNING
                         else -> InputShellState.UNFOCUSED
                     },
                     inputTextFieldValue = fieldState,
-                    onValueChanged = { newValue -> 
-                        if (newValue != null && enabled) viewModel.onFieldValueChange(newValue, dataValue)
+                    onValueChanged = { newValue ->
+                        if (newValue != null && effectiveEnabled) viewModel.onFieldValueChange(newValue, dataValue)
                     },
                     modifier = Modifier
                         .fillMaxWidth()
@@ -1368,16 +1497,16 @@ fun DataValueField(
             }
             else -> {
                 InputText(
-                    title = dataValue.dataElementName,
+                    title = dataValue.dataElementName + if (isMandatoryByRule) " *" else "",
                     state = when {
-                        !enabled -> InputShellState.DISABLED
-                        dataValue.validationState == ValidationState.ERROR -> InputShellState.ERROR
-                        dataValue.validationState == ValidationState.WARNING -> InputShellState.WARNING
+                        !effectiveEnabled -> InputShellState.DISABLED
+                        dataValue.validationState == ValidationState.ERROR || error != null -> InputShellState.ERROR
+                        dataValue.validationState == ValidationState.WARNING || warning != null -> InputShellState.WARNING
                         else -> InputShellState.UNFOCUSED
                     },
                     inputTextFieldValue = fieldState,
-                    onValueChanged = { newValue -> 
-                        if (newValue != null && enabled) viewModel.onFieldValueChange(newValue, dataValue)
+                    onValueChanged = { newValue ->
+                        if (newValue != null && effectiveEnabled) viewModel.onFieldValueChange(newValue, dataValue)
                     },
                     modifier = Modifier
                         .fillMaxWidth()

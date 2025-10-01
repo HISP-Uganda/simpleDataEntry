@@ -97,10 +97,26 @@ fun TrackerDashboardScreen(
                         onEditEvent = { eventId ->
                             navController.navigate("EditEvent/$programId/$programName/$eventId/$enrollmentId")
                         },
-                        onAddEvent = { programStageId ->
-                            navController.navigate("CreateEvent/$programId/$programName/$programStageId")
-                        }
+                        onAddEvent = {
+                            viewModel.showStageSelectionDialog()
+                        },
+                        viewModel = viewModel
                     )
+
+                    // Program Stage Selection Dialog
+                    if (uiState.showStageSelectionDialog) {
+                        ProgramStageSelectionDialog(
+                            programStages = uiState.programStages,
+                            existingEventCounts = uiState.eventCountsByStage,
+                            onStageSelected = { stage ->
+                                viewModel.hideStageSelectionDialog()
+                                navController.navigate("CreateEvent/$programId/$programName/${stage.id}/$enrollmentId")
+                            },
+                            onDismiss = {
+                                viewModel.hideStageSelectionDialog()
+                            }
+                        )
+                    }
                 }
             }
         }
@@ -112,7 +128,8 @@ private fun DashboardContent(
     uiState: TrackerDashboardUiState,
     onEditEnrollment: () -> Unit,
     onEditEvent: (String) -> Unit,
-    onAddEvent: (String?) -> Unit
+    onAddEvent: () -> Unit,
+    viewModel: TrackerDashboardViewModel
 ) {
     LazyColumn(
         modifier = Modifier.fillMaxSize(),
@@ -151,7 +168,7 @@ private fun DashboardContent(
 
                 if (uiState.canAddEvents) {
                     FilledTonalButton(
-                        onClick = { onAddEvent(null) }
+                        onClick = { onAddEvent() }
                     ) {
                         Icon(
                             imageVector = Icons.Default.Add,
@@ -192,7 +209,7 @@ private fun DashboardContent(
                         if (uiState.canAddEvents) {
                             Spacer(modifier = Modifier.height(16.dp))
                             Button(
-                                onClick = { onAddEvent(null) }
+                                onClick = { onAddEvent() }
                             ) {
                                 Text("Add First Event")
                             }

@@ -640,64 +640,15 @@ class SessionManager @Inject constructor() {
     fun downloadTrackerData() : Unit {
         val d2Instance = d2 ?: throw IllegalStateException("D2 not initialized")
 
-        // CRITICAL FIX: Comprehensive metadata dependency resolution
-        // Based on DHIS2 SDK documentation, this addresses known CategoryOptionCombo foreign key issues
-        Log.d("SessionManager", "CRITICAL FIX: Synchronizing ALL metadata dependencies to prevent foreign key violations...")
+        Log.d("SessionManager", "Starting tracker data download (metadata already synced)")
+
+        // Quick verification that metadata is available (no re-download)
         try {
-            // 1. Force complete metadata sync with expanded scope
-            Log.d("SessionManager", "Phase 1: Downloading complete metadata including CategoryOptionCombos...")
-            d2Instance.metadataModule().blockingDownload()
-
-            // 2. Explicitly sync CategoryOptionCombos and related dependencies
-            Log.d("SessionManager", "Phase 2: Ensuring CategoryOptionCombo dependencies are complete...")
-
-            // Force sync of category-related metadata that commonly causes FK violations
-            try {
-                // This addresses the known ANDROSDK-1592 issue with incomplete CategoryOptionCombos
-                val categories = d2Instance.categoryModule().categories().blockingGet()
-                val categoryCombos = d2Instance.categoryModule().categoryCombos().blockingGet()
-                val categoryOptionCombos = d2Instance.categoryModule().categoryOptionCombos().blockingGet()
-
-                Log.d("SessionManager", "Metadata dependency check: ${categories.size} categories, ${categoryCombos.size} combos, ${categoryOptionCombos.size} option combos")
-
-            } catch (e: Exception) {
-                Log.w("SessionManager", "Category metadata verification failed: ${e.message}")
-            }
-
-            // 3. Check for and log foreign key violations from previous syncs
-            try {
-                val foreignKeyViolations = d2Instance.maintenanceModule().foreignKeyViolations().blockingGet()
-                if (foreignKeyViolations.isNotEmpty()) {
-                    Log.w("SessionManager", "Found ${foreignKeyViolations.size} existing foreign key violations")
-                    foreignKeyViolations.take(5).forEach { violation ->
-                        Log.w("SessionManager", "FK Violation: ${violation.fromTable()} -> ${violation.toTable()}, missing: ${violation.notFoundValue()}")
-                    }
-                }
-            } catch (e: Exception) {
-                Log.w("SessionManager", "Could not inspect foreign key violations: ${e.message}")
-            }
-
-            Log.d("SessionManager", "Metadata sync completed - all dependencies should now be available")
+            val categoryOptionCombos = d2Instance.categoryModule().categoryOptionCombos().blockingCount()
+            Log.d("SessionManager", "Metadata available: $categoryOptionCombos category option combos")
         } catch (e: Exception) {
-            Log.e("SessionManager", "Comprehensive metadata sync failed - data download may have FK violations", e)
+            Log.w("SessionManager", "Metadata verification warning: ${e.message}")
         }
-
-        // Get user's data capture org units for logging
-        val userOrgUnits = d2Instance.organisationUnitModule().organisationUnits()
-            .byOrganisationUnitScope(org.hisp.dhis.android.core.organisationunit.OrganisationUnit.Scope.SCOPE_DATA_CAPTURE)
-            .blockingGet()
-
-        val userOrgUnitUids = userOrgUnits.map { it.uid() }
-        Log.d("SessionManager", "User has access to org units: ${userOrgUnitUids.joinToString(", ")}")
-
-        // CRITICAL DEBUG: Check if user has access to org unit FvewOonC8lS where the tracker data exists
-        Log.d("SessionManager", "CRITICAL DEBUG: Does user have access to FvewOonC8lS? ${userOrgUnitUids.contains("FvewOonC8lS")}")
-
-        // Get ALL org units user has access to (including search scope)
-        val allUserOrgUnits = d2Instance.organisationUnitModule().organisationUnits()
-            .blockingGet()
-        val allUserOrgUnitUids = allUserOrgUnits.map { "${it.uid()} (${it.displayName()})" }
-        Log.d("SessionManager", "User has access to ALL org units: ${allUserOrgUnitUids.joinToString(", ")}")
 
         // Get all available tracker programs for download
         val trackerPrograms = d2Instance.programModule().programs()
@@ -716,12 +667,28 @@ class SessionManager @Inject constructor() {
                 Log.d("SessionManager", "Downloading tracker data for program: $programUid")
 
                 try {
-                    d2Instance.trackedEntityModule().trackedEntityInstanceDownloader()
+                    Log.d("SessionManager", "DOWNLOAD: Starting download for program: $programUid")
+
+                    val downloader = d2Instance.trackedEntityModule().trackedEntityInstanceDownloader()
                         .byProgramUid(programUid)
-                        .download()
-                    Log.d("SessionManager", "Successfully downloaded tracker data for program: $programUid")
+
+                    // Log what the downloader is configured to do
+                    Log.d("SessionManager", "DOWNLOAD: Downloader configured for program filter: $programUid")
+
+                    // Execute the download and capture any errors
+                    downloader.blockingDownload()
+
+                    Log.d("SessionManager", "DOWNLOAD: Download call completed for program: $programUid")
+
+                    // Immediately check if anything was stored
+                    val immediateCheck = d2Instance.trackedEntityModule().trackedEntityInstances()
+                        .byProgramUids(listOf(programUid))
+                        .blockingGet()
+                    Log.d("SessionManager", "DOWNLOAD: Immediately after download, found ${immediateCheck.size} TEIs for program $programUid")
+
                 } catch (e: Exception) {
-                    Log.e("SessionManager", "Failed to download tracker data for program: $programUid", e)
+                    Log.e("SessionManager", "DOWNLOAD: Failed to download tracker data for program: $programUid - ${e.message}", e)
+                    e.printStackTrace()
                 }
             }
         } else {
@@ -771,15 +738,15 @@ class SessionManager @Inject constructor() {
             Log.d("SessionManager", "VERIFICATION: Found ${allEvents.size} total events in local database")
 
             // Check specifically for our target program QZkuUuLedjh
-            val targetProgramEnrollments = d2Instance.enrollmentModule().enrollments()
-                .byProgram().eq("QZkuUuLedjh")
+            // Check enrollments for all programs instead of hardcoded one
+            val allProgramEnrollments = d2Instance.enrollmentModule().enrollments()
                 .blockingGet()
 
-            Log.d("SessionManager", "VERIFICATION: Found ${targetProgramEnrollments.size} enrollments for program QZkuUuLedjh")
+            Log.d("SessionManager", "VERIFICATION: Found ${allProgramEnrollments.size} enrollments across all programs")
 
-            // Get TEIs that have enrollments in target program by checking enrollment TEI references
-            val targetProgramTEIUids = targetProgramEnrollments.mapNotNull { it.trackedEntityInstance() }.distinct()
-            Log.d("SessionManager", "VERIFICATION: Found ${targetProgramTEIUids.size} unique TEIs for program QZkuUuLedjh")
+            // Get TEIs that have enrollments by checking enrollment TEI references
+            val enrollmentTEIUids = allProgramEnrollments.mapNotNull { it.trackedEntityInstance() }.distinct()
+            Log.d("SessionManager", "VERIFICATION: Found ${enrollmentTEIUids.size} unique TEIs with enrollments")
 
             // CRITICAL ASSESSMENT
             if (allTEIs.isEmpty() && allEnrollments.isEmpty() && allEvents.isEmpty()) {
@@ -788,8 +755,8 @@ class SessionManager @Inject constructor() {
             } else {
                 Log.d("SessionManager", "VERIFICATION: Tracker data storage appears to be working correctly")
 
-                if (targetProgramTEIUids.isEmpty() && targetProgramEnrollments.isEmpty()) {
-                    Log.w("SessionManager", "WARNING: General tracker data stored but target program QZkuUuLedjh has no data")
+                if (enrollmentTEIUids.isEmpty() && allProgramEnrollments.isEmpty()) {
+                    Log.w("SessionManager", "WARNING: General tracker data stored but no programs have enrollment data")
                     Log.w("SessionManager", "This could indicate org unit access or program assignment issues")
                 }
             }
@@ -917,6 +884,15 @@ class SessionManager @Inject constructor() {
         } catch (e: Exception) {
             Log.e("SessionManager", "RESOLUTION: Failed to resolve foreign key violations: ${e.message}")
         }
+    }
+
+    /**
+     * Public method to check and handle foreign key violations
+     * Used by repositories to ensure data integrity before and after operations
+     */
+    fun checkForeignKeyViolations() {
+        val d2Instance = d2 ?: return
+        handlePostDownloadForeignKeyViolations(d2Instance)
     }
 
     suspend fun hydrateRoomFromSdk(context: Context, db: AppDatabase) = withContext(Dispatchers.IO) {

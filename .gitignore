@@ -135,3 +135,8 @@ docs/
 
 # Code Visualizer Tool (development prototype)
 code-visualizer/
+
+
+# Markdown files (except README.md)
+*.md
+!README.md

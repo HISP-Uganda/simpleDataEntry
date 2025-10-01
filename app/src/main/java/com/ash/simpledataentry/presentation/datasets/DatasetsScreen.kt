@@ -567,7 +567,13 @@ fun DatasetsScreen(
                                             pressedElevation = 4.dp
                                         ),
                                         onClick = {
-                                            navController.navigate("DatasetInstances/${program.id}/${program.name}")
+                                            // Route to appropriate screen based on program type
+                                            val route = when (program.programType) {
+                                                DomainProgramType.TRACKER -> "TrackerEnrollments/${program.id}/${program.name}"
+                                                DomainProgramType.EVENT -> "EventInstances/${program.id}/${program.name}"
+                                                else -> "DatasetInstances/${program.id}/${program.name}"
+                                            }
+                                            navController.navigate(route)
                                         }
                                     ) {
                                         Row(

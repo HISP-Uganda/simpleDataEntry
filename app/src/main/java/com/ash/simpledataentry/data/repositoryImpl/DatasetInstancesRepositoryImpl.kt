@@ -249,6 +249,135 @@ class DatasetInstancesRepositoryImpl @Inject constructor(
         }
     }
 
+    /**
+     * Dedicated tracker data synchronization method
+     * Handles tracker-specific requirements separately from aggregate datasets
+     */
+    private suspend fun syncTrackerData(programId: String) = withContext(Dispatchers.IO) {
+        Log.d(TAG, "=== TRACKER DATA SYNC START for program: $programId ===")
+
+        try {
+            // Validate authentication state
+            val isLoggedIn = try {
+                d2.userModule().isLogged().blockingGet()
+            } catch (e: Exception) {
+                false
+            }
+
+            if (!isLoggedIn) {
+                Log.e(TAG, "User not authenticated - cannot sync tracker data in offline mode")
+                throw Exception("Cannot sync tracker data in offline mode. Please login online first.")
+            }
+
+            val user = d2.userModule().user().blockingGet()
+            if (user?.uid() == null) {
+                Log.e(TAG, "Invalid authentication state - user UID is null")
+                throw Exception("Invalid authentication state")
+            }
+
+            Log.d(TAG, "User authenticated: ${user.uid()}")
+
+            // STEP 1: Ensure tracker-specific metadata is complete
+            Log.d(TAG, "STEP 1: Ensuring tracker metadata is complete...")
+            try {
+                // Download complete metadata with special focus on tracker dependencies
+                d2.metadataModule().blockingDownload()
+                Log.d(TAG, "Metadata sync completed")
+            } catch (e: Exception) {
+                Log.e(TAG, "Metadata sync failed: ${e.message}", e)
+                throw e
+            }
+
+            // STEP 2: Check and resolve foreign key violations BEFORE download
+            Log.d(TAG, "STEP 2: Pre-download foreign key violation check...")
+            sessionManager.checkForeignKeyViolations()
+
+            // STEP 3: Get user's org unit scope for tracker data
+            val userOrgUnits = d2.organisationUnitModule().organisationUnits()
+                .byOrganisationUnitScope(OrganisationUnit.Scope.SCOPE_DATA_CAPTURE)
+                .blockingGet()
+
+            Log.d(TAG, "User has data capture access to ${userOrgUnits.size} org units")
+            userOrgUnits.forEach { orgUnit ->
+                Log.d(TAG, "  - ${orgUnit.uid()}: ${orgUnit.displayName()}")
+            }
+
+            if (userOrgUnits.isEmpty()) {
+                Log.e(TAG, "No org units with data capture scope found")
+                throw Exception("No organization units found for tracker data access")
+            }
+
+            // STEP 4: Perform tracker-specific download
+            Log.d(TAG, "STEP 4: Downloading tracker data for program $programId...")
+
+            // Use TrackedEntityInstanceDownloader with specific program filter
+            val downloader = d2.trackedEntityModule().trackedEntityInstanceDownloader()
+                .byProgramUid(programId)
+
+            // Execute download
+            val downloadResult = downloader.download()
+            Log.d(TAG, "Tracker download completed with result: $downloadResult")
+
+            // STEP 5: Post-download validation and foreign key violation resolution
+            Log.d(TAG, "STEP 5: Post-download validation...")
+
+            // Check for any foreign key violations that may have occurred during download
+            sessionManager.checkForeignKeyViolations()
+
+            // STEP 6: Verify what was actually stored
+            Log.d(TAG, "STEP 6: Verifying stored tracker data...")
+
+            val storedTEIs = d2.trackedEntityModule().trackedEntityInstances()
+                .byProgramUids(listOf(programId))
+                .blockingGet()
+            Log.d(TAG, "Found ${storedTEIs.size} TrackedEntityInstances in local storage")
+
+            val storedEnrollments = d2.enrollmentModule().enrollments()
+                .byProgram().eq(programId)
+                .blockingGet()
+            Log.d(TAG, "Found ${storedEnrollments.size} Enrollments in local storage")
+
+            val storedEvents = d2.eventModule().events()
+                .byProgramUid().eq(programId)
+                .blockingGet()
+            Log.d(TAG, "Found ${storedEvents.size} Events in local storage")
+
+            // STEP 7: Additional diagnostics if no data was stored despite successful API call
+            if (storedTEIs.isEmpty() && storedEnrollments.isEmpty()) {
+                Log.w(TAG, "DIAGNOSTIC: No tracker data stored despite successful download")
+
+                // Check if program exists and is accessible
+                val program = d2.programModule().programs().uid(programId).blockingGet()
+                Log.d(TAG, "DIAGNOSTIC: Program details - UID: ${program?.uid()}, Name: ${program?.displayName()}, Type: ${program?.programType()}")
+
+                // Check if there are any TEIs at all for any program in accessible org units
+                val anyTEIs = d2.trackedEntityModule().trackedEntityInstances()
+                    .blockingCount()
+                Log.d(TAG, "DIAGNOSTIC: Total TEIs in database: $anyTEIs")
+
+                // Check if the issue is org unit scope mismatch
+                val allOrgUnitsWithTEIs = d2.trackedEntityModule().trackedEntityInstances()
+                    .blockingGet()
+                    .map { it.organisationUnit() }
+                    .distinct()
+                Log.d(TAG, "DIAGNOSTIC: Org units that have TEI data: ${allOrgUnitsWithTEIs.joinToString(", ")}")
+
+                val userAccessibleOrgUnitUIDs = userOrgUnits.map { it.uid() }
+                Log.d(TAG, "DIAGNOSTIC: User accessible org units: ${userAccessibleOrgUnitUIDs.joinToString(", ")}")
+
+                val overlap = allOrgUnitsWithTEIs.intersect(userAccessibleOrgUnitUIDs.toSet())
+                Log.d(TAG, "DIAGNOSTIC: Org unit overlap (data exists + user access): ${overlap.joinToString(", ")}")
+            }
+
+            Log.d(TAG, "=== TRACKER DATA SYNC COMPLETED ===")
+
+        } catch (e: Exception) {
+            Log.e(TAG, "=== TRACKER DATA SYNC FAILED ===")
+            Log.e(TAG, "Error: ${e.message}", e)
+            throw e
+        }
+    }
+
     // New unified program instance methods
     override suspend fun getProgramInstances(
         programId: String,
@@ -343,294 +472,33 @@ class DatasetInstancesRepositoryImpl @Inject constructor(
                         syncDatasetInstances()
                     }
                     com.ash.simpledataentry.domain.model.ProgramType.TRACKER -> {
-                        // CRITICAL FIX: Check if user is properly authenticated before attempting API calls
-                        val isLoggedIn = try {
-                            d2.userModule().isLogged().blockingGet()
-                        } catch (e: Exception) {
-                            false
-                        }
-
-                        if (!isLoggedIn) {
-                            Log.e(TAG, "User not properly authenticated - cannot download tracker data. Offline mode detected.")
-                            return@withContext Result.failure(Exception("Cannot download tracker data in offline mode. Please login online first."))
-                        }
-
-                        val user = try {
-                            d2.userModule().user().blockingGet()
-                        } catch (e: Exception) {
-                            null
-                        }
-
-                        if (user?.uid() == null) {
-                            Log.e(TAG, "User UID is null - authentication state invalid")
-                            return@withContext Result.failure(Exception("Invalid authentication state - user UID is null"))
-                        }
-
-                        Log.d(TAG, "User authenticated (${user.uid()}) - proceeding with tracker download for program $programId")
-
-                        // Sync tracker enrollments and events - download from server
-                        Log.d(TAG, "Downloading tracker data from server for program $programId")
-
-                        // First ensure metadata is up to date
-                        d2.metadataModule().blockingDownload()
-
-                        // Get ALL user's org units (not just data capture scope)
-                        // to ensure we can download from org unit FvewOonC8lS where the data exists
-                        val allUserOrgUnits = d2.organisationUnitModule().organisationUnits()
-                            .blockingGet()
-
-                        Log.d(TAG, "Found ${allUserOrgUnits.size} total accessible org units for tracker download")
-
-                        if (allUserOrgUnits.isEmpty()) {
-                            Log.e(TAG, "No organization units found for user - cannot download tracker data")
-                            return@withContext Result.failure(Exception("No organization units found for user"))
-                        }
-
-                        val allUserOrgUnitUids = allUserOrgUnits.map { it.uid() }
-                        Log.d(TAG, "Using ALL accessible org units for tracker download: ${allUserOrgUnitUids.joinToString(", ")}")
-
-                        // CRITICAL DEBUG: Check if user has access to org unit FvewOonC8lS where the tracker data exists
-                        Log.d(TAG, "CRITICAL DEBUG: Does user have access to FvewOonC8lS? ${allUserOrgUnitUids.contains("FvewOonC8lS")}")
-
-                        // Download tracker data for specific program using EXACT official Android Capture app pattern
-                        Log.d(TAG, "Using EXACT official Android Capture app pattern - downloading for ALL accessible org units")
-
-                        // REMOVED: Pre-check validation that was blocking downloads
-                        // The pre-check was querying local data before downloading from server,
-                        // creating a catch-22 where no data exists locally because it was never downloaded
-
-                        // CRITICAL DIAGNOSTIC: Compare direct API vs SDK behavior
-                        Log.d(TAG, "PERMISSION INVESTIGATION: Comparing direct API vs SDK responses...")
-
-                        try {
-                            // Get the authenticated D2 configuration details
-                            val serverUrl = d2.systemInfoModule().systemInfo().blockingGet()?.contextPath()
-                            val serverVersion = d2.systemInfoModule().systemInfo().blockingGet()?.version()
-                            Log.d(TAG, "DIAGNOSTIC: Server URL: $serverUrl, Version: $serverVersion")
-
-                            // Compare what's available via query vs what actually downloads
-                            // Check enrollments via direct query (similar to what XML API showed)
-                            val directEnrollmentQuery = d2.enrollmentModule().enrollments()
-                                .byProgram().eq(programId)
-                                .byOrganisationUnit().eq("FvewOonC8lS")
-                                .blockingGet()
-
-                            Log.d(TAG, "DIAGNOSTIC: Direct enrollment query found ${directEnrollmentQuery.size} enrollments in program $programId, org unit FvewOonC8lS")
-
-                            // Check what TEIs are available via query
-                            val directTEIQuery = d2.trackedEntityModule().trackedEntityInstances()
-                                .byProgramUids(listOf(programId))
-                                .byOrganisationUnitUid().eq("FvewOonC8lS")
-                                .blockingGet()
-
-                            Log.d(TAG, "DIAGNOSTIC: Direct TEI query found ${directTEIQuery.size} TEIs in program $programId, org unit FvewOonC8lS")
-
-                            // Log some sample data if found
-                            directTEIQuery.take(3).forEach { tei ->
-                                Log.d(TAG, "DIAGNOSTIC: Found TEI: ${tei.uid()} - orgUnit: ${tei.organisationUnit()}")
-                            }
-
-                        } catch (e: Exception) {
-                            Log.w(TAG, "DIAGNOSTIC: Direct query failed: ${e.message}")
-                            Log.e(TAG, "DIAGNOSTIC: Direct query exception details", e)
-                        }
-
-                        // CRITICAL FIX: Use multiple download strategies to ensure we get the tracker data
-                        Log.d(TAG, "Attempting tracker download using multiple strategies...")
-
-                        try {
-                            // Strategy 1: Download by program UID (original approach)
-                            Log.d(TAG, "Strategy 1: Downloading TEIs by program UID")
-                            Log.d(TAG, "DIAGNOSTIC: Request details - Program: $programId, User OrgUnits: ${allUserOrgUnits.map { it.uid() }}")
-
-                            // Check server capabilities and permissions before download
-                            val serverInfo = d2.systemInfoModule().systemInfo().blockingGet()
-                            Log.d(TAG, "DIAGNOSTIC: Server version: ${serverInfo?.version()}, Server date: ${serverInfo?.serverDate()}")
-
-                            // Log user authorities and permissions
-                            val userAuth = d2.userModule().authorities().blockingGet()
-                            Log.d(TAG, "DIAGNOSTIC: User authorities count: ${userAuth.size}")
-
-                            val downloader = d2.trackedEntityModule().trackedEntityInstanceDownloader()
-                                .byProgramUid(programId)
-
-                            // Log the exact query that will be executed
-                            Log.d(TAG, "DIAGNOSTIC: Executing Strategy 1 download with program filter: $programId")
-                            Log.d(TAG, "DIAGNOSTIC: Strategy 1 targeting org units: ${allUserOrgUnits.map { "${it.uid()}-${it.displayName()}" }}")
-                            Log.d(TAG, "DIAGNOSTIC: Strategy 1 specifically looking for org unit FvewOonC8lS in user's access list: ${allUserOrgUnits.any { it.uid() == "FvewOonC8lS" }}")
-
-                            val result = downloader.download()
-                            Log.d(TAG, "DIAGNOSTIC: Strategy 1 download result: $result")
-
-                            // CRITICAL: Check immediately after this specific download
-                            val strategy1Results = d2.trackedEntityModule().trackedEntityInstances()
-                                .byProgramUids(listOf(programId))
-                                .blockingGet()
-                            Log.d(TAG, "DIAGNOSTIC: Immediately after Strategy 1, found ${strategy1Results.size} TEIs for program $programId")
-                            Log.d(TAG, "Strategy 1 completed")
-                        } catch (e: Exception) {
-                            Log.w(TAG, "Strategy 1 failed: ${e.message}")
-                            Log.e(TAG, "DIAGNOSTIC: Strategy 1 exception details", e)
-                        }
-
-                        try {
-                            // Strategy 2: Download all TEIs without program filter
-                            Log.d(TAG, "Strategy 2: Downloading all TEIs (no program filter)")
-                            Log.d(TAG, "DIAGNOSTIC: Strategy 2 - downloading ALL TEIs without program restriction")
-
-                            // Log current TEI count before download
-                            val beforeCount = d2.trackedEntityModule().trackedEntityInstances().blockingCount()
-                            Log.d(TAG, "DIAGNOSTIC: TEIs in database before Strategy 2: $beforeCount")
-
-                            val downloader2 = d2.trackedEntityModule().trackedEntityInstanceDownloader()
-                            val result2 = downloader2.download()
-
-                            Log.d(TAG, "DIAGNOSTIC: Strategy 2 download result: $result2")
-
-                            // Log current TEI count after download
-                            val afterCount = d2.trackedEntityModule().trackedEntityInstances().blockingCount()
-                            Log.d(TAG, "DIAGNOSTIC: TEIs in database after Strategy 2: $afterCount (difference: ${afterCount - beforeCount})")
-
-                            Log.d(TAG, "Strategy 2 completed")
-                        } catch (e: Exception) {
-                            Log.w(TAG, "Strategy 2 failed: ${e.message}")
-                            Log.e(TAG, "DIAGNOSTIC: Strategy 2 exception details", e)
-                        }
-
-                        try {
-                            // Strategy 3: Force a broader download to capture any missed dependencies
-                            Log.d(TAG, "Strategy 3: Downloading all available tracker data")
-                            Log.d(TAG, "DIAGNOSTIC: Strategy 3 - unlimited scope (no orgunit/program limits)")
-
-                            // Log current state before unlimited download
-                            val beforeCount3 = d2.trackedEntityModule().trackedEntityInstances().blockingCount()
-                            val beforeEnrollments = d2.enrollmentModule().enrollments().blockingCount()
-                            Log.d(TAG, "DIAGNOSTIC: Before Strategy 3 - TEIs: $beforeCount3, Enrollments: $beforeEnrollments")
-
-                            // Try to get more diagnostic info about what's available on server
-                            val programs = d2.programModule().programs().blockingGet()
-                            Log.d(TAG, "DIAGNOSTIC: Available programs: ${programs.map { "${it.uid()}-${it.displayName()}" }}")
-
-                            val orgUnits = d2.organisationUnitModule().organisationUnits().blockingGet()
-                            Log.d(TAG, "DIAGNOSTIC: User's org units: ${orgUnits.map { "${it.uid()}-${it.displayName()}" }}")
-
-                            val downloader3 = d2.trackedEntityModule().trackedEntityInstanceDownloader()
-                                .limitByOrgunit(false)  // Don't limit by org unit
-                                .limitByProgram(false)  // Don't limit by program
-
-                            val result3 = downloader3.download()
-                            Log.d(TAG, "DIAGNOSTIC: Strategy 3 download result: $result3")
-
-                            // Log final counts after unlimited download
-                            val afterCount3 = d2.trackedEntityModule().trackedEntityInstances().blockingCount()
-                            val afterEnrollments3 = d2.enrollmentModule().enrollments().blockingCount()
-                            Log.d(TAG, "DIAGNOSTIC: After Strategy 3 - TEIs: $afterCount3 (diff: ${afterCount3 - beforeCount3}), Enrollments: $afterEnrollments3 (diff: ${afterEnrollments3 - beforeEnrollments})")
-
-                            Log.d(TAG, "Strategy 3 completed")
-                        } catch (e: Exception) {
-                            Log.w(TAG, "Strategy 3 failed: ${e.message}")
-                            Log.e(TAG, "DIAGNOSTIC: Strategy 3 exception details", e)
-                        }
-
-                        Log.d(TAG, "All download strategies completed")
-
-                        // Add small delay to allow database transaction to complete
-                        kotlinx.coroutines.delay(1000)
-
-                        Log.d(TAG, "COMPREHENSIVE DIAGNOSTIC: Starting post-download analysis...")
-
-                        // CRITICAL DIAGNOSTIC: Check exact data state after all download attempts
-                        val finalTEICount = d2.trackedEntityModule().trackedEntityInstances().blockingCount()
-                        val finalEnrollmentCount = d2.enrollmentModule().enrollments().blockingCount()
-                        val finalEventCount = d2.eventModule().events().blockingCount()
-
-                        Log.d(TAG, "DIAGNOSTIC SUMMARY: Final database state - TEIs: $finalTEICount, Enrollments: $finalEnrollmentCount, Events: $finalEventCount")
-
-                        // Check specifically for the program and org unit we know has data
-                        val programSpecificTEIs = d2.trackedEntityModule().trackedEntityInstances()
-                            .byProgramUids(listOf(programId))
-                            .blockingGet()
-
-                        val orgUnitSpecificTEIs = d2.trackedEntityModule().trackedEntityInstances()
-                            .byOrganisationUnitUid().eq("FvewOonC8lS") // The org unit with 23 enrollments
-                            .blockingGet()
-
-                        Log.d(TAG, "DIAGNOSTIC: Program $programId specific TEIs: ${programSpecificTEIs.size}")
-                        Log.d(TAG, "DIAGNOSTIC: OrgUnit FvewOonC8lS specific TEIs: ${orgUnitSpecificTEIs.size}")
-
-                        // Check if there's a mismatch between what we requested vs what's stored
-                        val programEnrollments = d2.enrollmentModule().enrollments()
-                            .byProgram().eq(programId)
-                            .blockingGet()
-
-                        val orgUnitEnrollments = d2.enrollmentModule().enrollments()
-                            .byOrganisationUnit().eq("FvewOonC8lS")
-                            .blockingGet()
-
-                        Log.d(TAG, "DIAGNOSTIC: Program $programId enrollments: ${programEnrollments.size}")
-                        Log.d(TAG, "DIAGNOSTIC: OrgUnit FvewOonC8lS enrollments: ${orgUnitEnrollments.size}")
-
-                        // Check if there are any access/permission restrictions being applied
-                        try {
-                            val userOrgUnits = d2.organisationUnitModule().organisationUnits()
-                                .byOrganisationUnitScope(OrganisationUnit.Scope.SCOPE_DATA_CAPTURE)
-                                .blockingGet()
-                            val hasTargetOrgUnit = userOrgUnits.any { it.uid() == "FvewOonC8lS" }
-                            Log.d(TAG, "DIAGNOSTIC: User has data capture access to target org unit FvewOonC8lS: $hasTargetOrgUnit")
-
-                            // Check if user has broader org unit access
-                            val allUserOrgUnits = d2.organisationUnitModule().organisationUnits().blockingGet()
-                            val hasTargetOrgUnitAny = allUserOrgUnits.any { it.uid() == "FvewOonC8lS" }
-                            Log.d(TAG, "DIAGNOSTIC: User has any access to target org unit FvewOonC8lS: $hasTargetOrgUnitAny")
-
-                            val userPrograms = d2.programModule().programs().blockingGet()
-                            val hasTargetProgram = userPrograms.any { it.uid() == programId }
-                            Log.d(TAG, "DIAGNOSTIC: User has access to target program $programId: $hasTargetProgram")
-                        } catch (e: Exception) {
-                            Log.w(TAG, "DIAGNOSTIC: Could not check user org unit/program access: ${e.message}")
-                        }
-
-                        Log.d(TAG, "Tracker data download completed for program $programId")
-
-                        // Debug: Check what TrackedEntityInstances were downloaded (primary objects)
-                        val downloadedTEIs = d2.trackedEntityModule().trackedEntityInstances()
-                            .byProgramUids(listOf(programId))
-                            .blockingGet()
-                        Log.d(TAG, "DEBUG: Immediately after download found ${downloadedTEIs.size} TrackedEntityInstances")
-
-                        // Debug: Check enrollments (child objects of TEIs)
-                        val immediateCheck = d2.enrollmentModule().enrollments()
-                            .byProgram().eq(programId)
-                            .blockingGet()
-                        Log.d(TAG, "DEBUG: Immediately after download found ${immediateCheck.size} enrollments")
-
-                        // Debug: Check if any TEIs exist at all for this program
-                        val allTEIs = d2.trackedEntityModule().trackedEntityInstances()
-                            .blockingGet()
-                        Log.d(TAG, "DEBUG: Total TEIs in local database: ${allTEIs.size}")
-
-                        // Debug: Show TEI org units if any exist
-                        if (downloadedTEIs.isNotEmpty()) {
-                            downloadedTEIs.forEach { tei ->
-                                Log.d(TAG, "DEBUG: TEI ${tei.uid()} - orgUnit: ${tei.organisationUnit()}")
-                            }
-                        } else {
-                            Log.w(TAG, "DEBUG: No TEIs downloaded for program $programId")
-                        }
+                        syncTrackerData(programId)
                     }
                     com.ash.simpledataentry.domain.model.ProgramType.EVENT -> {
                         // Sync events - download from server
-                        Log.d(TAG, "Downloading event data from server for program $programId")
+                        Log.d(TAG, "=== EVENT DATA SYNC START for program: $programId ===")
 
                         // First ensure metadata is up to date
                         d2.metadataModule().blockingDownload()
+                        Log.d(TAG, "EVENT SYNC: Metadata sync completed")
 
                         // Then download actual event data for this specific program
+                        Log.d(TAG, "EVENT SYNC: Starting event download...")
                         d2.eventModule().eventDownloader()
                             .byProgramUid(programId)
-                            .download()
+                            .blockingDownload()
 
-                        Log.d(TAG, "Event data download completed for program $programId")
+                        // Verify what was actually stored
+                        val storedEvents = d2.eventModule().events()
+                            .byProgramUid().eq(programId)
+                            .blockingGet()
+                        Log.d(TAG, "EVENT SYNC: Found ${storedEvents.size} events in local storage for program $programId")
+
+                        storedEvents.forEach { event ->
+                            Log.d(TAG, "EVENT SYNC: - Event ${event.uid()}: status=${event.status()}, orgUnit=${event.organisationUnit()}, date=${event.eventDate()}")
+                        }
+
+                        Log.d(TAG, "=== EVENT DATA SYNC COMPLETED for program $programId ===")
                     }
                     else -> { /* Do nothing */ }
                 }

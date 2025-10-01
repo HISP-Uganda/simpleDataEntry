@@ -65,7 +65,20 @@ data class DataEntryState(
     val navigationProgress: com.ash.simpledataentry.presentation.core.NavigationProgress? = null, // Enhanced loading progress
     val completionProgress: com.ash.simpledataentry.presentation.core.CompletionProgress? = null, // Enhanced completion progress
     val showCompletionDialog: Boolean = false,
-    val completionAction: com.ash.simpledataentry.presentation.core.CompletionAction? = null
+    val completionAction: com.ash.simpledataentry.presentation.core.CompletionAction? = null,
+    val optionSets: Map<String, com.ash.simpledataentry.domain.model.OptionSet> = emptyMap(), // Option sets by data element ID
+    val renderTypes: Map<String, com.ash.simpledataentry.domain.model.RenderType> = emptyMap(), // Computed render types by data element ID
+
+    // Program rule effects (currently for tracker/event, can be extended to aggregate)
+    val hiddenFields: Set<String> = emptySet(),
+    val disabledFields: Set<String> = emptySet(),
+    val mandatoryFields: Set<String> = emptySet(),
+    val fieldWarnings: Map<String, String> = emptyMap(),
+    val fieldErrors: Map<String, String> = emptyMap(),
+    val calculatedValues: Map<String, String> = emptyMap(),
+
+    // Radio button groups: Map<groupTitle, List<dataElementIds>>
+    val radioButtonGroups: Map<String, List<String>> = emptyMap()
 )
 
 @HiltViewModel
@@ -76,13 +89,18 @@ class DataEntryViewModel @Inject constructor(
     private val draftDao: DataValueDraftDao,
     private val validationRepository: ValidationRepository,
     private val syncQueueManager: SyncQueueManager,
-    private val networkStateManager: NetworkStateManager
+    private val networkStateManager: NetworkStateManager,
+    private val sessionManager: com.ash.simpledataentry.data.SessionManager
 ) : ViewModel() {
     private val _state = MutableStateFlow(DataEntryState())
     val state: StateFlow<DataEntryState> = _state.asStateFlow()
 
     // Track unsaved edits: key = Pair<dataElement, categoryOptionCombo>, value = DataValue
     private val dirtyDataValues = mutableMapOf<Pair<String, String>, DataValue>()
+
+    // Program rule evaluation debouncing
+    private var ruleEvaluationJob: kotlinx.coroutines.Job? = null
+    private val ruleEvaluationDelay = 300L // milliseconds
 
     init {
         // Observe sync progress from SyncQueueManager
@@ -234,7 +252,25 @@ class DataEntryViewModel @Inject constructor(
                         }
                     }
 
-                    // Step 4: Finalizing (70-100%)
+                    // Step 3.5: Load Option Sets (65-80%)
+                    _state.update { it.copy(
+                        navigationProgress = com.ash.simpledataentry.presentation.core.NavigationProgress(
+                            phase = com.ash.simpledataentry.presentation.core.LoadingPhase.PROCESSING_DATA,
+                            overallPercentage = 70,
+                            phaseTitle = com.ash.simpledataentry.presentation.core.LoadingPhase.PROCESSING_DATA.title,
+                            phaseDetail = "Loading option sets..."
+                        )
+                    )}
+
+                    val optionSets = repository.getAllOptionSetsForDataset(datasetId)
+                    val renderTypes = optionSets.mapValues { (_, optionSet) ->
+                        optionSet.computeRenderType()
+                    }
+
+                    // Detect radio button groups for mutually exclusive YES/NO fields
+                    val radioButtonGroups = detectRadioButtonGroups(mergedValues, optionSets)
+
+                    // Step 4: Finalizing (80-100%)
                     _state.update { it.copy(
                         navigationProgress = com.ash.simpledataentry.presentation.core.NavigationProgress(
                             phase = com.ash.simpledataentry.presentation.core.LoadingPhase.COMPLETING,
@@ -287,6 +323,9 @@ class DataEntryViewModel @Inject constructor(
                             attributeOptionComboName = attributeOptionComboName,
                             attributeOptionCombos = attributeOptionCombos,
                             dataElementGroupedSections = dataElementGroupedSections,
+                            optionSets = optionSets,
+                            renderTypes = renderTypes,
+                            radioButtonGroups = radioButtonGroups,
                             navigationProgress = null // Clear progress when done
                         )
                     }
@@ -1216,5 +1255,144 @@ class DataEntryViewModel @Inject constructor(
                 }
             }
         }
+    }
+
+    /**
+     * Trigger program rule evaluation when field loses focus
+     * Uses debouncing to avoid excessive evaluations
+     */
+    fun onFieldBlur(dataElementId: String) {
+        // Cancel any pending evaluation
+        ruleEvaluationJob?.cancel()
+
+        // Schedule new evaluation after delay
+        ruleEvaluationJob = viewModelScope.launch {
+            kotlinx.coroutines.delay(ruleEvaluationDelay)
+            evaluateProgramRules()
+        }
+    }
+
+    /**
+     * Evaluate program rules for current dataset/program
+     * Note: Aggregate datasets typically don't have program rules
+     * This is primarily for future tracker/event program support
+     */
+    private suspend fun evaluateProgramRules() {
+        // TODO: Implement when extending to tracker/event programs
+        // For now, this is a placeholder for aggregate datasets
+        // which don't typically use program rules
+
+        // Future implementation will:
+        // 1. Get d2 instance from sessionManager
+        // 2. Call programRuleEngine() for tracker/event programs
+        // 3. Evaluate rules based on current form data
+        // 4. Apply effects to state
+
+        Log.d("DataEntryViewModel", "Program rule evaluation placeholder - not implemented for aggregate datasets")
+    }
+
+    /**
+     * Apply program rule effects to the form state
+     * Updates hidden fields, warnings, errors, calculated values, etc.
+     */
+    private fun applyProgramRuleEffects(effect: com.ash.simpledataentry.domain.model.ProgramRuleEffect) {
+        _state.update { currentState ->
+            currentState.copy(
+                hiddenFields = effect.hiddenFields,
+                disabledFields = effect.disabledFields,
+                mandatoryFields = effect.mandatoryFields,
+                fieldWarnings = effect.fieldWarnings,
+                fieldErrors = effect.fieldErrors,
+                calculatedValues = effect.calculatedValues
+            )
+        }
+
+        // Apply calculated values to actual data fields
+        effect.calculatedValues.forEach { (dataElementId, value) ->
+            val matchingDataValue = _state.value.dataValues.find { it.dataElement == dataElementId }
+            if (matchingDataValue != null) {
+                updateCurrentValue(value, dataElementId, matchingDataValue.categoryOptionCombo)
+            }
+        }
+    }
+
+    /**
+     * Detect radio button groups from data values
+     * Groups fields with same option set and common prefix
+     */
+    private fun detectRadioButtonGroups(
+        dataValues: List<DataValue>,
+        optionSets: Map<String, com.ash.simpledataentry.domain.model.OptionSet>
+    ): Map<String, List<String>> {
+        // Only consider fields with YES/NO option sets
+        val yesNoFields = dataValues.mapNotNull { dataValue ->
+            val optionSet = optionSets[dataValue.dataElement]
+            if (optionSet != null && isYesNoOptionSet(optionSet)) {
+                dataValue to optionSet
+            } else null
+        }
+
+        // Group by option set instance (must have same option set to be grouped)
+        // We group by the option set ID which is optionSet.id
+        val groupedByOptionSet = yesNoFields.groupBy { (_, optionSet) -> optionSet.id }
+
+        val radioGroups = mutableMapOf<String, MutableList<String>>()
+
+        groupedByOptionSet.forEach { (optionSetId, fieldsWithOptionSets) ->
+            val fields = fieldsWithOptionSets.map { it.first }
+            if (fields.size < 2) return@forEach // Need at least 2 fields to group
+
+            // Extract common prefix
+            val names = fields.map { it.dataElementName }
+            val commonPrefix = extractCommonPrefix(names)
+
+            // Only group if there's a meaningful prefix (at least 3 chars)
+            if (commonPrefix.length >= 3) {
+                // Use prefix as group title
+                val groupTitle = commonPrefix.trim().trimEnd('-', ':', '|', '/')
+                radioGroups.getOrPut(groupTitle) { mutableListOf() }
+                    .addAll(fields.map { it.dataElement })
+
+                Log.d("RadioGroupDetection", "Detected group '$groupTitle' with ${fields.size} fields sharing optionSet $optionSetId: ${fields.map { it.dataElementName }}")
+            }
+        }
+
+        // Return only groups with 2+ fields
+        return radioGroups.filter { it.value.size >= 2 }
+    }
+
+    /**
+     * Check if an option set is a YES/NO boolean option set
+     */
+    private fun isYesNoOptionSet(optionSet: com.ash.simpledataentry.domain.model.OptionSet): Boolean {
+        if (optionSet.options.size != 2) return false
+        val codes = optionSet.options.map { it.code.uppercase() }.toSet()
+        return codes.containsAll(setOf("YES", "NO")) ||
+               codes.containsAll(setOf("TRUE", "FALSE")) ||
+               codes.containsAll(setOf("1", "0"))
+    }
+
+    /**
+     * Extract common prefix from a list of strings
+     */
+    private fun extractCommonPrefix(strings: List<String>): String {
+        if (strings.isEmpty()) return ""
+        if (strings.size == 1) return strings[0]
+
+        var prefix = strings[0]
+        for (i in 1 until strings.size) {
+            while (!strings[i].startsWith(prefix)) {
+                prefix = prefix.dropLast(1)
+                if (prefix.isEmpty()) return ""
+            }
+        }
+
+        // Trim to last meaningful separator
+        val lastSeparator = prefix.indexOfLast { it in listOf('-', ':', '|', '/', ' ') }
+        if (lastSeparator > 0) {
+            prefix = prefix.substring(0, lastSeparator + 1)
+        }
+
+        return prefix
     }
 }

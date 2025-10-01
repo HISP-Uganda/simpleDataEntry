@@ -620,7 +620,7 @@ fun DatasetInstancesScreen(
                                                             }
                                                         }
                                                         is com.ash.simpledataentry.domain.model.ProgramInstance.EventInstance -> {
-                                                            navController.navigate("EditEvent/$encodedDatasetId/$encodedDatasetName/${instance.id}/") {
+                                                            navController.navigate("EditStandaloneEvent/$encodedDatasetId/$encodedDatasetName/${instance.id}") {
                                                                 launchSingleTop = true
                                                                 popUpTo("DatasetInstances/{datasetId}/{datasetName}") {
                                                                     saveState = true

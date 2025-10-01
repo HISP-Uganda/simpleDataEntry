@@ -15,7 +15,13 @@ data class DataValue(
     val dataEntryType: DataEntryType,
     val lastModified: Long,
     val validationRules: List<ValidationRule> = emptyList(),
-    val valueHistory: List<ValueHistory> = emptyList()
+    val valueHistory: List<ValueHistory> = emptyList(),
+
+    // NEW: Option set support for dropdowns/radio buttons
+    val optionSet: OptionSet? = null,
+
+    // NEW: Explicit render type (overrides auto-computed from option set)
+    val renderType: RenderType? = null
 )
 
 data class ValidationRule(

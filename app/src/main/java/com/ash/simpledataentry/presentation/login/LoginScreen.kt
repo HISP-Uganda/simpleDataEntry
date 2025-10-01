@@ -120,6 +120,7 @@ fun LoginScreen(
             animationType = LoadingAnimationType.DHIS2_PULSING_DOTS,
             progress = state.navigationProgress?.overallPercentage,
             progressStep = state.navigationProgress?.phaseDetail,
+            showBackgroundWarning = true,
             modifier = Modifier.fillMaxSize()
         )
     } else {
@@ -135,18 +136,31 @@ fun LoginScreen(
 
         Box(modifier = Modifier.fillMaxSize()) {
             val scrollState = rememberScrollState()
+            val usernameBringIntoViewRequester = remember { BringIntoViewRequester() }
             val passwordBringIntoViewRequester = remember { BringIntoViewRequester() }
             val loginButtonBringIntoViewRequester = remember { BringIntoViewRequester() }
 
             var usernameFocused by remember { mutableStateOf(false) }
             var passwordFocused by remember { mutableStateOf(false) }
 
-            // Auto-scroll to password field when it gets focus
+            // Auto-scroll to bring login button into view when username field gets focus
+            LaunchedEffect(usernameFocused) {
+                if (usernameFocused) {
+                    // First ensure username field is visible
+                    usernameBringIntoViewRequester.bringIntoView()
+                    // Then bring login button into view
+                    kotlinx.coroutines.delay(300)
+                    loginButtonBringIntoViewRequester.bringIntoView()
+                }
+            }
+
+            // Auto-scroll to bring login button into view when password field gets focus
             LaunchedEffect(passwordFocused) {
                 if (passwordFocused) {
+                    // First ensure password field is visible
                     passwordBringIntoViewRequester.bringIntoView()
-                    // Also bring login button into view when password is focused
-                    kotlinx.coroutines.delay(200) // Small delay to let password field scroll first
+                    // Then bring login button into view
+                    kotlinx.coroutines.delay(300)
                     loginButtonBringIntoViewRequester.bringIntoView()
                 }
             }
@@ -316,6 +330,7 @@ fun LoginScreen(
                     label = { Text("Username") },
                     modifier = Modifier
                         .fillMaxWidth()
+                        .bringIntoViewRequester(usernameBringIntoViewRequester)
                         .onFocusChanged { focusState ->
                             usernameFocused = focusState.isFocused
                         },

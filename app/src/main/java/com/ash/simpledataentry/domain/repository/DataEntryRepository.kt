@@ -51,5 +51,9 @@ interface DataEntryRepository {
     )
 
     suspend fun syncCurrentEntryForm()
+
+    // Option set support for data entry
+    suspend fun getOptionSetForDataElement(dataElementId: String): com.ash.simpledataentry.domain.model.OptionSet?
+    suspend fun getAllOptionSetsForDataset(datasetId: String): Map<String, com.ash.simpledataentry.domain.model.OptionSet>
 }
 

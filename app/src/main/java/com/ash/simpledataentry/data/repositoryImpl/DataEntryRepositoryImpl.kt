@@ -554,13 +554,116 @@ class DataEntryRepositoryImpl @Inject constructor(
             val dataElementObj = d2.dataElementModule().dataElements()
                 .uid(dataElementUid)
                 .blockingGet()
-            
+
             dataElementObj?.formName()
                 ?: dataElementObj?.shortName()
                 ?: dataElementObj?.displayName()
         } catch (e: Exception) {
             Log.w("DataEntryRepositoryImpl", "Failed to fetch display name for data element $dataElementUid: ${e.message}")
             null
+        }
+    }
+
+    override suspend fun getOptionSetForDataElement(dataElementId: String): com.ash.simpledataentry.domain.model.OptionSet? {
+        return withContext(Dispatchers.IO) {
+            try {
+                // Get data element and check if it has an option set
+                val dataElement = d2.dataElementModule().dataElements()
+                    .uid(dataElementId)
+                    .blockingGet() ?: return@withContext null
+
+                val optionSetUid = dataElement.optionSet()?.uid() ?: return@withContext null
+
+                // Fetch option set
+                val optionSet = d2.optionModule().optionSets()
+                    .uid(optionSetUid)
+                    .blockingGet() ?: return@withContext null
+
+                // Fetch options separately
+                val sdkOptions = d2.optionModule().options()
+                    .byOptionSetUid().eq(optionSetUid)
+                    .blockingGet()
+
+                // Map options
+                val options = sdkOptions.mapIndexed { index, option ->
+                    com.ash.simpledataentry.domain.model.Option(
+                        code = option.code() ?: option.uid(),
+                        name = option.name() ?: option.code() ?: option.uid(),
+                        displayName = option.displayName(),
+                        sortOrder = option.sortOrder() ?: index
+                    )
+                }
+
+                com.ash.simpledataentry.domain.model.OptionSet(
+                    id = optionSet.uid(),
+                    name = optionSet.name() ?: optionSet.uid(),
+                    displayName = optionSet.displayName(),
+                    options = options,
+                    valueType = mapValueType(dataElement.valueType())
+                )
+            } catch (e: Exception) {
+                Log.e("DataEntryRepositoryImpl", "Error fetching option set for data element $dataElementId", e)
+                null
+            }
+        }
+    }
+
+    override suspend fun getAllOptionSetsForDataset(datasetId: String): Map<String, com.ash.simpledataentry.domain.model.OptionSet> {
+        return withContext(Dispatchers.IO) {
+            try {
+                // Get all data elements for dataset
+                val dataset = d2.dataSetModule().dataSets()
+                    .withDataSetElements()
+                    .uid(datasetId)
+                    .blockingGet() ?: return@withContext emptyMap()
+
+                val dataElementUids = dataset.dataSetElements()?.mapNotNull { it.dataElement()?.uid() } ?: emptyList()
+
+                val optionSets = mutableMapOf<String, com.ash.simpledataentry.domain.model.OptionSet>()
+
+                dataElementUids.forEach { dataElementUid ->
+                    val optionSet = getOptionSetForDataElement(dataElementUid)
+                    if (optionSet != null) {
+                        optionSets[dataElementUid] = optionSet
+                    }
+                }
+
+                Log.d("DataEntryRepositoryImpl", "Loaded ${optionSets.size} option sets for dataset $datasetId")
+                optionSets
+            } catch (e: Exception) {
+                Log.e("DataEntryRepositoryImpl", "Error fetching option sets for dataset $datasetId", e)
+                emptyMap()
+            }
+        }
+    }
+
+    /**
+     * Map DHIS2 SDK ValueType to domain ValueType
+     */
+    private fun mapValueType(sdkValueType: org.hisp.dhis.android.core.common.ValueType?): com.ash.simpledataentry.domain.model.ValueType {
+        return when (sdkValueType) {
+            org.hisp.dhis.android.core.common.ValueType.TEXT -> com.ash.simpledataentry.domain.model.ValueType.TEXT
+            org.hisp.dhis.android.core.common.ValueType.LONG_TEXT -> com.ash.simpledataentry.domain.model.ValueType.LONG_TEXT
+            org.hisp.dhis.android.core.common.ValueType.PHONE_NUMBER -> com.ash.simpledataentry.domain.model.ValueType.PHONE_NUMBER
+            org.hisp.dhis.android.core.common.ValueType.EMAIL -> com.ash.simpledataentry.domain.model.ValueType.EMAIL
+            org.hisp.dhis.android.core.common.ValueType.BOOLEAN -> com.ash.simpledataentry.domain.model.ValueType.BOOLEAN
+            org.hisp.dhis.android.core.common.ValueType.TRUE_ONLY -> com.ash.simpledataentry.domain.model.ValueType.TRUE_ONLY
+            org.hisp.dhis.android.core.common.ValueType.DATE -> com.ash.simpledataentry.domain.model.ValueType.DATE
+            org.hisp.dhis.android.core.common.ValueType.DATETIME -> com.ash.simpledataentry.domain.model.ValueType.DATETIME
+            org.hisp.dhis.android.core.common.ValueType.TIME -> com.ash.simpledataentry.domain.model.ValueType.TIME
+            org.hisp.dhis.android.core.common.ValueType.NUMBER -> com.ash.simpledataentry.domain.model.ValueType.NUMBER
+            org.hisp.dhis.android.core.common.ValueType.UNIT_INTERVAL -> com.ash.simpledataentry.domain.model.ValueType.UNIT_INTERVAL
+            org.hisp.dhis.android.core.common.ValueType.PERCENTAGE -> com.ash.simpledataentry.domain.model.ValueType.PERCENTAGE
+            org.hisp.dhis.android.core.common.ValueType.INTEGER -> com.ash.simpledataentry.domain.model.ValueType.INTEGER
+            org.hisp.dhis.android.core.common.ValueType.INTEGER_POSITIVE -> com.ash.simpledataentry.domain.model.ValueType.INTEGER_POSITIVE
+            org.hisp.dhis.android.core.common.ValueType.INTEGER_NEGATIVE -> com.ash.simpledataentry.domain.model.ValueType.INTEGER_NEGATIVE
+            org.hisp.dhis.android.core.common.ValueType.INTEGER_ZERO_OR_POSITIVE -> com.ash.simpledataentry.domain.model.ValueType.INTEGER_ZERO_OR_POSITIVE
+            org.hisp.dhis.android.core.common.ValueType.COORDINATE -> com.ash.simpledataentry.domain.model.ValueType.COORDINATE
+            org.hisp.dhis.android.core.common.ValueType.AGE -> com.ash.simpledataentry.domain.model.ValueType.AGE
+            org.hisp.dhis.android.core.common.ValueType.URL -> com.ash.simpledataentry.domain.model.ValueType.URL
+            org.hisp.dhis.android.core.common.ValueType.FILE_RESOURCE -> com.ash.simpledataentry.domain.model.ValueType.FILE_RESOURCE
+            org.hisp.dhis.android.core.common.ValueType.IMAGE -> com.ash.simpledataentry.domain.model.ValueType.IMAGE
+            else -> com.ash.simpledataentry.domain.model.ValueType.TEXT
         }
     }
 }
