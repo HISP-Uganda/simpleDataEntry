@@ -703,16 +703,46 @@ class SessionManager @Inject constructor() {
             }
         }
 
-        // Download standalone events using official pattern
+        // Download EVENT programs (WITHOUT_REGISTRATION)
+        val eventPrograms = d2Instance.programModule().programs()
+            .byProgramType().eq(org.hisp.dhis.android.core.program.ProgramType.WITHOUT_REGISTRATION)
+            .blockingGet()
+
+        Log.d("SessionManager", "Found ${eventPrograms.size} event programs (without registration) to download")
+
+        if (eventPrograms.isNotEmpty()) {
+            eventPrograms.forEach { program ->
+                val programUid = program.uid()
+                Log.d("SessionManager", "Downloading event program data for: $programUid - ${program.displayName()}")
+
+                try {
+                    // Download events for this specific EVENT program
+                    d2Instance.eventModule().eventDownloader()
+                        .byProgramUid(programUid)
+                        .blockingDownload()
+
+                    // Verify download
+                    val eventCount = d2Instance.eventModule().events()
+                        .byProgramUid().eq(programUid)
+                        .blockingCount()
+                    Log.d("SessionManager", "Successfully downloaded $eventCount events for program: $programUid")
+
+                } catch (e: Exception) {
+                    Log.e("SessionManager", "Failed to download event data for program: $programUid - ${e.message}", e)
+                }
+            }
+        }
+
+        // Download standalone events (events not associated with any program) using official pattern
         try {
             d2Instance.eventModule().eventDownloader()
                 .download()
-            Log.d("SessionManager", "Successfully downloaded event data")
+            Log.d("SessionManager", "Successfully downloaded standalone event data")
         } catch (e: Exception) {
-            Log.e("SessionManager", "Failed to download event data", e)
+            Log.e("SessionManager", "Failed to download standalone event data", e)
         }
 
-        Log.d("SessionManager", "Tracker data download completed")
+        Log.d("SessionManager", "Tracker and event data download completed")
 
         // POST-DOWNLOAD ANALYSIS: Comprehensive foreign key violation handling
         handlePostDownloadForeignKeyViolations(d2Instance)

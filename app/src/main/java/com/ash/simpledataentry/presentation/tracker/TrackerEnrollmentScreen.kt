@@ -19,6 +19,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.TextFieldValue
+import androidx.compose.ui.text.TextRange
 import androidx.compose.ui.unit.dp
 import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.navigation.NavController
@@ -468,7 +469,18 @@ private fun TrackerAttributeField(
     onValueChanged: (String) -> Unit,
     hasError: Boolean = false
 ) {
-    var textFieldValue by remember(value) { mutableStateOf(TextFieldValue(value)) }
+    // Fix cursor jumping: Use internal state for TextFieldValue, sync only when external value changes
+    var textFieldValue by remember { mutableStateOf(TextFieldValue(value)) }
+
+    // Detect when external value changes (e.g., from ViewModel) and update internal state
+    LaunchedEffect(value) {
+        if (textFieldValue.text != value) {
+            textFieldValue = TextFieldValue(
+                text = value,
+                selection = TextRange(value.length) // Place cursor at end
+            )
+        }
+    }
 
     Card(
         modifier = Modifier.fillMaxWidth()

@@ -55,5 +55,8 @@ interface DataEntryRepository {
     // Option set support for data entry
     suspend fun getOptionSetForDataElement(dataElementId: String): com.ash.simpledataentry.domain.model.OptionSet?
     suspend fun getAllOptionSetsForDataset(datasetId: String): Map<String, com.ash.simpledataentry.domain.model.OptionSet>
+
+    // Validation rules for intelligent grouping
+    suspend fun getValidationRulesForDataset(datasetId: String): List<org.hisp.dhis.android.core.validation.ValidationRule>
 }
 

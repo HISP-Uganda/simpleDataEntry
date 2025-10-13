@@ -594,6 +594,33 @@ class DatasetInstancesRepositoryImpl @Inject constructor(
                         .uid(programId)
                         .blockingGet()
 
+                    // Load tracked entity attribute values for this enrollment
+                    val teiUid = enrollment.trackedEntityInstance() ?: ""
+                    val attributeValues = if (teiUid.isNotEmpty()) {
+                        d2.trackedEntityModule().trackedEntityAttributeValues()
+                            .byTrackedEntityInstance().eq(teiUid)
+                            .blockingGet()
+                            .mapNotNull { attrValue ->
+                                val attribute = d2.trackedEntityModule().trackedEntityAttributes()
+                                    .uid(attrValue.trackedEntityAttribute())
+                                    .blockingGet()
+
+                                attribute?.let {
+                                    com.ash.simpledataentry.domain.model.TrackedEntityAttributeValue(
+                                        id = it.uid(),
+                                        displayName = it.displayName() ?: it.name() ?: "",
+                                        trackedEntityAttribute = it.uid(),
+                                        trackedEntityInstance = teiUid,
+                                        value = attrValue.value(),
+                                        created = attrValue.created() ?: java.util.Date(),
+                                        lastUpdated = attrValue.lastUpdated() ?: java.util.Date()
+                                    )
+                                }
+                            }
+                    } else {
+                        emptyList()
+                    }
+
                     com.ash.simpledataentry.domain.model.ProgramInstance.TrackerEnrollment(
                         id = enrollment.uid(),
                         programId = programId,
@@ -618,11 +645,12 @@ class DatasetInstancesRepositoryImpl @Inject constructor(
                             org.hisp.dhis.android.core.common.State.TO_POST -> com.ash.simpledataentry.domain.model.SyncStatus.NOT_SYNCED
                             else -> com.ash.simpledataentry.domain.model.SyncStatus.SYNCED
                         },
-                        trackedEntityInstance = enrollment.trackedEntityInstance() ?: "",
+                        trackedEntityInstance = teiUid,
                         enrollmentDate = enrollment.enrollmentDate() ?: java.util.Date(),
                         incidentDate = enrollment.incidentDate(),
                         followUp = enrollment.followUp() ?: false,
-                        completedDate = enrollment.completedDate()
+                        completedDate = enrollment.completedDate(),
+                        attributes = attributeValues
                     )
                 }
                 emit(programInstances)

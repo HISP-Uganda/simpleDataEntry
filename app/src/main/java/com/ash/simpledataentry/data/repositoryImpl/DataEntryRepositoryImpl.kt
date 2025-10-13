@@ -594,13 +594,16 @@ class DataEntryRepositoryImpl @Inject constructor(
                     )
                 }
 
-                com.ash.simpledataentry.domain.model.OptionSet(
+                val result = com.ash.simpledataentry.domain.model.OptionSet(
                     id = optionSet.uid(),
                     name = optionSet.name() ?: optionSet.uid(),
                     displayName = optionSet.displayName(),
                     options = options,
                     valueType = mapValueType(dataElement.valueType())
                 )
+
+                Log.d("DataEntryRepositoryImpl", "Loaded option set for $dataElementId: ${result.name} with ${result.options.size} options")
+                result
             } catch (e: Exception) {
                 Log.e("DataEntryRepositoryImpl", "Error fetching option set for data element $dataElementId", e)
                 null
@@ -664,6 +667,19 @@ class DataEntryRepositoryImpl @Inject constructor(
             org.hisp.dhis.android.core.common.ValueType.FILE_RESOURCE -> com.ash.simpledataentry.domain.model.ValueType.FILE_RESOURCE
             org.hisp.dhis.android.core.common.ValueType.IMAGE -> com.ash.simpledataentry.domain.model.ValueType.IMAGE
             else -> com.ash.simpledataentry.domain.model.ValueType.TEXT
+        }
+    }
+
+    override suspend fun getValidationRulesForDataset(datasetId: String): List<org.hisp.dhis.android.core.validation.ValidationRule> {
+        return withContext(Dispatchers.IO) {
+            try {
+                d2.validationModule().validationRules()
+                    .byDataSetUids(listOf(datasetId))
+                    .blockingGet()
+            } catch (e: Exception) {
+                Log.w("DataEntryRepository", "Failed to fetch validation rules for dataset $datasetId: ${e.message}")
+                emptyList()
+            }
         }
     }
 }

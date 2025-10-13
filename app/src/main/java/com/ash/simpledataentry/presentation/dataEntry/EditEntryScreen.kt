@@ -595,29 +595,31 @@ fun EditEntryScreen(
                                                     // Only render groups where at least one field is in this section
                                                     val groupFields = allDataElements.filter { it.dataElement in dataElementIds }
                                                     if (groupFields.isNotEmpty()) {
+                                                        // Get optionSet if available, otherwise provide empty one
+                                                        // Note: GroupedRadioButtons doesn't actually use optionSet, it's just for API compatibility
                                                         val optionSet = groupFields.firstOrNull()?.let { state.optionSets[it.dataElement] }
-                                                        if (optionSet != null) {
-                                                            // Find which field (if any) has value "YES" or "true"
-                                                            val selectedFieldId = groupFields.firstOrNull {
-                                                                it.value?.lowercase() in listOf("yes", "true", "1")
-                                                            }?.dataElement
+                                                            ?: com.ash.simpledataentry.domain.model.OptionSet(id = "", name = "", options = emptyList())
 
-                                                            com.ash.simpledataentry.presentation.dataEntry.components.GroupedRadioButtons(
-                                                                groupTitle = groupTitle,
-                                                                fields = groupFields,
-                                                                selectedFieldId = selectedFieldId,
-                                                                optionSet = optionSet,
-                                                                enabled = true,
-                                                                onFieldSelected = { selectedDataElementId ->
-                                                                    // Set selected field to YES, others to NO
-                                                                    groupFields.forEach { field ->
-                                                                        val newValue = if (field.dataElement == selectedDataElementId) "true" else "false"
-                                                                        onValueChange(newValue, field)
-                                                                    }
-                                                                },
-                                                                modifier = Modifier.fillMaxWidth()
-                                                            )
-                                                        }
+                                                        // Find which field (if any) has value "YES" or "true"
+                                                        val selectedFieldId = groupFields.firstOrNull {
+                                                            it.value?.lowercase() in listOf("yes", "true", "1")
+                                                        }?.dataElement
+
+                                                        com.ash.simpledataentry.presentation.dataEntry.components.GroupedRadioButtons(
+                                                            groupTitle = groupTitle,
+                                                            fields = groupFields,
+                                                            selectedFieldId = selectedFieldId,
+                                                            optionSet = optionSet,
+                                                            enabled = true,
+                                                            onFieldSelected = { selectedDataElementId ->
+                                                                // Set selected field to YES, others to NO
+                                                                groupFields.forEach { field ->
+                                                                    val newValue = if (field.dataElement == selectedDataElementId) "true" else "false"
+                                                                    onValueChange(newValue, field)
+                                                                }
+                                                            },
+                                                            modifier = Modifier.fillMaxWidth()
+                                                        )
                                                     }
                                                 }
 
@@ -844,16 +846,29 @@ private fun SectionContent(
     val categoryComboStructures = state.categoryComboStructures
     val dataElements = values.map { it.dataElement to it.dataElementName }.distinct()
 
+    // Log category combo structures for debugging
+    android.util.Log.d("SectionContent", "Available categoryComboStructures: ${categoryComboStructures.keys}")
+    categoryComboStructures.forEach { (comboUid, struct) ->
+        android.util.Log.d("SectionContent", "  $comboUid -> ${struct.size} categories: ${struct.map { it.first }}")
+    }
+
     // --- New grouping logic per RENDERING_RULES.md ---
     val structureKeyFor = { dataValue: DataValue ->
         val structure = categoryComboStructures[dataValue.categoryOptionCombo]
-        structure?.joinToString("|") { cat ->
+        val key = structure?.joinToString("|") { cat ->
             cat.first + ":" + cat.second.joinToString(",") { it.first }
         } ?: "__DEFAULT__"
+        android.util.Log.d("SectionContent", "  DataValue ${dataValue.dataElement}:${dataValue.categoryOptionCombo} -> structure key: $key")
+        key
     }
     val groups = values.groupBy(structureKeyFor)
     val allSameStructure = groups.size == 1
     val isAllDefault = groups.keys.singleOrNull() == "__DEFAULT__"
+
+    android.util.Log.d("SectionContent", "Grouped into ${groups.size} structure groups:")
+    groups.forEach { (key, vals) ->
+        android.util.Log.d("SectionContent", "  Group '$key': ${vals.size} values")
+    }
 
     if (allSameStructure) {
         val groupValues = values
@@ -1337,6 +1352,11 @@ fun DataValueField(
     val optionSet = state.optionSets[dataValue.dataElement]
     val renderType = state.renderTypes[dataValue.dataElement] ?: optionSet?.computeRenderType()
 
+    // Debug logging for option set rendering
+    if (optionSet != null) {
+        Log.d("EditEntryScreen", "Data element ${dataValue.dataElementName} has option set: ${optionSet.name}, render type: $renderType, ${optionSet.options.size} options")
+    }
+
     // Check program rule effects
     val isHidden = state.hiddenFields.contains(dataValue.dataElement)
     val isDisabledByRule = state.disabledFields.contains(dataValue.dataElement)
@@ -1347,6 +1367,28 @@ fun DataValueField(
 
     // If field is hidden by program rules, don't render it
     if (isHidden) {
+        return
+    }
+
+    // Check if this field belongs to a radio button group
+    val groupEntry = state.radioButtonGroups.entries.firstOrNull { entry ->
+        entry.value.contains(dataValue.dataElement)
+    }
+
+    // Determine if this is the FIRST field in its group (based on original data values order)
+    val isFirstInGroup = if (groupEntry != null) {
+        val groupFieldIds = groupEntry.value
+        // Get all fields in the group maintaining their original order
+        val groupFieldsInOrder = state.dataValues.filter { it.dataElement in groupFieldIds }
+        // This field is first if it's the first occurrence in the ordered list
+        groupFieldsInOrder.firstOrNull()?.dataElement == dataValue.dataElement
+    } else {
+        false
+    }
+
+    // If field is part of a group but NOT the first field, skip rendering
+    if (groupEntry != null && !isFirstInGroup) {
+        Log.d("EditEntryScreen", "Skipping ${dataValue.dataElementName} - will be rendered as part of group ${groupEntry.key}")
         return
     }
 
@@ -1366,8 +1408,59 @@ fun DataValueField(
                 } else base
             }
     ) {
-        // Check if this data element has an option set first
+        // Check if this field is the first in a radio button group
         when {
+            groupEntry != null && renderType == com.ash.simpledataentry.domain.model.RenderType.YES_NO_BUTTONS && isFirstInGroup -> {
+                // Get all fields in the group maintaining their original order
+                val groupFieldIds = groupEntry.value
+                val groupFields = state.dataValues.filter { it.dataElement in groupFieldIds }
+
+                // Determine which field is selected (has value "true" or "1")
+                val selectedFieldId = groupFields.firstOrNull { field ->
+                    val value = calculatedValue ?: field.value
+                    value?.lowercase() in listOf("true", "1", "yes")
+                }?.dataElement
+
+                Log.d("EditEntryScreen", "Rendering group '${groupEntry.key}' with ${groupFields.size} fields, selected: $selectedFieldId, enabled: $effectiveEnabled")
+                Log.d("EditEntryScreen", "Group fields: ${groupFields.map { "${it.dataElementName}=${it.value}" }}")
+
+                com.ash.simpledataentry.presentation.dataEntry.components.GroupedRadioButtons(
+                    groupTitle = groupEntry.key,
+                    fields = groupFields,
+                    selectedFieldId = selectedFieldId,
+                    optionSet = optionSet ?: com.ash.simpledataentry.domain.model.OptionSet(
+                        id = "yes_no",
+                        name = "Yes/No",
+                        displayName = "Yes/No",
+                        options = listOf(
+                            com.ash.simpledataentry.domain.model.Option(
+                                code = "1",
+                                name = "Yes",
+                                displayName = "Yes",
+                                sortOrder = 1
+                            ),
+                            com.ash.simpledataentry.domain.model.Option(
+                                code = "0",
+                                name = "No",
+                                displayName = "No",
+                                sortOrder = 2
+                            )
+                        ),
+                        valueType = com.ash.simpledataentry.domain.model.ValueType.TEXT
+                    ),
+                    isRequired = isMandatoryByRule,
+                    enabled = effectiveEnabled,
+                    onFieldSelected = { selectedId ->
+                        Log.d("EditEntryScreen", "GroupedRadioButtons onFieldSelected called with selectedId: $selectedId")
+                        // Update all fields in the group using viewModel
+                        viewModel.updateGroupedRadioFields(
+                            groupFields = groupFields,
+                            selectedFieldId = selectedId
+                        )
+                    },
+                    modifier = Modifier.fillMaxWidth()
+                )
+            }
             optionSet != null && renderType != null -> {
                 when (renderType) {
                     com.ash.simpledataentry.domain.model.RenderType.DROPDOWN -> {
@@ -1401,7 +1494,7 @@ fun DataValueField(
                         )
                     }
                     com.ash.simpledataentry.domain.model.RenderType.YES_NO_BUTTONS -> {
-                        com.ash.simpledataentry.presentation.dataEntry.components.YesNoButtons(
+                        com.ash.simpledataentry.presentation.dataEntry.components.YesNoCheckbox(
                             selectedValue = calculatedValue ?: dataValue.value,
                             title = dataValue.dataElementName + if (isMandatoryByRule) " *" else "",
                             isRequired = isMandatoryByRule,

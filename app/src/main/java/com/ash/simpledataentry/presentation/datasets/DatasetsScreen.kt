@@ -260,6 +260,15 @@ fun DatasetsScreen(
     var showDeleteConfirmation by remember { mutableStateOf(false) }
     var showFilterSection by remember { mutableStateOf(false) }
 
+    // Refresh program counts when navigating back to this screen
+    LaunchedEffect(navController.currentBackStackEntry) {
+        // Only refresh if we're actually on this screen (not navigating away)
+        val currentRoute = navController.currentBackStackEntry?.destination?.route
+        if (currentRoute == "datasets") {
+            viewModel.refreshPrograms()
+        }
+    }
+
     ModalNavigationDrawer(
         drawerState = drawerState,
         drawerContent = {
@@ -570,7 +579,7 @@ fun DatasetsScreen(
                                             // Route to appropriate screen based on program type
                                             val route = when (program.programType) {
                                                 DomainProgramType.TRACKER -> "TrackerEnrollments/${program.id}/${program.name}"
-                                                DomainProgramType.EVENT -> "EventInstances/${program.id}/${program.name}"
+                                                DomainProgramType.EVENT -> "EventsTable/${program.id}/${program.name}"
                                                 else -> "DatasetInstances/${program.id}/${program.name}"
                                             }
                                             navController.navigate(route)

@@ -72,7 +72,10 @@ data class EventCaptureState(
     val isEditMode: Boolean = false,
     val currentStep: Int = 0,
     val expandedSection: String? = null,
-    val isCompleted: Boolean = false
+    val isCompleted: Boolean = false,
+
+    // Program rules
+    val programRuleEffect: ProgramRuleEffect? = null
 )
 
 @HiltViewModel
@@ -185,8 +188,51 @@ class EventCaptureViewModel @Inject constructor(
                         .associate { it.dataElement()!! to it.value() }
                 } else emptyMap()
 
+                // Load option sets for data elements
+                val dataValuesWithOptionSets = dataValues.map { dataValue ->
+                    val optionSet = try {
+                        // Get option set from data element
+                        val de = d2Instance.dataElementModule().dataElements()
+                            .uid(dataValue.dataElement)
+                            .blockingGet()
+
+                        val optionSetUid = de?.optionSet()?.uid()
+
+                        if (optionSetUid != null) {
+                            val optionSetObj = d2Instance.optionModule().optionSets()
+                                .uid(optionSetUid)
+                                .blockingGet()
+
+                            val sdkOptions = d2Instance.optionModule().options()
+                                .byOptionSetUid().eq(optionSetUid)
+                                .blockingGet()
+
+                            val options = sdkOptions.mapIndexed { index, option ->
+                                Option(
+                                    code = option.code() ?: option.uid(),
+                                    name = option.name() ?: option.code() ?: option.uid(),
+                                    displayName = option.displayName(),
+                                    sortOrder = option.sortOrder() ?: index
+                                )
+                            }
+
+                            OptionSet(
+                                id = optionSetObj?.uid() ?: optionSetUid,
+                                name = optionSetObj?.name() ?: "",
+                                displayName = optionSetObj?.displayName(),
+                                options = options
+                            )
+                        } else null
+                    } catch (e: Exception) {
+                        android.util.Log.w("EventCaptureVM", "Failed to load option set for ${dataValue.dataElement}: ${e.message}")
+                        null
+                    }
+
+                    dataValue.copy(optionSet = optionSet)
+                }
+
                 // Update data values with existing values
-                val updatedDataValues = dataValues.map { dataValue ->
+                val updatedDataValues = dataValuesWithOptionSets.map { dataValue ->
                     existingDataValues[dataValue.dataElement]?.let { existingValue ->
                         dataValue.copy(value = existingValue)
                     } ?: dataValue
@@ -234,6 +280,9 @@ class EventCaptureViewModel @Inject constructor(
 
                 updateCanSave()
 
+                // Trigger program rules evaluation after loading existing event
+                eventId?.let { evaluateProgramRules(it) }
+
             } catch (e: Exception) {
                 _state.update {
                     it.copy(
@@ -266,6 +315,11 @@ class EventCaptureViewModel @Inject constructor(
             )
         }
         updateCanSave()
+
+        // Trigger program rules evaluation after value change
+        _state.value.eventId?.let { eventId ->
+            evaluateProgramRules(eventId)
+        }
     }
 
     fun updateEventDate(date: Date) {
@@ -325,6 +379,11 @@ class EventCaptureViewModel @Inject constructor(
                         saveResult = Result.success(Unit),
                         successMessage = if (currentState.isEditMode) "Event updated successfully" else "Event created successfully"
                     )
+                }
+
+                // Trigger program rules evaluation after save
+                _state.value.eventId?.let { eventId ->
+                    evaluateProgramRules(eventId)
                 }
 
             } catch (e: Exception) {
@@ -440,5 +499,177 @@ class EventCaptureViewModel @Inject constructor(
         val key = "${dataValue.dataElement}|${dataValue.categoryOptionCombo}"
         fieldStates[key] = newValue
         updateDataValue(newValue.text, dataValue)
+    }
+
+    /**
+     * Evaluate program rules for the current event
+     * Uses DHIS2 rule-engine library for offline evaluation
+     *
+     * TODO: Fix API usage - currently has compilation errors
+     * The correct DHIS2 SDK API for program rule evaluation needs to be researched
+     */
+    private fun evaluateProgramRules(eventUid: String) {
+        // COMMENTED OUT: Has compilation errors - needs correct DHIS2 SDK API
+        /*
+        viewModelScope.launch(kotlinx.coroutines.Dispatchers.Default) {
+            try {
+                val d2Instance = d2 ?: return@launch
+
+                // Use DHIS2 rule engine from org.hisp.dhis.rules package
+                val ruleEngine = org.hisp.dhis.rules.RuleEngineContext.builder()
+                    .build()
+
+                // Get program rules
+                val programId = _state.value.programId
+                val programRules = d2Instance.programModule().programRules()
+                    .byProgramUid().eq(programId)
+                    .blockingGet()
+                    .map { programRule ->
+                        org.hisp.dhis.rules.models.Rule.create(
+                            null, null, "", "",
+                            programRule.uid(),
+                            programRule.name() ?: "",
+                            programRule.condition() ?: "",
+                            emptyList()
+                        )
+                    }
+
+                // Get data values for evaluation
+                val dataValues = _state.value.dataValues
+                    .mapNotNull { dv ->
+                        dv.value?.let {
+                            org.hisp.dhis.rules.models.RuleDataValue.create(
+                                Date(),
+                                "",
+                                dv.dataElement,
+                                it
+                            )
+                        }
+                    }
+
+                // Evaluate rules
+                val ruleEffects = org.hisp.dhis.rules.RuleEngine.builder(ruleEngine)
+                    .rules(programRules)
+                    .build()
+                    .evaluate(
+                        org.hisp.dhis.rules.models.RuleEvent.create(
+                            eventUid,
+                            programId,
+                            org.hisp.dhis.rules.models.RuleEvent.Status.ACTIVE,
+                            Date(),
+                            Date(),
+                            "",
+                            null,
+                            null,
+                            dataValues,
+                            "",
+                            null
+                        )
+                    )
+
+                // Convert to our ProgramRuleEffect model
+                val effect = convertToRuleEffect(ruleEffects)
+
+                // Apply effects to state on main thread
+                kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.Main) {
+                    applyRuleEffects(effect)
+                }
+            } catch (e: Exception) {
+                android.util.Log.e("EventCaptureVM", "Program rule evaluation failed: ${e.message}", e)
+            }
+        }
+        */
+    }
+
+    /**
+     * Convert DHIS2 SDK RuleEffect list to ProgramRuleEffect model
+     *
+     * TODO: Will be re-enabled when evaluateProgramRules is fixed
+     */
+    @Suppress("unused")
+    private fun convertToRuleEffect(
+        sdkEffects: List<org.hisp.dhis.rules.models.RuleEffect>
+    ): ProgramRuleEffect {
+        val hiddenFields = mutableSetOf<String>()
+        val mandatoryFields = mutableSetOf<String>()
+        val fieldWarnings = mutableMapOf<String, String>()
+        val fieldErrors = mutableMapOf<String, String>()
+        val calculatedValues = mutableMapOf<String, String>()
+        val displayTexts = mutableListOf<String>()
+        val displayKeyValuePairs = mutableMapOf<String, String>()
+        val hiddenSections = mutableSetOf<String>()
+
+        sdkEffects.forEach { effect ->
+            when (effect.ruleAction().javaClass.simpleName) {
+                "RuleActionHideField" -> {
+                    effect.data()?.let { hiddenFields.add(it) }
+                }
+                "RuleActionShowWarning" -> {
+                    val field = effect.data() ?: ""
+                    val message = effect.ruleAction().data() ?: ""
+                    if (field.isNotEmpty()) fieldWarnings[field] = message
+                }
+                "RuleActionShowError" -> {
+                    val field = effect.data() ?: ""
+                    val message = effect.ruleAction().data() ?: ""
+                    if (field.isNotEmpty()) fieldErrors[field] = message
+                }
+                "RuleActionAssign" -> {
+                    val field = effect.data() ?: ""
+                    val value = effect.ruleAction().data() ?: ""
+                    if (field.isNotEmpty()) calculatedValues[field] = value
+                }
+                "RuleActionSetMandatoryField" -> {
+                    effect.data()?.let { mandatoryFields.add(it) }
+                }
+                "RuleActionDisplayText" -> {
+                    effect.ruleAction().data()?.let { displayTexts.add(it) }
+                }
+                "RuleActionDisplayKeyValuePair" -> {
+                    //val key = effect.ruleAction().location() ?: ""
+                    val value = effect.ruleAction().data() ?: ""
+                    //if (key.isNotEmpty()) displayKeyValuePairs[key] = value
+                }
+                "RuleActionHideSection" -> {
+                    effect.data()?.let { hiddenSections.add(it) }
+                }
+            }
+        }
+
+        return ProgramRuleEffect(
+            hiddenFields = hiddenFields,
+            mandatoryFields = mandatoryFields,
+            fieldWarnings = fieldWarnings,
+            fieldErrors = fieldErrors,
+            calculatedValues = calculatedValues,
+            displayTexts = displayTexts,
+            displayKeyValuePairs = displayKeyValuePairs,
+            hiddenSections = hiddenSections
+        )
+    }
+
+    /**
+     * Apply program rule effects to form state
+     *
+     * TODO: Will be re-enabled when evaluateProgramRules is fixed
+     */
+    @Suppress("unused")
+    private fun applyRuleEffects(effect: ProgramRuleEffect) {
+        _state.update { currentState ->
+            // Apply calculated values to data values
+            val updatedDataValues = currentState.dataValues.map { dv ->
+                val calculatedValue = effect.calculatedValues[dv.dataElement]
+                if (calculatedValue != null) {
+                    dv.copy(value = calculatedValue)
+                } else {
+                    dv
+                }
+            }
+
+            currentState.copy(
+                dataValues = updatedDataValues,
+                programRuleEffect = effect
+            )
+        }
     }
 }

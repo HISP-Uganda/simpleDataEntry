@@ -31,6 +31,10 @@ import org.hisp.dhis.mobile.ui.designsystem.component.InputShellState
 import androidx.compose.ui.text.input.TextFieldValue
 import com.ash.simpledataentry.presentation.datasetInstances.SyncConfirmationDialog
 import com.ash.simpledataentry.presentation.datasetInstances.SyncOptions
+import com.ash.simpledataentry.presentation.dataEntry.components.OptionSetDropdown
+import com.ash.simpledataentry.presentation.dataEntry.components.OptionSetRadioGroup
+import com.ash.simpledataentry.domain.model.computeRenderType
+import com.ash.simpledataentry.domain.model.RenderType
 import kotlinx.coroutines.launch
 import java.text.SimpleDateFormat
 import java.util.*
@@ -277,12 +281,20 @@ fun EventCaptureScreen(
             onCancel = { viewModel.clearMessages() },
             modifier = Modifier.fillMaxSize()
         ) {
-            if (state.isLoading) {
-                FullScreenLoader(
-                    message = "Loading event...",
-                    isVisible = true
-                )
-            } else if (state.error != null) {
+            when {
+                state.isLoading -> {
+                    FullScreenLoader(
+                        message = "Loading event...",
+                        isVisible = true
+                    )
+                }
+                state.saveInProgress -> {
+                    FullScreenLoader(
+                        message = if (state.isEditMode) "Updating event..." else "Creating event...",
+                        isVisible = true
+                    )
+                }
+                state.error != null -> {
                 Column(
                     modifier = Modifier
                         .fillMaxSize()
@@ -302,8 +314,9 @@ fun EventCaptureScreen(
                         color = MaterialTheme.colorScheme.onSurface
                     )
                 }
-            } else {
-                LazyColumn(
+                }
+                else -> {
+                    LazyColumn(
                     modifier = Modifier
                         .fillMaxSize()
                         .padding(paddingValues)
@@ -393,7 +406,8 @@ fun EventCaptureScreen(
                                             dataValue = dataValue,
                                             onValueChange = { value ->
                                                 viewModel.updateDataValue(value, dataValue)
-                                            }
+                                            },
+                                            programRuleEffect = state.programRuleEffect
                                         )
                                     }
                                 }
@@ -451,6 +465,7 @@ fun EventCaptureScreen(
                         }
                     }
                 }
+                }
             }
         }
     }
@@ -460,21 +475,78 @@ fun EventCaptureScreen(
 private fun EventDataValueField(
     dataValue: DataValue,
     onValueChange: (String) -> Unit,
+    programRuleEffect: com.ash.simpledataentry.domain.model.ProgramRuleEffect? = null,
     modifier: Modifier = Modifier
 ) {
+    // Skip rendering if field is hidden by program rules
+    if (dataValue.dataElement in (programRuleEffect?.hiddenFields ?: emptySet())) {
+        return
+    }
+
     val value = dataValue.value ?: ""
-    var textFieldValue by remember(value) {
+    // Fix cursor jumping: Don't recreate TextFieldValue on every value change
+    var textFieldValue by remember {
         mutableStateOf(TextFieldValue(value))
     }
 
-    // Update text field when external value changes
+    // Update text field when external value changes (e.g., from ViewModel)
     LaunchedEffect(value) {
         if (textFieldValue.text != value) {
-            textFieldValue = TextFieldValue(value)
+            // Preserve cursor position when updating value from external source
+            val selection = textFieldValue.selection
+            textFieldValue = TextFieldValue(
+                text = value,
+                selection = androidx.compose.ui.text.TextRange(
+                    start = selection.start.coerceAtMost(value.length),
+                    end = selection.end.coerceAtMost(value.length)
+                )
+            )
         }
     }
 
-    when (dataValue.dataEntryType) {
+    Column(modifier = modifier) {
+        // Check if data value has an option set
+        if (dataValue.optionSet != null) {
+            val optionSet = dataValue.optionSet!!
+            val renderType = optionSet.computeRenderType()
+
+            when (renderType) {
+                RenderType.DROPDOWN, RenderType.DEFAULT -> {
+                    OptionSetDropdown(
+                        optionSet = optionSet,
+                        selectedCode = dataValue.value,
+                        title = dataValue.dataElementName,
+                        onOptionSelected = { code ->
+                            onValueChange(code ?: "")
+                        },
+                        modifier = Modifier.padding(vertical = 4.dp)
+                    )
+                }
+                RenderType.RADIO_BUTTONS, RenderType.YES_NO_BUTTONS -> {
+                    OptionSetRadioGroup(
+                        optionSet = optionSet,
+                        selectedCode = dataValue.value,
+                        title = dataValue.dataElementName,
+                        onOptionSelected = { code ->
+                            onValueChange(code ?: "")
+                        },
+                        modifier = Modifier.padding(vertical = 4.dp)
+                    )
+                }
+                else -> {
+                    // Fallback to dropdown for other render types
+                    OptionSetDropdown(
+                        optionSet = optionSet,
+                        selectedCode = dataValue.value,
+                        title = dataValue.dataElementName,
+                        onOptionSelected = { code ->
+                            onValueChange(code ?: "")
+                        },
+                        modifier = Modifier.padding(vertical = 4.dp)
+                    )
+                }
+            }
+        } else when (dataValue.dataEntryType) {
         DataEntryType.NUMBER -> {
             InputNumber(
                 title = dataValue.dataElementName,
@@ -572,7 +644,29 @@ private fun EventDataValueField(
                         onValueChange(textField.text)
                     }
                 },
-                modifier = modifier.padding(vertical = 4.dp)
+                modifier = Modifier.padding(vertical = 4.dp)
+            )
+        }
+        }
+
+        // Display program rule warnings
+        programRuleEffect?.fieldWarnings?.get(dataValue.dataElement)?.let { warning ->
+            Text(
+                text = "⚠ $warning",
+                color = MaterialTheme.colorScheme.tertiary,
+                style = MaterialTheme.typography.bodySmall,
+                modifier = Modifier.padding(top = 4.dp, start = 4.dp)
+            )
+        }
+
+        // Display program rule errors
+        programRuleEffect?.fieldErrors?.get(dataValue.dataElement)?.let { error ->
+            Text(
+                text = "❌ $error",
+                color = MaterialTheme.colorScheme.error,
+                style = MaterialTheme.typography.bodySmall,
+                fontWeight = FontWeight.Bold,
+                modifier = Modifier.padding(top = 4.dp, start = 4.dp)
             )
         }
     }

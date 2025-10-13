@@ -12,6 +12,7 @@ import com.ash.simpledataentry.data.local.DataValueDraftDao
 import com.ash.simpledataentry.data.local.DataValueDraftEntity
 import com.ash.simpledataentry.data.repositoryImpl.ValidationRepository
 import com.ash.simpledataentry.domain.model.*
+import com.ash.simpledataentry.domain.grouping.DataElementGroupingAnalyzer
 import com.ash.simpledataentry.data.sync.DetailedSyncProgress
 import com.ash.simpledataentry.data.sync.SyncQueueManager
 import com.ash.simpledataentry.domain.repository.DataEntryRepository
@@ -78,7 +79,10 @@ data class DataEntryState(
     val calculatedValues: Map<String, String> = emptyMap(),
 
     // Radio button groups: Map<groupTitle, List<dataElementIds>>
-    val radioButtonGroups: Map<String, List<String>> = emptyMap()
+    val radioButtonGroups: Map<String, List<String>> = emptyMap(),
+
+    // Generic grouping strategies per section
+    val sectionGroupingStrategies: Map<String, List<GroupingStrategy>> = emptyMap()
 )
 
 @HiltViewModel
@@ -94,6 +98,13 @@ class DataEntryViewModel @Inject constructor(
 ) : ViewModel() {
     private val _state = MutableStateFlow(DataEntryState())
     val state: StateFlow<DataEntryState> = _state.asStateFlow()
+
+    // Grouping analyzer for intelligent data element organization
+    private val groupingAnalyzer = DataElementGroupingAnalyzer()
+
+    // Cache for grouping analysis results to avoid recomputation
+    // Key: datasetId, Value: Map of section name to grouping strategies
+    private val groupingCache = mutableMapOf<String, Map<String, List<GroupingStrategy>>>()
 
     // Track unsaved edits: key = Pair<dataElement, categoryOptionCombo>, value = DataValue
     private val dirtyDataValues = mutableMapOf<Pair<String, String>, DataValue>()
@@ -263,14 +274,68 @@ class DataEntryViewModel @Inject constructor(
                     )}
 
                     val optionSets = repository.getAllOptionSetsForDataset(datasetId)
-                    val renderTypes = optionSets.mapValues { (_, optionSet) ->
-                        optionSet.computeRenderType()
+
+                    // Compute render types on background thread to avoid UI freezes
+                    val renderTypes = withContext(Dispatchers.Default) {
+                        optionSets.mapValues { (_, optionSet) ->
+                            optionSet.computeRenderType()
+                        }
                     }
 
-                    // Detect radio button groups for mutually exclusive YES/NO fields
-                    val radioButtonGroups = detectRadioButtonGroups(mergedValues, optionSets)
+                    // Fetch validation rules for intelligent grouping
+                    val validationRules = repository.getValidationRulesForDataset(datasetId)
+                    Log.d("DataEntryViewModel", "Fetched ${validationRules.size} validation rules for dataset $datasetId")
 
-                    // Step 4: Finalizing (80-100%)
+                    // Step 3.6: Analyze grouping strategies per section (75-85%)
+                    _state.update { it.copy(
+                        navigationProgress = com.ash.simpledataentry.presentation.core.NavigationProgress(
+                            phase = com.ash.simpledataentry.presentation.core.LoadingPhase.PROCESSING_DATA,
+                            overallPercentage = 80,
+                            phaseTitle = com.ash.simpledataentry.presentation.core.LoadingPhase.PROCESSING_DATA.title,
+                            phaseDetail = "Analyzing data grouping..."
+                        )
+                    )}
+
+                    val groupedBySection = mergedValues.groupBy { it.sectionName }
+
+                    // Check cache first to avoid expensive re-computation
+                    val sectionGroupingStrategies = groupingCache[datasetId] ?: run {
+                        // Cache miss - compute grouping strategies on background thread
+                        Log.d("DataEntryViewModel", "Cache miss for dataset $datasetId - computing grouping strategies")
+                        val computed = withContext(Dispatchers.Default) {
+                            groupedBySection.mapValues { (sectionName, sectionValues) ->
+                                Log.d("DataEntryViewModel", "Analyzing grouping for section '$sectionName' with ${sectionValues.size} data values")
+                                groupingAnalyzer.analyzeGrouping(
+                                    dataElements = sectionValues,
+                                    categoryComboStructures = categoryComboStructures,
+                                    optionSets = optionSets,
+                                    validationRules = validationRules
+                                )
+                            }
+                        }
+                        // Store in cache for next time
+                        groupingCache[datasetId] = computed
+                        computed
+                    }
+
+                    // Preserve legacy radio button groups for backward compatibility
+                    val radioButtonGroups = sectionGroupingStrategies.values
+                        .flatten()
+                        .filter { it.groupType == GroupType.RADIO_GROUP }
+                        .associate { it.groupTitle to it.members.map { dv -> dv.dataElement } }
+
+                    sectionGroupingStrategies.forEach { (section, strategies) ->
+                        strategies.forEach { strategy ->
+                            strategy.metadata.inferredCategoryCombo?.let { catCombo ->
+                                Log.d("DataEntry", "$section: ${catCombo.name} ${catCombo.actualCombinations}/${catCombo.totalExpectedCombinations} (${(catCombo.completenessRatio * 100).toInt()}%) ${if(catCombo.isConditional) "CONDITIONAL" else ""}")
+                            }
+                            strategy.metadata.mutualExclusivityScore?.let { score ->
+                                Log.d("DataEntry", "$section: ${strategy.groupType} '${strategy.groupTitle}' excl=${(score*100).toInt()}%")
+                            }
+                        }
+                    }
+
+                    // Step 4: Finalizing (85-100%)
                     _state.update { it.copy(
                         navigationProgress = com.ash.simpledataentry.presentation.core.NavigationProgress(
                             phase = com.ash.simpledataentry.presentation.core.LoadingPhase.COMPLETING,
@@ -281,8 +346,6 @@ class DataEntryViewModel @Inject constructor(
                     )}
 
                     _state.update { currentState ->
-
-                        val groupedBySection = mergedValues.groupBy { it.sectionName } // Group once
                         val dataElementGroupedSections = groupedBySection.mapValues { (_, sectionValues) ->
                             sectionValues.groupBy { it.dataElement }
                         }
@@ -326,6 +389,7 @@ class DataEntryViewModel @Inject constructor(
                             optionSets = optionSets,
                             renderTypes = renderTypes,
                             radioButtonGroups = radioButtonGroups,
+                            sectionGroupingStrategies = sectionGroupingStrategies,
                             navigationProgress = null // Clear progress when done
                         )
                     }
@@ -348,26 +412,51 @@ class DataEntryViewModel @Inject constructor(
     }
 
     fun updateCurrentValue(value: String, dataElementUid: String, categoryOptionComboUid: String) {
+        Log.d("DataEntryViewModel", "updateCurrentValue called: dataElement=$dataElementUid, combo=$categoryOptionComboUid, value='$value'")
+
         val key = dataElementUid to categoryOptionComboUid
         val dataValueToUpdate = _state.value.dataValues.find {
             it.dataElement == dataElementUid && it.categoryOptionCombo == categoryOptionComboUid
         }
+
         if (dataValueToUpdate != null) {
+            Log.d("DataEntryViewModel", "Found dataValue to update: ${dataValueToUpdate.dataElementName} (current value='${dataValueToUpdate.value}')")
+
             val updatedValueObject = dataValueToUpdate.copy(value = value)
             dirtyDataValues[key] = updatedValueObject
-            
+
             // Reset savePressed when new changes are made after a save
             if (savePressed) {
                 savePressed = false
             }
+
             _state.update { currentState ->
+                var updateCount = 0
+                val updatedValues = currentState.dataValues.map {
+                    if (it.dataElement == dataElementUid && it.categoryOptionCombo == categoryOptionComboUid) {
+                        updateCount++
+                        updatedValueObject
+                    } else {
+                        it
+                    }
+                }
+
+                // CRITICAL FIX: Rebuild dataElementGroupedSections with updated values
+                val updatedGroupedSections = updatedValues
+                    .groupBy { it.sectionName }
+                    .mapValues { (_, sectionValues) ->
+                        sectionValues.groupBy { it.dataElement }
+                    }
+
+                Log.d("DataEntryViewModel", "State updated: $updateCount values modified, rebuilt grouped sections")
+
                 currentState.copy(
-                    dataValues = currentState.dataValues.map {
-                        if (it.dataElement == dataElementUid && it.categoryOptionCombo == categoryOptionComboUid) updatedValueObject else it
-                    },
+                    dataValues = updatedValues,
+                    dataElementGroupedSections = updatedGroupedSections,
                     currentDataValue = if (currentState.currentDataValue?.dataElement == dataElementUid && currentState.currentDataValue?.categoryOptionCombo == categoryOptionComboUid) updatedValueObject else currentState.currentDataValue
                 )
             }
+
             viewModelScope.launch(Dispatchers.IO) {
                 if (value.isNotBlank()) {
                     draftDao.upsertDraft(
@@ -393,10 +482,25 @@ class DataEntryViewModel @Inject constructor(
                         categoryOptionCombo = categoryOptionComboUid
                     )
                 }
-                
+
                 // Update draft count after draft operation
                 loadDraftCount()
             }
+        } else {
+            Log.w("DataEntryViewModel", "NO MATCH FOUND for dataElement=$dataElementUid, combo=$categoryOptionComboUid in ${_state.value.dataValues.size} values")
+        }
+    }
+
+    /**
+     * Update all fields in a grouped radio button set
+     * Set selected field to "1" (Yes), all others to "0" (No)
+     */
+    fun updateGroupedRadioFields(groupFields: List<DataValue>, selectedFieldId: String?) {
+        Log.d("DataEntryViewModel", "updateGroupedRadioFields called with selectedFieldId: $selectedFieldId, groupFields: ${groupFields.map { it.dataElementName }}")
+        groupFields.forEach { field ->
+            val newValue = if (field.dataElement == selectedFieldId) "1" else "0"
+            Log.d("DataEntryViewModel", "Setting ${field.dataElementName} (${field.dataElement}) to $newValue")
+            updateCurrentValue(newValue, field.dataElement, field.categoryOptionCombo)
         }
     }
 
@@ -1317,10 +1421,16 @@ class DataEntryViewModel @Inject constructor(
     }
 
     /**
-     * Detect radio button groups from data values
-     * Groups fields with same option set and common prefix
+     * Detect radio button groups from data values using name-based heuristics
+     * NOTE: Ideally would use DHIS2 validation rules, but SDK doesn't expose them
+     *
+     * Requirements for grouping:
+     * 1. Fields must share the EXACT SAME option set instance (by ID)
+     * 2. Fields must have 3+ fields sharing the same option set (indicates mutual exclusivity)
+     * 3. Fields must have a clear common prefix ending with space, underscore, or dash
+     * 4. Common prefix must be at least 5 characters (avoid false positives like "Is", "Has", etc.)
      */
-    private fun detectRadioButtonGroups(
+    private fun detectRadioButtonGroupsByName(
         dataValues: List<DataValue>,
         optionSets: Map<String, com.ash.simpledataentry.domain.model.OptionSet>
     ): Map<String, List<String>> {
@@ -1332,33 +1442,69 @@ class DataEntryViewModel @Inject constructor(
             } else null
         }
 
-        // Group by option set instance (must have same option set to be grouped)
-        // We group by the option set ID which is optionSet.id
-        val groupedByOptionSet = yesNoFields.groupBy { (_, optionSet) -> optionSet.id }
+        Log.d("RadioGroupDetection", "Found ${yesNoFields.size} YES/NO fields to analyze for grouping")
 
+        // Group by section first
         val radioGroups = mutableMapOf<String, MutableList<String>>()
+        val fieldsBySection = yesNoFields.groupBy { it.first.sectionName }
 
-        groupedByOptionSet.forEach { (optionSetId, fieldsWithOptionSets) ->
-            val fields = fieldsWithOptionSets.map { it.first }
-            if (fields.size < 2) return@forEach // Need at least 2 fields to group
+        fieldsBySection.forEach { (sectionName, fieldsWithOptionSets) ->
+            Log.d("RadioGroupDetection", "Analyzing section '$sectionName' with ${fieldsWithOptionSets.size} YES/NO fields")
 
-            // Extract common prefix
-            val names = fields.map { it.dataElementName }
-            val commonPrefix = extractCommonPrefix(names)
+            // CRITICAL: Group by option set ID first - only fields sharing the SAME option set can be grouped
+            val fieldsByOptionSet = fieldsWithOptionSets.groupBy { it.second.id }
 
-            // Only group if there's a meaningful prefix (at least 3 chars)
-            if (commonPrefix.length >= 3) {
-                // Use prefix as group title
-                val groupTitle = commonPrefix.trim().trimEnd('-', ':', '|', '/')
-                radioGroups.getOrPut(groupTitle) { mutableListOf() }
-                    .addAll(fields.map { it.dataElement })
+            fieldsByOptionSet.forEach { (optionSetId, fieldsInSet) ->
+                // CONSERVATIVE: Require at least 3 fields sharing same option set to consider grouping
+                // This indicates they're likely mutually exclusive
+                if (fieldsInSet.size < 3) {
+                    Log.d("RadioGroupDetection", "Skipping option set $optionSetId - only ${fieldsInSet.size} field(s), need 3+ for grouping")
+                    return@forEach
+                }
 
-                Log.d("RadioGroupDetection", "Detected group '$groupTitle' with ${fields.size} fields sharing optionSet $optionSetId: ${fields.map { it.dataElementName }}")
+                Log.d("RadioGroupDetection", "Checking ${fieldsInSet.size} fields sharing option set $optionSetId for grouping")
+
+                val fields = fieldsInSet.map { it.first }
+
+                // Find common prefix among ALL fields in this option set
+                var commonPrefix = fields[0].dataElementName
+                for (field in fields.drop(1)) {
+                    commonPrefix = findCommonPrefix(commonPrefix, field.dataElementName)
+                }
+
+                // CONSERVATIVE: Prefix must be at least 5 characters AND end with clear separator
+                val hasValidSeparator = commonPrefix.endsWith(" ") ||
+                                       commonPrefix.endsWith("_") ||
+                                       commonPrefix.endsWith("-")
+
+                if (commonPrefix.length >= 5 && hasValidSeparator) {
+                    val groupTitle = commonPrefix.trim().trimEnd('-', ':', '|', '/', ' ', '_')
+
+                    if (groupTitle.isNotEmpty()) {
+                        val fieldIds = fields.map { it.dataElement }
+                        radioGroups[groupTitle] = fieldIds.toMutableList()
+
+                        Log.d("RadioGroupDetection", "✓ Created group '$groupTitle' with ${fieldIds.size} fields sharing option set $optionSetId: ${fields.map { it.dataElementName }}")
+                    } else {
+                        Log.d("RadioGroupDetection", "✗ Rejected group - empty title after cleanup")
+                    }
+                } else {
+                    Log.d("RadioGroupDetection", "✗ Rejected grouping for option set $optionSetId - prefix too short (${ commonPrefix.length} chars) or no separator. Prefix: '$commonPrefix'")
+                }
             }
         }
 
-        // Return only groups with 2+ fields
-        return radioGroups.filter { it.value.size >= 2 }
+        val result = radioGroups.filter { it.value.size >= 3 }  // Final filter: groups must have 3+ members
+        Log.d("RadioGroupDetection", "Final result: ${result.size} groups detected with 3+ members each")
+        return result
+    }
+
+    private fun findCommonPrefix(str1: String, str2: String): String {
+        var i = 0
+        while (i < str1.length && i < str2.length && str1[i] == str2[i]) {
+            i++
+        }
+        return str1.substring(0, i)
     }
 
     /**

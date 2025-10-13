@@ -280,15 +280,6 @@ private fun EventCard(
                 )
             }
 
-            Spacer(modifier = Modifier.height(8.dp))
-
-            // Program stage ID
-            Text(
-                text = "Stage: ${event.programStage}",
-                style = MaterialTheme.typography.bodyMedium,
-                color = MaterialTheme.colorScheme.onSurfaceVariant
-            )
-
             // Status indicators
             Spacer(modifier = Modifier.height(8.dp))
             Row(

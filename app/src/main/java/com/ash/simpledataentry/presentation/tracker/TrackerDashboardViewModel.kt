@@ -42,9 +42,11 @@ data class TrackerDashboardUiState(
 
     // Events
     val events: List<Event> = emptyList(),
+    val filteredEvents: List<Event> = emptyList(),
 
-    // Program Stages (for event creation)
+    // Program Stages (for event creation and filtering)
     val programStages: List<com.ash.simpledataentry.domain.model.ProgramStage> = emptyList(),
+    val selectedStageId: String? = null,  // null = "All Stages"
     val eventCountsByStage: Map<String, Int> = emptyMap(),  // programStageId -> count
     val showStageSelectionDialog: Boolean = false,
 
@@ -65,6 +67,9 @@ class TrackerDashboardViewModel @Inject constructor(
     val uiState: StateFlow<TrackerDashboardUiState> = _uiState.asStateFlow()
 
     private var d2: D2? = null
+
+    // Cache for data element display names to avoid repeated database lookups
+    private val dataElementNameCache = mutableMapOf<String, String>()
 
     init {
         d2 = sessionManager.getD2()
@@ -136,7 +141,9 @@ class TrackerDashboardViewModel @Inject constructor(
                     canAddEvents = enrollment.status()?.name == "ACTIVE",
                     trackedEntityAttributes = trackedEntityAttributes,
                     events = events,
+                    filteredEvents = events,  // Initially show all events
                     programStages = programStages,
+                    selectedStageId = null,  // Initially "All Stages"
                     eventCountsByStage = eventCountsByStage
                 )
 
@@ -239,5 +246,114 @@ class TrackerDashboardViewModel @Inject constructor(
 
     fun hideStageSelectionDialog() {
         _uiState.update { it.copy(showStageSelectionDialog = false) }
+    }
+
+    /**
+     * Filter events by program stage
+     * @param stageId The program stage ID to filter by, or null for "All Stages"
+     */
+    fun filterEventsByStage(stageId: String?) {
+        val currentState = _uiState.value
+        val filteredEvents = if (stageId == null) {
+            // Show all events
+            currentState.events
+        } else {
+            // Filter by selected stage
+            currentState.events.filter { it.programStageId == stageId }
+        }
+
+        _uiState.update { it.copy(
+            selectedStageId = stageId,
+            filteredEvents = filteredEvents
+        ) }
+    }
+
+    /**
+     * Build table columns and rows for event display
+     * Reuses EventsTableViewModel pattern with caching for performance
+     */
+    fun buildEventTableData(
+        events: List<Event>,
+        programStageId: String
+    ): Pair<List<EventTableColumn>, List<EventTableRow>> {
+        val d2Instance = d2 ?: return Pair(emptyList(), emptyList())
+
+        if (events.isEmpty()) {
+            return Pair(emptyList(), emptyList())
+        }
+
+        val dateFormatter = java.text.SimpleDateFormat("dd/MM/yyyy", java.util.Locale.getDefault())
+        val columns = mutableListOf<EventTableColumn>()
+
+        // Add fixed columns
+        columns.add(EventTableColumn("eventDate", "Date", sortable = false))
+        columns.add(EventTableColumn("status", "Status", sortable = false))
+
+        // Load data elements for this program stage and build columns
+        try {
+            val programStageDataElements = d2Instance.programModule()
+                .programStageDataElements()
+                .byProgramStage().eq(programStageId)
+                .blockingGet()
+
+            programStageDataElements.forEach { psde ->
+                val dataElementId = psde.dataElement()?.uid() ?: return@forEach
+
+                // Use cached data element name
+                val dataElementName = dataElementNameCache.getOrPut(dataElementId) {
+                    try {
+                        val de = d2Instance.dataElementModule().dataElements()
+                            .uid(dataElementId)
+                            .blockingGet()
+                        de?.displayName() ?: de?.name() ?: dataElementId
+                    } catch (e: Exception) {
+                        android.util.Log.w("TrackerDashboardVM", "Failed to load data element name: ${e.message}")
+                        dataElementId
+                    }
+                }
+
+                columns.add(
+                    EventTableColumn(
+                        dataElementId,
+                        dataElementName,
+                        sortable = false
+                    )
+                )
+            }
+        } catch (e: Exception) {
+            android.util.Log.e("TrackerDashboardVM", "Failed to build columns: ${e.message}")
+        }
+
+        // Build table rows
+        val tableRows = events.map { event ->
+            val cells = mutableMapOf<String, String>()
+
+            // Fill fixed column values
+            cells["eventDate"] = event.eventDate?.let { dateFormatter.format(it) } ?: "No date"
+            cells["status"] = event.status
+
+            // Load data values for this event
+            try {
+                val dataValues = d2Instance.trackedEntityModule()
+                    .trackedEntityDataValues()
+                    .byEvent().eq(event.id)
+                    .blockingGet()
+
+                dataValues.forEach { dataValue ->
+                    cells[dataValue.dataElement()!!] = dataValue.value() ?: ""
+                }
+            } catch (e: Exception) {
+                android.util.Log.w("TrackerDashboardVM", "Failed to load data values for event: ${e.message}")
+            }
+
+            EventTableRow(
+                id = event.id,
+                programStageId = event.programStageId,
+                enrollmentId = event.enrollmentId,
+                cells = cells
+            )
+        }
+
+        return Pair(columns, tableRows)
     }
 }

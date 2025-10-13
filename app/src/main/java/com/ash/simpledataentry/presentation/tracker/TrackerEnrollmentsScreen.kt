@@ -280,15 +280,6 @@ private fun EnrollmentCard(
                 )
             }
 
-            Spacer(modifier = Modifier.height(8.dp))
-
-            // TEI ID
-            Text(
-                text = "ID: ${enrollment.trackedEntityInstance}",
-                style = MaterialTheme.typography.bodyMedium,
-                color = MaterialTheme.colorScheme.onSurfaceVariant
-            )
-
             // Status indicators
             Spacer(modifier = Modifier.height(8.dp))
             Row(

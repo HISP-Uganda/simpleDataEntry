@@ -3,8 +3,10 @@ package com.ash.simpledataentry.presentation.dataEntry.components
 import androidx.compose.foundation.layout.*
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
+import kotlinx.coroutines.launch
 import com.ash.simpledataentry.domain.model.Option
 import com.ash.simpledataentry.domain.model.OptionSet
 import com.ash.simpledataentry.domain.model.DataValue
@@ -109,10 +111,11 @@ fun OptionSetRadioGroup(
 }
 
 /**
- * YES/NO toggle for boolean options
+ * Simple checkbox for boolean YES/NO options
+ * Checked = "1" (Yes), Unchecked = "0" (No)
  */
 @Composable
-fun YesNoButtons(
+fun YesNoCheckbox(
     selectedValue: String?,
     title: String,
     isRequired: Boolean = false,
@@ -120,51 +123,43 @@ fun YesNoButtons(
     onValueChanged: (String?) -> Unit,
     modifier: Modifier = Modifier
 ) {
-    Column(modifier = modifier) {
+    // Determine if checked (Yes = "1", "true", "yes")
+    val isChecked = selectedValue?.lowercase() in listOf("yes", "true", "1")
+
+    // Use remember to track local state for immediate UI feedback
+    var localChecked by remember(selectedValue) { mutableStateOf(isChecked) }
+
+    // Sync local state when selectedValue changes from parent
+    LaunchedEffect(selectedValue) {
+        localChecked = isChecked
+    }
+
+    Row(
+        modifier = modifier
+            .fillMaxWidth()
+            .padding(vertical = 4.dp),
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        Checkbox(
+            checked = localChecked,
+            onCheckedChange = { checked ->
+                if (enabled) {
+                    // Update local state immediately for visual feedback
+                    localChecked = checked
+                    val newValue = if (checked) "1" else "0"
+                    android.util.Log.d("YesNoCheckbox", "Checkbox ${if (checked) "checked" else "unchecked"} for $title, value=$newValue")
+                    onValueChanged(newValue)
+                } else {
+                    android.util.Log.d("YesNoCheckbox", "Checkbox click ignored - disabled")
+                }
+            },
+            enabled = enabled
+        )
+        Spacer(modifier = Modifier.width(8.dp))
         Text(
             text = if (isRequired) "$title *" else title,
             style = MaterialTheme.typography.bodyMedium
         )
-        Spacer(modifier = Modifier.height(8.dp))
-
-        // Determine selection state
-        val isYesSelected = selectedValue?.lowercase() in listOf("yes", "true", "1")
-        val isNoSelected = selectedValue?.lowercase() in listOf("no", "false", "0")
-
-        Row(
-            modifier = Modifier.fillMaxWidth(),
-            horizontalArrangement = Arrangement.spacedBy(16.dp)
-        ) {
-            // YES button
-            OutlinedButton(
-                onClick = { if (enabled) onValueChanged("true") },
-                enabled = enabled,
-                colors = if (isYesSelected) {
-                    ButtonDefaults.buttonColors()  // Filled when selected
-                } else {
-                    ButtonDefaults.outlinedButtonColors()  // Outlined when not selected
-                },
-                border = if (isYesSelected) null else ButtonDefaults.outlinedButtonBorder,
-                modifier = Modifier.weight(1f)
-            ) {
-                Text("YES")
-            }
-
-            // NO button
-            OutlinedButton(
-                onClick = { if (enabled) onValueChanged("false") },
-                enabled = enabled,
-                colors = if (isNoSelected) {
-                    ButtonDefaults.buttonColors()  // Filled when selected
-                } else {
-                    ButtonDefaults.outlinedButtonColors()  // Outlined when not selected
-                },
-                border = if (isNoSelected) null else ButtonDefaults.outlinedButtonBorder,
-                modifier = Modifier.weight(1f)
-            ) {
-                Text("NO")
-            }
-        }
     }
 }
 
@@ -191,25 +186,6 @@ fun GroupedRadioButtons(
         )
         Spacer(modifier = Modifier.height(8.dp))
 
-        // Add "None" option
-        Row(
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(vertical = 4.dp)
-        ) {
-            RadioButton(
-                selected = selectedFieldId == null,
-                onClick = { if (enabled) onFieldSelected(null) },
-                enabled = enabled
-            )
-            Spacer(modifier = Modifier.width(8.dp))
-            Text(
-                text = "None",
-                style = MaterialTheme.typography.bodyMedium,
-                modifier = Modifier.padding(top = 12.dp)
-            )
-        }
-
         // Render each field as a radio option
         fields.forEach { field ->
             Row(
@@ -219,7 +195,14 @@ fun GroupedRadioButtons(
             ) {
                 RadioButton(
                     selected = field.dataElement == selectedFieldId,
-                    onClick = { if (enabled) onFieldSelected(field.dataElement) },
+                    onClick = {
+                        if (enabled) {
+                            android.util.Log.d("GroupedRadioButtons", "RadioButton clicked for ${field.dataElementName}, enabled=$enabled")
+                            onFieldSelected(field.dataElement)
+                        } else {
+                            android.util.Log.d("GroupedRadioButtons", "RadioButton click ignored - disabled")
+                        }
+                    },
                     enabled = enabled
                 )
                 Spacer(modifier = Modifier.width(8.dp))

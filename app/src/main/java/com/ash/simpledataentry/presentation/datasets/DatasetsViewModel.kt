@@ -75,6 +75,10 @@ class DatasetsViewModel @Inject constructor(
         }
     }
 
+    fun refreshPrograms() {
+        loadPrograms()
+    }
+
     fun loadPrograms() {
         viewModelScope.launch {
             _uiState.value = DatasetsState.Loading

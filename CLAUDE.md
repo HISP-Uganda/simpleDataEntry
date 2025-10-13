@@ -1,157 +1,126 @@
 # SimpleDataEntry DHIS2 Android App - Claude Context
 
+**Last Updated**: 2025-10-13
+**Status**: Production-ready for datasets and tracker enrollments. Event data entry functional but event table has broken navigation.
+
 ## Project Overview
 
-**SimpleDataEntry** is a production-ready Android application built for efficient DHIS2 data collection with comprehensive offline capabilities. This app supports all DHIS2 program types (aggregate datasets, tracker programs, event programs) with a unified interface and robust data synchronization.
-
-## Key Technical Achievements
-
-### 1. Universal DHIS2 Program Support ✅
-- **Aggregate Datasets**: Complete data entry functionality with offline capabilities
-- **Tracker Programs**: Enrollment creation with FAB navigation to CreateEnrollment screens
-- **Event Programs**: Event creation with FAB navigation to CreateEvent screens
-- **Unified Interface**: Single screen supporting all program types with dynamic filtering
-
-### 2. DHIS2 SDK Foreign Key Constraint Resolution ✅
-- **Root Cause Identified**: CategoryOptionCombo foreign key violations preventing data storage
-- **Comprehensive Solution**: Based on official DHIS2 SDK documentation and community solutions
-- **Implementation**: Enhanced metadata synchronization in `SessionManager.kt` with:
-  - Expanded metadata download scope including all CategoryOptionCombo dependencies
-  - Real-time foreign key violation detection using `d2.maintenanceModule().foreignKeyViolations()`
-  - Automatic dependency resolution through metadata re-synchronization
-  - Multi-data type support (aggregate, tracker, event)
-
-### 3. Architecture Excellence ✅
-- **MVVM with Jetpack Compose**: Modern Android architecture
-- **Offline-First**: Room database with DHIS2 SDK integration
-- **Type-Safe Design**: Sealed class `ProgramInstance` model supporting all instance types
-- **Flow Context Management**: Fixed Flow invariant violations in coroutine contexts
+**SimpleDataEntry** is an Android application for DHIS2 data collection with offline-first architecture. Supports aggregate datasets, tracker programs, and event programs using DHIS2 Android SDK v2.7.0+.
 
 ## Current Implementation Status
 
-### ✅ PRODUCTION READY
-- **Authentication & Session Management**: Enhanced with SHA-256 offline authentication
-- **Dataset Operations**: Complete data entry, instance management, sync operations
-- **Tracker Program Support**: Auto-detection, filtering, enrollment creation navigation
-- **Event Program Support**: Auto-detection, filtering, event creation navigation
-- **Foreign Key Violation Handling**: Comprehensive CategoryOptionCombo constraint resolution
-- **Offline Capabilities**: Complete offline-first architecture with Room caching
+### ✅ WORKING FEATURES
 
-### ✅ CRITICAL BUG FIXES IMPLEMENTED
-- **Flow Context Violations**: Fixed `Flow invariant is violated` errors in data retrieval
-- **Foreign Key Constraints**: Resolved CategoryOptionCombo constraint violations blocking data storage
-- **Navigation Issues**: Fixed FAB navigation for tracker and event program types
-- **Program Type Detection**: Enhanced auto-detection of TRACKER vs EVENT vs DATASET programs
+**Dataset Data Entry** (Aggregate):
+- Complete CRUD operations for dataset instances
+- Offline data entry with sync
+- Period and org unit selection
+- CategoryOptionCombo support
 
-### ❌ PHASE 3+ DEVELOPMENT NEEDED
-- **Tracker Data Entry Screens**: Full enrollment and attribute value entry forms
-- **Event Data Entry Screens**: Event-specific data capture interfaces
-- **Advanced Tracker Features**: Program rules, relationships, advanced sync
+**Tracker Program Support**:
+- Enrollment listing in table/pivot view (`TrackerEnrollmentTableScreen`)
+- Column customization and persistence
+- Search and sort functionality
+- 22 enrollments displaying correctly in test instance
 
-## Technical Implementation Details
+**Event Data Capture**:
+- Event data entry screen (`EventCaptureScreen`) fully functional
+- ✅ **Option sets working**: Dropdowns, radio buttons, YES/NO buttons based on data element configuration
+- ✅ **Text entry bug fixed**: Cursor position preserved (no more backwards typing)
+- Data values save correctly
 
-### File Structure
-```
-presentation/
-├── datasets/DatasetsScreen.kt              # Unified program listing with filtering
-├── datasetInstances/DatasetInstancesScreen.kt  # Universal instance management
-├── datasetInstances/DatasetInstancesViewModel.kt  # Unified state management
-└── dataEntry/EditEntryScreen.kt            # Dataset-specific data entry
+**Authentication**:
+- Online/offline login with SHA-256 password validation
+- Secure credential storage
 
-domain/model/
-├── ProgramInstance.kt                       # Sealed class for all instance types
-├── Program.kt                              # Universal program model
-└── TrackedEntity.kt                        # Tracker-specific models
+### ⚠️ BROKEN/INCOMPLETE
 
-data/
-├── SessionManager.kt                       # Enhanced with FK violation handling
-├── repositoryImpl/DatasetsRepositoryImpl.kt     # Extended with tracker/event methods
-└── repositoryImpl/DatasetInstancesRepositoryImpl.kt  # Unified instance handling
-```
+**EventsTableScreen** (`presentation/tracker/EventsTableScreen.kt`):
+- ❌ **Line 126**: FAB navigation route `"EventCapture/$programId/null/null/null"` DOES NOT EXIST
+  - Should be: `"CreateEvent/$programId/$programName"`
+- ❌ **Line 186-189**: Edit navigation route format doesn't match any actual route
+  - Should be: `"EditStandaloneEvent/$programId/$programName/${row.id}"`
 
-### Key Code Locations
+**EventsTableViewModel** (`presentation/tracker/EventsTableViewModel.kt`):
+- ⚠️ **Line 113**: Redundant `.filterIsInstance<ProgramInstance.EventInstance>()` - data already correct type
+- ⚠️ **Lines 164-172**: `blockingGet()` called in Flow/coroutine context - will block thread
+- ⚠️ **Performance issue**: `buildColumns()` called on every search/sort, re-fetching data element names repeatedly
 
-#### Foreign Key Violation Handling (`SessionManager.kt`)
-- **Lines 620-660**: Comprehensive metadata dependency resolution
-- **Lines 807-924**: Foreign key violation detection and handling functions
-- **Lines 866-924**: Targeted resolution strategies for different violation types
+**Program Rules**:
+- Evaluation code commented out in `EventCaptureViewModel.kt` (lines 324-395)
+- TODO markers for future implementation with correct DHIS2 SDK APIs
 
-#### Unified Program Interface (`DatasetInstancesScreen.kt`)
-- **Lines 402-454**: Enhanced FAB navigation logic for all program types
-- **Lines 570-587**: Dynamic navigation based on program type detection
+## Architecture
 
-#### Program Type Support (`DatasetInstancesViewModel.kt`)
-- **Lines 140-188**: Enhanced program type detection and initialization
-- **Lines 200-250**: Unified state management for all instance types
+### Core Models
+- **`ProgramInstance`** (sealed class): Type-safe representation of datasets, tracker enrollments, and events
+- **`TrackedEntityDataValue`**: Event data values (dataElement, value, event)
+- **`TrackedEntityAttributeValue`**: Tracker enrollment attributes (id, displayName, value)
 
-## Development Guidelines
+### Key Navigation Routes
+From `AppNavigation.kt`:
+```kotlin
+// Datasets
+"DatasetInstances/{datasetId}/{datasetName}"
 
-### When Working on This Project
-1. **Maintain Backward Compatibility**: All dataset functionality must remain intact
-2. **Follow Sealed Class Architecture**: Use `ProgramInstance` for type-safe instance handling
-3. **Respect Offline-First Design**: Always load from Room database first
-4. **Handle Foreign Key Violations**: Use enhanced `SessionManager` metadata sync
-5. **Test All Program Types**: Verify functionality works for datasets, tracker, and event programs
+// Tracker enrollments (table view)
+"TrackerEnrollments/{programId}/{programName}"
 
-### Common Patterns
-- **Repository Pattern**: Extended repositories support multiple program types
-- **Flow-Based State Management**: Use `.flowOn(Dispatchers.IO)` instead of `withContext`
-- **Type-Safe Navigation**: Dynamic navigation based on program type detection
-- **Comprehensive Logging**: Extensive logging for debugging complex DHIS2 SDK interactions
+// Events (BROKEN - needs fixing)
+"EventsTable/{programId}/{programName}"
 
-### Build & Test Commands
-```bash
-# Build project
-./gradlew assembleDebug
-
-# Run tests
-./gradlew test
-
-# Check for compilation issues
-./gradlew compileDebugKotlin
+// Create/Edit Events
+"CreateEvent/{programId}/{programName}"
+"CreateEvent/{programId}/{programName}/{programStageId}"
+"EditStandaloneEvent/{programId}/{programName}/{eventId}"
+"EditEvent/{programId}/{programName}/{eventId}/{enrollmentId}"
 ```
 
-## Known Technical Challenges Resolved
+### Repository Pattern
+- `DatasetInstancesRepository`: Interface for all program instance operations
+- `DatasetInstancesRepositoryImpl`: Implementation using DHIS2 SDK
+- Returns `Flow<List<ProgramInstance>>` for reactive data loading
 
-### 1. CategoryOptionCombo Foreign Key Violations
-**Problem**: DataValues referencing missing CategoryOptionCombos causing storage failures
-**Solution**: Enhanced metadata synchronization with dependency resolution in `SessionManager.kt`
-**Evidence-Based**: Implementation based on DHIS2 SDK documentation and ANDROSDK-1592 issue resolution
+## Critical Development Rules
 
-### 2. Flow Context Violations
-**Problem**: `Flow invariant is violated` errors in coroutine contexts
-**Solution**: Replaced `withContext(Dispatchers.IO)` with `.flowOn(Dispatchers.IO)` in repository implementations
+### NEVER Do These
+1. ❌ Use `blockingGet()` in coroutine/Flow contexts - causes ANR
+2. ❌ Call database operations repeatedly in loops (cache instead)
+3. ❌ Navigate to routes without verifying they exist in `AppNavigation.kt`
+4. ❌ Claim features work without building and testing
+5. ❌ Break existing working functionality when adding features
 
-### 3. Program Type Auto-Detection
-**Problem**: Incorrect navigation for tracker vs event programs
-**Solution**: Enhanced `initializeWithProgramId()` with proper DHIS2 SDK program type detection
+### ALWAYS Do These
+1. ✅ Verify navigation routes in `AppNavigation.kt` before using
+2. ✅ Use suspending coroutines for database operations
+3. ✅ Test builds with `./gradlew assembleDebug` before claiming completion
+4. ✅ Use `.flowOn(Dispatchers.IO)` not `withContext` for Flow operations
+5. ✅ Read existing working code patterns before implementing new features
 
-## Integration with DHIS2 Ecosystem
+## Recent Session Work (2025-10-13)
 
-### DHIS2 SDK Integration
-- **Version**: 2.7.0+
-- **Authentication**: Standard DHIS2 credentials with enhanced offline support
-- **Metadata Sync**: Complete metadata download including dependencies
-- **Data Sync**: Multi-strategy download for robust data synchronization
+### Completed
+1. ✅ Fixed text entry reversal bug in `EventCaptureScreen.kt` (cursor position preservation)
+2. ✅ Implemented option sets for events (dropdowns, radio buttons, YES/NO buttons)
+3. ✅ Commented out broken program rules code with TODO markers
 
-### Server Compatibility
-- **DHIS2 Versions**: 2.35+ (tested with 2.40.4, 2.41.4)
-- **API Usage**: Standard DHIS2 Web API through Android SDK
-- **Permissions**: Requires standard data entry and read permissions
+### Created But Broken
+1. ❌ `EventsTableScreen.kt` - UI exists but navigation routes are wrong
+2. ❌ `EventsTableViewModel.kt` - Has blocking calls and performance issues
 
-## Future Development Roadmap
+### Next Priority Fixes
+1. Fix EventsTableScreen navigation (lines 126, 186-189)
+2. Remove blocking calls from EventsTableViewModel (lines 164-172)
+3. Optimize column building to cache data element names
+4. Remove redundant `.filterIsInstance` call (line 113)
 
-### Phase 3: Tracker Data Entry Implementation
-- Create tracker-specific data entry screens
-- Implement attribute value forms with validation
-- Add enrollment management capabilities
+## Test Instance Status
+- User: `adilanghciii` with offline access
+- 1 tracker program: `QZkuUuLedjh` with 22 enrollments working correctly
+- 0 event programs (EventsTable untested with real data)
+- 0 datasets
 
-### Phase 4: Advanced Features
-- Program rules implementation
-- Tracker relationships support
-- Advanced offline sync for tracker data
-- Enhanced analytics and reporting
-
----
-
-*This document provides comprehensive context for Claude AI when working on the SimpleDataEntry DHIS2 Android application. All technical implementation details, resolved issues, and architectural decisions are documented for efficient development continuation.*
+## Build Status
+✅ Code compiles successfully
+⚠️ Runtime navigation will crash for EventsTable
+⚠️ Performance issues with blocking calls
