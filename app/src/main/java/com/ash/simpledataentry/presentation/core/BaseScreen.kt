@@ -37,24 +37,33 @@ fun BaseScreen(
     },
     actions: @Composable (RowScope.() -> Unit) = {},
     floatingActionButton: @Composable (() -> Unit)? = null,
+    // PHASE 4: Top bar progress indicator
+    showProgress: Boolean = false,
+    progress: Float? = null, // null = indeterminate, 0.0-1.0 = determinate
     content: @Composable () -> Unit
 ) {
     Scaffold(
         topBar = {
-            TopBar(
-                title = { Title(text = title, textColor = TextColor.OnPrimary) },
-                type = TopBarType.CENTERED,
-                navigationIcon = navigationIcon!!,
-                actions = actions,
-                colors = TopAppBarColors(
-                    containerColor = SurfaceColor.Primary,
-                    titleContentColor = TextColor.OnSurface,
-                    navigationIconContentColor = TextColor.OnSurface,
-                    actionIconContentColor = TextColor.OnSurface,
-                    scrolledContainerColor = SurfaceColor.Container,
-                ),
-
+            Box {
+                TopBar(
+                    title = { Title(text = title, textColor = TextColor.OnPrimary) },
+                    type = TopBarType.CENTERED,
+                    navigationIcon = navigationIcon!!,
+                    actions = actions,
+                    colors = TopAppBarColors(
+                        containerColor = SurfaceColor.Primary,
+                        titleContentColor = TextColor.OnSurface,
+                        navigationIconContentColor = TextColor.OnSurface,
+                        actionIconContentColor = TextColor.OnSurface,
+                        scrolledContainerColor = SurfaceColor.Container,
+                    ),
                 )
+                // PHASE 4: Progress indicator beneath top bar
+                TopBarProgress(
+                    isVisible = showProgress,
+                    progress = progress
+                )
+            }
         },
         floatingActionButton = floatingActionButton ?: {},
         floatingActionButtonPosition = FabPosition.End

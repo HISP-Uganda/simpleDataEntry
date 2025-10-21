@@ -29,25 +29,54 @@ class DatasetsRepositoryImpl(
     /**
      * Fetches all datasets from Room first, then DHIS2 SDK if needed.
      * Emits the result as a Flow.
+     *
+     * CRITICAL FIX: Validates cached data belongs to current user before returning it.
      */
     override fun getDatasets(): Flow<List<Dataset>> = flow {
+        // SECURITY FIX: Verify cached data belongs to current logged-in user
+        val prefs = context.getSharedPreferences("session_prefs", android.content.Context.MODE_PRIVATE)
+        val currentUser = prefs.getString("username", null)
+        val currentServer = prefs.getString("serverUrl", null)
+
+        // Get cached user from Room metadata (if exists)
+        val cachedUser = prefs.getString("cached_datasets_user", null)
+        val cachedServer = prefs.getString("cached_datasets_server", null)
+
         val local = withContext(Dispatchers.IO) { datasetDao.getAll() }
-        if (local.isNotEmpty()) {
+
+        // Only use cached data if it belongs to the current user
+        val isSameUser = currentUser == cachedUser && currentServer == cachedServer
+
+        // If wrong user data is cached, clear it
+        if (local.isNotEmpty() && !isSameUser) {
+            Log.w(TAG, "Cached datasets belong to different user ($cachedUser), clearing cache...")
+            withContext(Dispatchers.IO) {
+                datasetDao.clearAll()
+            }
+        }
+
+        // Emit cached data first if valid (immediate UI response)
+        if (local.isNotEmpty() && isSameUser) {
+            Log.d(TAG, "Emitting cached datasets for user: $currentUser")
             val datasetsWithCounts = local.map { entity ->
                 val instanceCount = datasetInstancesRepository.getDatasetInstanceCount(entity.id)
                 entity.toDomainModel().copy(instanceCount = instanceCount)
             }
             emit(datasetsWithCounts)
-            return@flow
         }
-        // If Room is empty, try to fetch from SDK if online
+
+        // Always check for fresh data from SDK if online
         if (NetworkUtils.isNetworkAvailable(context)) {
             try {
-                Log.d(TAG, "Fetching datasets from SDK...")
+                Log.d(TAG, "Fetching fresh datasets from SDK for user: $currentUser...")
                 val d2Instance = d2
                 if (d2Instance == null) {
                     Log.e(TAG, "D2 instance is null")
-                    throw Exception("D2 not initialized")
+                    // If we already emitted cached data, that's fine
+                    if (local.isEmpty() || !isSameUser) {
+                        throw Exception("D2 not initialized")
+                    }
+                    return@flow
                 }
                 val datasets = withContext(Dispatchers.IO) {
                     d2Instance.dataSetModule()
@@ -60,32 +89,48 @@ class DatasetsRepositoryImpl(
                             dataset.copy(instanceCount = instanceCount)
                         }
                 }
-                // Update Room
+                // Update Room and store current user metadata for validation
                 withContext(Dispatchers.IO) {
                     datasetDao.clearAll()
                     datasetDao.insertAll(datasets.map { it.toEntity() })
+                    // Store current user in SharedPreferences for cache validation
+                    prefs.edit().apply {
+                        putString("cached_datasets_user", currentUser)
+                        putString("cached_datasets_server", currentServer)
+                        apply()
+                    }
+                    Log.d(TAG, "Cached fresh datasets for user: $currentUser@$currentServer")
                 }
                 emit(datasets)
             } catch (e: Exception) {
-                Log.e(TAG, "Error fetching datasets", e)
-                emit(emptyList())
+                Log.e(TAG, "Error fetching fresh datasets", e)
+                // Only emit empty list if we didn't already emit cached data
+                if (local.isEmpty() || !isSameUser) {
+                    emit(emptyList())
+                }
             }
         } else {
-            // Offline and Room is empty
-            emit(emptyList())
+            // Offline - only emit empty list if we didn't already emit cached data
+            if (local.isEmpty() || !isSameUser) {
+                Log.d(TAG, "Offline and no valid cached data for user: $currentUser")
+                emit(emptyList())
+            }
         }
     }
 
     override suspend fun syncDatasets(): Result<Unit> {
         return try {
-            Log.d(TAG, "Starting dataset sync...")
+            Log.d(TAG, "Syncing dataset DATA (metadata already downloaded during login)")
+            // PHASE 3 FIX: Don't retrigger full metadata download - just sync data
+            // Metadata is already downloaded by SessionManager during login
+            // This method should only download AGGREGATE DATA, not metadata
             withContext(Dispatchers.IO) {
-                d2.metadataModule().blockingDownload()
+                d2.aggregatedModule().data().blockingDownload()
             }
-            Log.d(TAG, "Dataset sync completed successfully")
+            Log.d(TAG, "Dataset data sync completed successfully")
             Result.success(Unit)
         } catch (e: Exception) {
-            Log.e(TAG, "Dataset sync failed", e)
+            Log.e(TAG, "Dataset data sync failed", e)
             Result.failure(e)
         }
     }
@@ -183,15 +228,19 @@ class DatasetsRepositoryImpl(
 
     override suspend fun syncPrograms(): Result<Unit> {
         return try {
-            // Sync all metadata including datasets and programs
-            Log.d(TAG, "Starting program sync...")
+            Log.d(TAG, "Syncing program DATA (metadata already downloaded during login)")
+            // PHASE 3 FIX: Don't retrigger full metadata download - just sync tracker/event data
+            // Metadata is already downloaded by SessionManager during login
+            // This method should only download TRACKER/EVENT DATA, not metadata
             withContext(Dispatchers.IO) {
-                d2.metadataModule().blockingDownload()
+                d2.trackedEntityModule().trackedEntityInstanceDownloader()
+                    .limit(500) // Reasonable limit to prevent timeouts
+                    .blockingDownload()
             }
-            Log.d(TAG, "Successfully synced all programs and metadata")
+            Log.d(TAG, "Program data sync completed successfully")
             Result.success(Unit)
         } catch (e: Exception) {
-            Log.e(TAG, "Error syncing programs", e)
+            Log.e(TAG, "Program data sync failed", e)
             Result.failure(e)
         }
     }

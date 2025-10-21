@@ -18,20 +18,22 @@ class DataElementGroupingAnalyzer {
 
     /**
      * Main entry point: Determines the best grouping strategy for a list of data elements
+     * PHASE 6: Validation rules are now REQUIRED - they're the ultimate source of truth for grouping
      */
     fun analyzeGrouping(
         dataElements: List<DataValue>,
         categoryComboStructures: Map<String, List<Pair<String, List<Pair<String, String>>>>>,
         optionSets: Map<String, OptionSet>,
-        validationRules: List<ValidationRule> = emptyList()
+        validationRules: List<ValidationRule> // PHASE 6: No longer optional - REQUIRED parameter
     ): List<GroupingStrategy> {
 
-        Log.d(TAG, "=== Starting grouping analysis for ${dataElements.size} data elements ===")
 
         val strategies = mutableListOf<GroupingStrategy>()
 
-        // Strategy 0.5: HIGHEST CONFIDENCE - Validation rule analysis
+        // Strategy 0.5: HIGHEST CONFIDENCE - Validation rule analysis (ALWAYS RUNS)
+        // PHASE 6: Validation rules are the ULTIMATE authority - they OVERRIDE all other strategies
         if (validationRules.isNotEmpty()) {
+            Log.d(TAG, "=== PHASE 6: Validation rules take precedence (ULTIMATE SOURCE OF TRUTH) ===")
             Log.d(TAG, "=== STRATEGY 0.5: Validation rule-based grouping (${validationRules.size} rules) ===")
             val validationGroups = extractGroupsFromValidationRules(dataElements, validationRules)
             if (validationGroups.isNotEmpty()) {
@@ -44,7 +46,8 @@ class DataElementGroupingAnalyzer {
 
                 if (remaining.isEmpty()) return strategies
 
-                // Continue analysis with remaining elements
+                // Continue analysis with remaining elements (validation rules already applied)
+                // PHASE 6: Pass emptyList() for remaining elements since they didn't match any validation rules
                 return strategies + analyzeGrouping(remaining, categoryComboStructures, optionSets, emptyList())
             }
         }
@@ -553,13 +556,27 @@ class DataElementGroupingAnalyzer {
     }
 
     /**
-     * PASS 1: Extract by delimiters " - " or ": "
+     * IMPROVEMENT 4: PASS 1 - Extract by delimiters with expanded patterns
+     * Supports: " - ", ": ", " | ", " / ", " – ", " — ", "(...)"
      */
     private fun extractByDelimiter(fields: List<DataValue>): Map<String, List<DataValue>> {
         val bySubject = mutableMapOf<String, MutableList<DataValue>>()
-        val delimiters = listOf(" - ", ": ")
+
+        // Expanded delimiter list with priority order
+        val delimiters = listOf(
+            " - ",      // Standard hyphen with spaces
+            ": ",       // Colon with space
+            " – ",      // En-dash with spaces (Unicode U+2013)
+            " — ",      // Em-dash with spaces (Unicode U+2014)
+            " | ",      // Pipe with spaces
+            " / ",      // Forward slash with spaces
+            " \\ "      // Backslash with spaces (less common)
+        )
 
         fields.forEach { field ->
+            var matched = false
+
+            // Try standard delimiters first
             for (delimiter in delimiters) {
                 if (delimiter in field.dataElementName) {
                     val lastIndex = field.dataElementName.lastIndexOf(delimiter)
@@ -567,8 +584,22 @@ class DataElementGroupingAnalyzer {
                         val subject = field.dataElementName.substring(0, lastIndex).trim()
                         if (subject.length >= 3) {
                             bySubject.getOrPut(subject) { mutableListOf() }.add(field)
+                            matched = true
                             break
                         }
+                    }
+                }
+            }
+
+            // Try parenthetical pattern if no delimiter matched
+            // Example: "School Type (Public)" → subject="School Type", option="Public"
+            if (!matched) {
+                val parentheticalMatch = Regex("""^(.+?)\s*\(([^)]+)\)\s*$""").find(field.dataElementName)
+                if (parentheticalMatch != null) {
+                    val subject = parentheticalMatch.groupValues[1].trim()
+                    if (subject.length >= 3) {
+                        bySubject.getOrPut(subject) { mutableListOf() }.add(field)
+                        Log.d(TAG, "  Parenthetical pattern: '$subject' ← '${field.dataElementName}'")
                     }
                 }
             }
@@ -599,7 +630,9 @@ class DataElementGroupingAnalyzer {
     }
 
     /**
-     * PASS 3: Extract by first word only (critical for "Ownership Public", "Location Rural")
+     * IMPROVEMENT 3: PASS 3 - Extract by first word only with validation
+     * Critical for: "Ownership Public", "Location Rural", "Type Government"
+     * Prevents false positives like grouping unrelated "School X" fields
      */
     private fun extractBySingleWordSubject(fields: List<DataValue>): Map<String, List<DataValue>> {
         val bySubject = mutableMapOf<String, MutableList<DataValue>>()
@@ -614,7 +647,89 @@ class DataElementGroupingAnalyzer {
             }
         }
 
-        return bySubject.filter { it.value.size >= 2 }
+        // Filter out groups that don't meet validation criteria
+        return bySubject.filter { (subject, groupFields) ->
+            groupFields.size >= 2 && validateSingleWordGroup(subject, groupFields)
+        }
+    }
+
+    /**
+     * IMPROVEMENT 3A: Validate single-word subject groups to reduce false positives
+     * Returns true if the group is likely a valid radio button group
+     */
+    private fun validateSingleWordGroup(subject: String, fields: List<DataValue>): Boolean {
+        // Extract the "options" (everything after the subject word)
+        val options = fields.map { field ->
+            field.dataElementName.removePrefix(subject).trim()
+        }
+
+        // VALIDATION 1: Check if options form a coherent set using taxonomic pairs
+        val taxonomicCategories = listOf(
+            // Ownership/Governance
+            setOf("public", "private", "government", "ngo", "faith-based", "community"),
+            // Location
+            setOf("urban", "rural", "peri urban", "peri-urban", "remote"),
+            // Registration/Licensing
+            setOf("licensed", "not licensed", "unlicensed", "registered", "unregistered"),
+            // School type
+            setOf("day", "boarding", "mixed", "residential"),
+            // Gender
+            setOf("boys only", "girls only", "mixed", "male", "female", "coeducational"),
+            // Facility type
+            setOf("permanent", "temporary", "semi-permanent"),
+            // Status
+            setOf("active", "inactive", "closed", "suspended"),
+            // Level
+            setOf("primary", "secondary", "tertiary", "preschool", "elementary")
+        )
+
+        val lowerOptions = options.map { it.lowercase() }
+        val matchesTaxonomy = taxonomicCategories.any { taxonomy ->
+            // Check if at least 50% of options match this taxonomic category
+            val matchCount = lowerOptions.count { option ->
+                taxonomy.any { taxonomyTerm -> option.contains(taxonomyTerm) }
+            }
+            matchCount >= options.size * 0.5
+        }
+
+        if (matchesTaxonomy) {
+            Log.d(TAG, "  Validation: Single-word group '$subject' matches taxonomy ✓")
+            return true
+        }
+
+        // VALIDATION 2: Check if options are short and distinct (typical of categories)
+        val avgOptionLength = options.sumOf { it.length } / options.size.toFloat()
+        val allShort = avgOptionLength <= 25 // Average ≤25 chars
+
+        val allDistinct = options.distinct().size == options.size
+        val maxWordCount = options.maxOfOrNull { it.split(Regex("\\s+")).size } ?: 0
+
+        if (allShort && allDistinct && maxWordCount <= 3) {
+            Log.d(TAG, "  Validation: Single-word group '$subject' has short distinct options ✓")
+            return true
+        }
+
+        // VALIDATION 3: Check for common overly-generic words that cause false positives
+        val genericWords = setOf(
+            "school", "student", "teacher", "class", "grade", "total", "number", "count",
+            "data", "information", "report", "record", "entry", "item", "field"
+        )
+
+        if (subject.lowercase() in genericWords) {
+            Log.d(TAG, "  Validation: Single-word group '$subject' is too generic - REJECTED ✗")
+            return false
+        }
+
+        // VALIDATION 4: Check if numeric/letter enumeration patterns exist
+        val hasEnumeration = detectNumericEnumeration(options) || detectLetterEnumeration(options)
+        if (hasEnumeration) {
+            Log.d(TAG, "  Validation: Single-word group '$subject' has enumeration pattern ✓")
+            return true
+        }
+
+        // Default: REJECT - single-word grouping is too weak without validation signals
+        Log.d(TAG, "  Validation: Single-word group '$subject' failed all validations - REJECTED ✗")
+        return false
     }
 
     /**
@@ -639,25 +754,58 @@ class DataElementGroupingAnalyzer {
             return null
         }
 
-        // EXCLUSIVITY SCORE
+        // EMPIRICAL EXCLUSIVITY SCORE - based on actual data values
+        val empiricalScore = computeEmpiricalExclusivityScore(fields)
+
+        // NAME-BASED EXCLUSIVITY SCORE (legacy)
         val trueCount = fields.count {
             it.value.equals("true", ignoreCase = true) || it.value == "1"
         }
-
-        val exclusivityScore = when {
+        val nameBasedScore = when {
             trueCount <= 1 -> 100f
             trueCount == 2 -> 50f
             else -> 100f / (trueCount.toFloat() * 2)
         }
 
+        // COMBINED SCORE: Weighted average (70% empirical, 30% name-based)
+        val exclusivityScore = if (empiricalScore > 0f) {
+            (empiricalScore * 0.7f) + (nameBasedScore * 0.3f)
+        } else {
+            nameBasedScore // Fallback to name-based if no empirical data
+        }
+
         // CLASSIFY TYPE
         val groupType = if (exclusivityScore > 75f) {
-            Log.d(TAG, "→ RADIO_GROUP: exclusivity=${exclusivityScore.toInt()}%, ${trueCount}/${fields.size} selected")
+            Log.d(TAG, "→ RADIO_GROUP: combined=${exclusivityScore.toInt()}%, empirical=${empiricalScore.toInt()}%, name=${nameBasedScore.toInt()}%, ${trueCount}/${fields.size} selected")
             GroupType.RADIO_GROUP
         } else {
-            Log.d(TAG, "→ CHECKBOX_GROUP: exclusivity=${exclusivityScore.toInt()}%, ${trueCount}/${fields.size} selected")
+            Log.d(TAG, "→ CHECKBOX_GROUP: combined=${exclusivityScore.toInt()}%, empirical=${empiricalScore.toInt()}%, name=${nameBasedScore.toInt()}%, ${trueCount}/${fields.size} selected")
             GroupType.CHECKBOX_GROUP
         }
+
+        // IMPROVEMENT 5: Compute numeric confidence score (0.0-1.0) for granular ranking
+        // Based on multiple signals:
+        // - Exclusivity score (40% weight)
+        // - Suffix pattern quality (30% weight)
+        // - Group size appropriateness (20% weight)
+        // - Option distinctness (10% weight)
+
+        val suffixQuality = analyzeSuffixPattern(options)
+        val groupSizeScore = when {
+            fields.size in 2..8 -> 1.0f  // Ideal radio button group size
+            fields.size in 9..15 -> 0.7f  // Still reasonable
+            else -> 0.4f                  // Too large or too small
+        }
+        val distinctnessScore = if (options.distinct().size == options.size) 1.0f else 0.5f
+
+        val numericConfidence = (
+            (exclusivityScore / 100f) * 0.4f +
+            suffixQuality * 0.3f +
+            groupSizeScore * 0.2f +
+            distinctnessScore * 0.1f
+        ).coerceIn(0f, 1f)
+
+        Log.d(TAG, "  Confidence breakdown: exclusivity=${(exclusivityScore/100f*0.4f*100).toInt()}%, suffix=${(suffixQuality*0.3f*100).toInt()}%, size=${(groupSizeScore*0.2f*100).toInt()}%, distinct=${(distinctnessScore*0.1f*100).toInt()}% → ${(numericConfidence*100).toInt()}%")
 
         return GroupingStrategy(
             confidence = ConfidenceLevel.MEDIUM,
@@ -666,9 +814,62 @@ class DataElementGroupingAnalyzer {
             members = fields,
             metadata = GroupMetadata(
                 mutualExclusivityScore = exclusivityScore / 100f,
-                detectionMethod = detectionMethod
+                detectionMethod = "$detectionMethod (empirical=${empiricalScore.toInt()}%, name=${nameBasedScore.toInt()}%)",
+                numericConfidenceScore = numericConfidence
             )
         )
+    }
+
+    /**
+     * IMPROVEMENT 1: Compute empirical mutual exclusivity score from actual data values
+     * Returns score 0-100 where:
+     * - 100 = perfect mutual exclusivity (only one field is YES across all values)
+     * - 0 = no exclusivity pattern (all fields have similar YES frequency)
+     */
+    private fun computeEmpiricalExclusivityScore(fields: List<DataValue>): Float {
+        if (fields.isEmpty()) return 0f
+
+        // Count how many fields have YES values
+        val yesFields = fields.filter { field ->
+            field.value.equals("true", ignoreCase = true) ||
+            field.value == "1" ||
+            field.value.equals("yes", ignoreCase = true)
+        }
+
+        val noFields = fields.filter { field ->
+            field.value.equals("false", ignoreCase = true) ||
+            field.value == "0" ||
+            field.value.equals("no", ignoreCase = true) ||
+            field.value.isNullOrBlank()
+        }
+
+        val totalWithValues = yesFields.size + noFields.size
+
+        // Need enough data to make determination
+        if (totalWithValues < fields.size / 2) {
+            Log.d(TAG, "  Insufficient data for empirical analysis (${totalWithValues}/${fields.size} fields with values)")
+            return 0f // Not enough data
+        }
+
+        // SIGNAL 1: If exactly one field has YES, strong exclusivity (80 points)
+        val oneYesScore = if (yesFields.size == 1) 80f else 0f
+
+        // SIGNAL 2: If 0 or 2+ YES fields, check distribution pattern (20 points)
+        val distributionScore = when (yesFields.size) {
+            0 -> 20f // No data yet, but valid state for radio group
+            1 -> 20f // Perfect exclusivity
+            else -> {
+                // Multiple YES values - penalize based on how many
+                val penalty = (yesFields.size - 1).toFloat()
+                (20f / (1f + penalty)).coerceAtLeast(0f)
+            }
+        }
+
+        val totalScore = oneYesScore + distributionScore
+
+        Log.d(TAG, "  Empirical analysis: ${yesFields.size} YES, ${noFields.size} NO, ${totalWithValues} total, score=${totalScore.toInt()}")
+
+        return totalScore.coerceIn(0f, 100f)
     }
 
     /**
@@ -711,19 +912,22 @@ class DataElementGroupingAnalyzer {
     }
 
     /**
-     * Analyze suffix patterns to determine if they represent exclusive categories (1.0)
+     * IMPROVEMENT 2: Analyze suffix patterns to determine if they represent exclusive categories (1.0)
      * or inclusive attributes (0.0). This is the core generic detection logic.
      */
     private fun analyzeSuffixPattern(suffixes: List<String>): Float {
         var suffixScore = 0f
         val lowerSuffixes = suffixes.map { it.lowercase() }
 
-        // Pattern 1: Negation pairs (e.g., "licensed" vs "not licensed") - Strong exclusivity
+        // Pattern 1: Negation pairs (e.g., "licensed" vs "not licensed") - Strong exclusivity (0.4)
         val hasNegationPair = lowerSuffixes.any { it.contains("not ") || it.startsWith("no ") } &&
                               lowerSuffixes.any { !it.contains("not ") && !it.startsWith("no ") }
-        if (hasNegationPair) suffixScore += 0.4f
+        if (hasNegationPair) {
+            suffixScore += 0.4f
+            Log.d(TAG, "  Pattern: Negation pair detected (+0.4)")
+        }
 
-        // Pattern 2: Proper noun / Category names (capitalized, no verbs) - Strong exclusivity
+        // Pattern 2: Proper noun / Category names (capitalized, no verbs) - Strong exclusivity (0.3)
         // Examples: "Catholic", "Islamic", "Government", "Private", "Urban", "Rural"
         val properNounPattern = suffixes.filter { suffix ->
             suffix.isNotEmpty() &&
@@ -732,21 +936,30 @@ class DataElementGroupingAnalyzer {
             !suffix.lowercase().contains(" has ") &&
             !suffix.lowercase().contains(" does ")
         }
-        if (properNounPattern.size >= suffixes.size * 0.7) suffixScore += 0.3f
+        if (properNounPattern.size >= suffixes.size * 0.7) {
+            suffixScore += 0.3f
+            Log.d(TAG, "  Pattern: Proper nouns (${properNounPattern.size}/${suffixes.size}) (+0.3)")
+        }
 
-        // Pattern 3: Verb/adjective attributes (suggests checkboxes) - Reduces score
+        // Pattern 3: Verb/adjective attributes (suggests checkboxes) - Reduces score (-0.3)
         val attributeWords = listOf("available", "functioning", "damaged", "working", "broken", "has", "does", "is")
         val hasAttributePattern = lowerSuffixes.any { suffix ->
             attributeWords.any { suffix.contains(it) }
         }
-        if (hasAttributePattern) suffixScore -= 0.3f
+        if (hasAttributePattern) {
+            suffixScore -= 0.3f
+            Log.d(TAG, "  Pattern: Attribute verbs detected (-0.3)")
+        }
 
-        // Pattern 4: Enumerated/Listed items - Strong exclusivity
+        // Pattern 4: Enumerated/Listed items - Strong exclusivity (0.2)
         // Look for patterns like numbered items or clear alternatives
         val allSingleWords = suffixes.all { it.split(Regex("\\s+")).size <= 2 }
-        if (allSingleWords && suffixes.size >= 3) suffixScore += 0.2f
+        if (allSingleWords && suffixes.size >= 3) {
+            suffixScore += 0.2f
+            Log.d(TAG, "  Pattern: Short enumerated list (+0.2)")
+        }
 
-        // Pattern 5: Hierarchical or taxonomic terms - Strong exclusivity
+        // Pattern 5: Hierarchical or taxonomic terms - Strong exclusivity (0.3)
         // Examples: "public/private", "urban/rural", organizational categories
         val taxonomicPairs = listOf(
             setOf("public", "private"),
@@ -758,9 +971,88 @@ class DataElementGroupingAnalyzer {
         val matchesTaxonomy = taxonomicPairs.any { taxonomy ->
             lowerSuffixes.any { suffix -> taxonomy.any { suffix.contains(it) } }
         }
-        if (matchesTaxonomy) suffixScore += 0.3f
+        if (matchesTaxonomy) {
+            suffixScore += 0.3f
+            Log.d(TAG, "  Pattern: Taxonomic pair detected (+0.3)")
+        }
+
+        // Pattern 6: NEW - Numeric enumeration detection - Very strong exclusivity (0.4)
+        // Examples: "Option 1", "Option 2", "Option 3" or "Type 1", "Type 2"
+        val numericEnumPattern = detectNumericEnumeration(suffixes)
+        if (numericEnumPattern) {
+            suffixScore += 0.4f
+            Log.d(TAG, "  Pattern: Numeric enumeration detected (+0.4) ✓")
+        }
+
+        // Pattern 7: NEW - Compound/multi-part options - Reduces score (suggests checkboxes) (-0.2)
+        // Examples: "Has electricity AND running water", "Provides X, Y, and Z"
+        val hasCompoundPattern = lowerSuffixes.any { suffix ->
+            suffix.contains(" and ") || suffix.contains(" or ") || suffix.contains(",")
+        }
+        if (hasCompoundPattern) {
+            suffixScore -= 0.2f
+            Log.d(TAG, "  Pattern: Compound options detected (-0.2)")
+        }
+
+        // Pattern 8: NEW - Letter enumeration detection - Strong exclusivity (0.3)
+        // Examples: "Option A", "Option B", "Option C"
+        val letterEnumPattern = detectLetterEnumeration(suffixes)
+        if (letterEnumPattern) {
+            suffixScore += 0.3f
+            Log.d(TAG, "  Pattern: Letter enumeration detected (+0.3) ✓")
+        }
 
         return suffixScore.coerceIn(0f, 1f)
+    }
+
+    /**
+     * IMPROVEMENT 2A: Detect numeric enumeration patterns
+     * Examples: "1", "2", "3" or "Option 1", "Option 2", "Type 1", "Category 2"
+     */
+    private fun detectNumericEnumeration(suffixes: List<String>): Boolean {
+        // Extract numeric parts from each suffix
+        val numericParts = suffixes.mapNotNull { suffix ->
+            // Match patterns like "1", "Option 1", "Type 2", "Category 3"
+            val match = Regex("\\b(\\d+)\\b").find(suffix)
+            match?.groupValues?.get(1)?.toIntOrNull()
+        }
+
+        // Need at least 60% of suffixes to have numbers
+        if (numericParts.size < suffixes.size * 0.6) return false
+
+        // Check if numbers form a sequence (1, 2, 3, ... or 0, 1, 2, ...)
+        val sorted = numericParts.sorted()
+        val isSequential = sorted.zipWithNext().all { (a, b) -> b == a + 1 }
+
+        // Check if all numbers are unique (no duplicates)
+        val allUnique = numericParts.distinct().size == numericParts.size
+
+        return (isSequential || allUnique) && numericParts.size >= 2
+    }
+
+    /**
+     * IMPROVEMENT 2B: Detect letter enumeration patterns
+     * Examples: "A", "B", "C" or "Option A", "Option B", "Type A"
+     */
+    private fun detectLetterEnumeration(suffixes: List<String>): Boolean {
+        // Extract single letter parts
+        val letterParts = suffixes.mapNotNull { suffix ->
+            // Match patterns like "A", "Option A", "Type B"
+            val match = Regex("\\b([A-Z])\\b").find(suffix)
+            match?.groupValues?.get(1)?.get(0)
+        }
+
+        // Need at least 60% of suffixes to have letters
+        if (letterParts.size < suffixes.size * 0.6) return false
+
+        // Check if letters form a sequence (A, B, C, ...)
+        val sorted = letterParts.sorted()
+        val isSequential = sorted.zipWithNext().all { (a, b) -> b == a + 1 }
+
+        // Check if all letters are unique
+        val allUnique = letterParts.distinct().size == letterParts.size
+
+        return (isSequential || allUnique) && letterParts.size >= 2
     }
 
     /**
@@ -898,23 +1190,25 @@ class DataElementGroupingAnalyzer {
 
                 val members = dataElements.filter {
                     it.dataElement in fieldsInRule &&
-                    it !in grouped &&
-                    it.dataEntryType == DataEntryType.YES_NO
+                    it !in grouped
+                    // NOTE: Removed dataEntryType filter - validation rules are authoritative
                 }
 
                 if (members.size >= 2) {
                     val groupTitle = extractGroupTitle(ruleName)
-                    Log.d(TAG, "  ✓ Created RADIO_GROUP: '$groupTitle' with ${members.size} members")
+                    Log.d(TAG, "  ✓ Created RADIO_GROUP: '$groupTitle' with ${members.size} members (HIGHEST confidence)")
 
+                    // PHASE 6: Validation rules get HIGHEST confidence (not just HIGH)
+                    // This ensures they always take precedence over dimensional patterns or option sets
                     strategies.add(
                         GroupingStrategy(
-                            confidence = ConfidenceLevel.HIGH,
+                            confidence = ConfidenceLevel.HIGH, // SDK only has HIGH/MEDIUM/LOW - treat as HIGHEST
                             groupType = GroupType.RADIO_GROUP,
                             groupTitle = groupTitle,
                             members = members,
                             metadata = GroupMetadata(
                                 mutualExclusivityScore = 1.0f,
-                                detectionMethod = "Validation Rule: $ruleName"
+                                detectionMethod = "VALIDATION_RULE_AUTHORITY: $ruleName" // PHASE 6: Mark as authoritative
                             )
                         )
                     )
@@ -958,8 +1252,8 @@ class DataElementGroupingAnalyzer {
 
                 val members = dataElements.filter {
                     it.dataElement in fieldsInRule &&
-                    it !in grouped &&
-                    it.dataEntryType == DataEntryType.YES_NO
+                    it !in grouped
+                    // NOTE: Removed dataEntryType filter - validation rules are authoritative
                 }
 
                 if (members.size >= 2) {

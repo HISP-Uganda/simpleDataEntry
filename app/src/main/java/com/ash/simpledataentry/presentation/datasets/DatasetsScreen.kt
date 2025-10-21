@@ -355,7 +355,22 @@ fun DatasetsScreen(
         BaseScreen(
             title = "Home",
             navController = navController,
+            // PHASE 4: Wire up progress indicator for sync operations
+            showProgress = (datasetsState as? DatasetsState.Success)?.isSyncing == true ||
+                          (datasetsState as? DatasetsState.Success)?.isDownloadingData == true,
+            progress = (datasetsState as? DatasetsState.Success)?.detailedSyncProgress?.let { p ->
+                p.overallPercentage.toFloat() / 100f
+            },
             actions = {
+                // Background loading indicator during download (small, non-interactive)
+                if ((datasetsState as? DatasetsState.Success)?.isDownloadingData == true) {
+                    CircularProgressIndicator(
+                        modifier = Modifier.size(20.dp),
+                        strokeWidth = 2.dp,
+                        color = MaterialTheme.colorScheme.primary
+                    )
+                }
+
                 // Sync button with loading indicator
                 IconButton(
                     onClick = {

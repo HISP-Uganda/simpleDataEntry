@@ -107,10 +107,11 @@ object AppModule {
 
     @Provides
     @Singleton
-    fun provideAuthRepository(sessionManager: SessionManager): AuthRepository {
-
-        return AuthRepositoryImpl(sessionManager)
-
+    fun provideAuthRepository(
+        sessionManager: SessionManager,
+        metadataCacheService: MetadataCacheService
+    ): AuthRepository {
+        return AuthRepositoryImpl(sessionManager, metadataCacheService)
     }
 
 

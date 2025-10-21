@@ -17,6 +17,7 @@ import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.ExposedDropdownMenuBox
 import androidx.compose.material3.ExposedDropdownMenuDefaults
 import androidx.compose.material3.Icon
+import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
@@ -56,14 +57,15 @@ fun CreateNewEntryScreen(
     var attributeOptionCombos by remember { mutableStateOf<List<Pair<String, String>>>(emptyList()) }
     var selectedAttributeOptionCombo by remember { mutableStateOf("") }
     var expandedAttributeOptionCombo by remember { mutableStateOf(false) }
+    var showAllPeriods by remember { mutableStateOf(false) }
     val state by viewModel.state.collectAsState()
 
-    LaunchedEffect(datasetId) {
+    LaunchedEffect(datasetId, showAllPeriods) {
         try {
             isLoading = true
             error = null
             viewModel.loadDataValues(datasetId, datasetName, "", "", "", isEditMode = false)
-            periods = viewModel.getAvailablePeriods(datasetId)
+            periods = viewModel.getAvailablePeriods(datasetId, showAll = showAllPeriods)
             orgUnits = viewModel.getUserOrgUnits(datasetId) // Get multiple org units
             selectedOrgUnit = orgUnits.firstOrNull() // Select first org unit by default
             defaultAttributeOptionCombo = viewModel.getDefaultAttributeOptionCombo()
@@ -161,6 +163,22 @@ fun CreateNewEntryScreen(
                                 text = { Text(period.id) },
                                 onClick = {
                                     selectedPeriod = period.id
+                                    expandedPeriod = false
+                                }
+                            )
+                        }
+                        // Show "Show more periods" button if not showing all
+                        if (!showAllPeriods) {
+                            DropdownMenuItem(
+                                text = {
+                                    Text(
+                                        "Show more periods...",
+                                        color = MaterialTheme.colorScheme.primary,
+                                        style = MaterialTheme.typography.bodyMedium
+                                    )
+                                },
+                                onClick = {
+                                    showAllPeriods = true
                                     expandedPeriod = false
                                 }
                             )

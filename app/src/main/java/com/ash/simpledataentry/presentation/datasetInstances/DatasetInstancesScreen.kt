@@ -351,6 +351,13 @@ fun DatasetInstancesScreen(
     BaseScreen(
         title = datasetName,
         navController = navController,
+        // PHASE 4: Wire up progress indicator for sync/loading operations
+        showProgress = state.isSyncing || state.isLoading,
+        progress = state.detailedSyncProgress?.let { p ->
+            p.overallPercentage.toFloat() / 100f
+        } ?: state.navigationProgress?.let { p ->
+            p.overallPercentage.toFloat() / 100f
+        },
         actions = {
             // Keep icons visible during loading - just disable them
             IconButton(

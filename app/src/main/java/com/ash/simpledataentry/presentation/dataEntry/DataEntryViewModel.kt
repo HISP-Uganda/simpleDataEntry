@@ -82,7 +82,12 @@ data class DataEntryState(
     val radioButtonGroups: Map<String, List<String>> = emptyMap(),
 
     // Generic grouping strategies per section
-    val sectionGroupingStrategies: Map<String, List<GroupingStrategy>> = emptyMap()
+    val sectionGroupingStrategies: Map<String, List<GroupingStrategy>> = emptyMap(),
+
+    // PERFORMANCE OPTIMIZATION: Pre-computed data element ordering per section
+    // This avoids expensive re-computation on every render
+    // Key: sectionName, Value: Map<dataElement, orderIndex>
+    val dataElementOrdering: Map<String, Map<String, Int>> = emptyMap()
 )
 
 @HiltViewModel
@@ -94,17 +99,14 @@ class DataEntryViewModel @Inject constructor(
     private val validationRepository: ValidationRepository,
     private val syncQueueManager: SyncQueueManager,
     private val networkStateManager: NetworkStateManager,
-    private val sessionManager: com.ash.simpledataentry.data.SessionManager
+    private val sessionManager: com.ash.simpledataentry.data.SessionManager,
+    private val metadataCacheService: com.ash.simpledataentry.data.cache.MetadataCacheService
 ) : ViewModel() {
     private val _state = MutableStateFlow(DataEntryState())
     val state: StateFlow<DataEntryState> = _state.asStateFlow()
 
     // Grouping analyzer for intelligent data element organization
     private val groupingAnalyzer = DataElementGroupingAnalyzer()
-
-    // Cache for grouping analysis results to avoid recomputation
-    // Key: datasetId, Value: Map of section name to grouping strategies
-    private val groupingCache = mutableMapOf<String, Map<String, List<GroupingStrategy>>>()
 
     // Track unsaved edits: key = Pair<dataElement, categoryOptionCombo>, value = DataValue
     private val dirtyDataValues = mutableMapOf<Pair<String, String>, DataValue>()
@@ -298,23 +300,35 @@ class DataEntryViewModel @Inject constructor(
 
                     val groupedBySection = mergedValues.groupBy { it.sectionName }
 
-                    // Check cache first to avoid expensive re-computation
-                    val sectionGroupingStrategies = groupingCache[datasetId] ?: run {
+                    // Check singleton cache first to avoid expensive re-computation
+                    // This cache persists across ViewModel lifecycle for optimal performance
+                    val sectionGroupingStrategies = metadataCacheService.getGroupingStrategies(datasetId) ?: run {
                         // Cache miss - compute grouping strategies on background thread
+                        Log.d("DataEntryViewModel", "========== GROUPING ANALYSIS START ==========")
                         Log.d("DataEntryViewModel", "Cache miss for dataset $datasetId - computing grouping strategies")
+
                         val computed = withContext(Dispatchers.Default) {
                             groupedBySection.mapValues { (sectionName, sectionValues) ->
-                                Log.d("DataEntryViewModel", "Analyzing grouping for section '$sectionName' with ${sectionValues.size} data values")
-                                groupingAnalyzer.analyzeGrouping(
+
+                                val strategies = groupingAnalyzer.analyzeGrouping(
                                     dataElements = sectionValues,
                                     categoryComboStructures = categoryComboStructures,
                                     optionSets = optionSets,
                                     validationRules = validationRules
                                 )
+
+
+                                strategies
                             }
                         }
-                        // Store in cache for next time
-                        groupingCache[datasetId] = computed
+                        // Store in singleton cache for persistence across ViewModel lifecycle
+                        metadataCacheService.setGroupingStrategies(datasetId, computed)
+
+                        Log.d("DataEntryViewModel", "=== CACHED STRATEGIES SUMMARY ===")
+                        computed.forEach { (section, strategies) ->
+                            Log.d("DataEntryViewModel", "  Section '$section': ${strategies.size} strategies")
+                        }
+
                         computed
                     }
 
@@ -323,17 +337,6 @@ class DataEntryViewModel @Inject constructor(
                         .flatten()
                         .filter { it.groupType == GroupType.RADIO_GROUP }
                         .associate { it.groupTitle to it.members.map { dv -> dv.dataElement } }
-
-                    sectionGroupingStrategies.forEach { (section, strategies) ->
-                        strategies.forEach { strategy ->
-                            strategy.metadata.inferredCategoryCombo?.let { catCombo ->
-                                Log.d("DataEntry", "$section: ${catCombo.name} ${catCombo.actualCombinations}/${catCombo.totalExpectedCombinations} (${(catCombo.completenessRatio * 100).toInt()}%) ${if(catCombo.isConditional) "CONDITIONAL" else ""}")
-                            }
-                            strategy.metadata.mutualExclusivityScore?.let { score ->
-                                Log.d("DataEntry", "$section: ${strategy.groupType} '${strategy.groupTitle}' excl=${(score*100).toInt()}%")
-                            }
-                        }
-                    }
 
                     // Step 4: Finalizing (85-100%)
                     _state.update { it.copy(
@@ -350,6 +353,17 @@ class DataEntryViewModel @Inject constructor(
                             sectionValues.groupBy { it.dataElement }
                         }
                         val totalSections = groupedBySection.size
+
+                        // PERFORMANCE OPTIMIZATION: Pre-compute data element ordering for all sections
+                        // This eliminates expensive re-computation on every render
+                        val dataElementOrdering = groupedBySection.mapValues { (sectionName, sectionValues) ->
+                            sectionValues
+                                .groupBy { it.dataElement }
+                                .keys
+                                .mapIndexed { index, dataElement -> dataElement to index }
+                                .toMap()
+                        }
+                        Log.d("DataEntryViewModel", "Pre-computed data element ordering for ${dataElementOrdering.size} sections")
 
                         // Determine the initial currentSectionIndex
                         val initialOrPreservedIndex = if (totalSections > 0) {
@@ -390,6 +404,7 @@ class DataEntryViewModel @Inject constructor(
                             renderTypes = renderTypes,
                             radioButtonGroups = radioButtonGroups,
                             sectionGroupingStrategies = sectionGroupingStrategies,
+                            dataElementOrdering = dataElementOrdering, // Pre-computed ordering for performance
                             navigationProgress = null // Clear progress when done
                         )
                     }
@@ -851,8 +866,8 @@ class DataEntryViewModel @Inject constructor(
         }
     }
 
-    suspend fun getAvailablePeriods(datasetId: String): List<Period> {
-        return repository.getAvailablePeriods(datasetId)
+    suspend fun getAvailablePeriods(datasetId: String, limit: Int = 5, showAll: Boolean = false): List<Period> {
+        return repository.getAvailablePeriods(datasetId, limit, showAll)
     }
 
     suspend fun getUserOrgUnit(datasetId: String): OrganisationUnit? {

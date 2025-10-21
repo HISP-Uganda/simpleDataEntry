@@ -33,6 +33,8 @@ sealed class DatasetsState {
         val currentFilter: FilterState = FilterState(),
         val currentProgramType: ProgramType = ProgramType.ALL,
         val isSyncing: Boolean = false,
+        val isLoadingRemote: Boolean = false, // Background loading from remote
+        val isDownloadingData: Boolean = false, // Separate flag for download-only sync
         val syncMessage: String? = null,
         val syncProgress: Int = 0,
         val syncStep: String? = null,
@@ -82,6 +84,7 @@ class DatasetsViewModel @Inject constructor(
     fun loadPrograms() {
         viewModelScope.launch {
             _uiState.value = DatasetsState.Loading
+            var isFirstEmission = true
             datasetsRepository.getAllPrograms()
                 .catch { exception ->
                     _uiState.value = DatasetsState.Error(
@@ -91,14 +94,36 @@ class DatasetsViewModel @Inject constructor(
                 .collect { programs ->
                     val currentState = _uiState.value
                     val wasSyncing = (currentState as? DatasetsState.Success)?.isSyncing == true
-                    _uiState.value = DatasetsState.Success(
-                        programs = programs,
-                        filteredPrograms = programs,
-                        isSyncing = false,
-                        syncMessage = if (wasSyncing) "Sync completed successfully!" else null,
-                        syncProgress = 0,
-                        syncStep = null
-                    )
+                    // CRITICAL FIX: Preserve syncMessage AND download state from previous state
+                    val preservedSyncMessage = (currentState as? DatasetsState.Success)?.syncMessage
+                    val isDownloading = (currentState as? DatasetsState.Success)?.isDownloadingData == true
+
+                    if (isFirstEmission) {
+                        // First emission - could be cached data or fresh data if no cache
+                        _uiState.value = DatasetsState.Success(
+                            programs = programs,
+                            filteredPrograms = programs,
+                            isSyncing = false,
+                            isLoadingRemote = true, // Show spinner - remote fetch is happening
+                            isDownloadingData = isDownloading, // PRESERVE download state during Flow emissions
+                            syncMessage = preservedSyncMessage ?: if (wasSyncing) "Sync completed successfully!" else null,
+                            syncProgress = 0,
+                            syncStep = null
+                        )
+                        isFirstEmission = false
+                    } else {
+                        // Second emission - fresh data from remote with updated counts
+                        _uiState.value = DatasetsState.Success(
+                            programs = programs,
+                            filteredPrograms = programs,
+                            isSyncing = false,
+                            isLoadingRemote = false, // Hide spinner - remote fetch complete
+                            isDownloadingData = false, // NOW safe to clear download flag - fresh data loaded
+                            syncMessage = preservedSyncMessage, // KEEP message so toast can display
+                            syncProgress = 0,
+                            syncStep = null
+                        )
+                    }
                 }
         }
     }
@@ -115,12 +140,12 @@ class DatasetsViewModel @Inject constructor(
                     syncResult.fold(
                         onSuccess = {
                             Log.d("DatasetsViewModel", "Enhanced sync completed successfully")
-                            loadPrograms() // Reload all data after sync
                             val message = if (uploadFirst) {
-                                "Data synchronized successfully with enhanced progress tracking"
+                                "Data synchronized successfully"
                             } else {
                                 "Datasets synced successfully"
                             }
+                            // Set success message BEFORE reloading programs
                             val state = _uiState.value
                             if (state is DatasetsState.Success) {
                                 _uiState.value = state.copy(
@@ -128,6 +153,8 @@ class DatasetsViewModel @Inject constructor(
                                     detailedSyncProgress = null // Clear progress when done
                                 )
                             }
+                            // Reload all data after sync - this will preserve syncMessage and show updated counts
+                            loadPrograms()
                         },
                         onFailure = { error ->
                             Log.e("DatasetsViewModel", "Enhanced sync failed", error)
@@ -135,6 +162,7 @@ class DatasetsViewModel @Inject constructor(
                             val state = _uiState.value
                             if (state is DatasetsState.Success) {
                                 _uiState.value = state.copy(
+                                    isLoadingRemote = false,
                                     syncMessage = errorMessage,
                                     detailedSyncProgress = null // Clear progress on failure
                                 )
@@ -147,6 +175,7 @@ class DatasetsViewModel @Inject constructor(
                     if (state is DatasetsState.Success) {
                         _uiState.value = state.copy(
                             isSyncing = false,
+                            isLoadingRemote = false,
                             syncMessage = e.message ?: "Failed to sync datasets",
                             detailedSyncProgress = null
                         )
@@ -163,13 +192,21 @@ class DatasetsViewModel @Inject constructor(
         if (currentState is DatasetsState.Success && !currentState.isSyncing) {
             Log.d("DatasetsViewModel", "Starting download-only sync for datasets")
 
+            // CRITICAL FIX: Set download flag to show spinner during entire download + reload cycle
+            _uiState.value = currentState.copy(
+                isDownloadingData = true, // This flag persists through loadPrograms() emissions
+                syncMessage = null
+            )
+
             viewModelScope.launch {
                 try {
                     val syncResult = syncQueueManager.startDownloadOnlySync()
                     syncResult.fold(
                         onSuccess = {
                             Log.d("DatasetsViewModel", "Download-only sync completed successfully")
-                            loadPrograms() // Reload all data after download
+                            // Small delay to ensure SDK database writes are committed
+                            kotlinx.coroutines.delay(100)
+                            // Set success message BEFORE reloading programs
                             val state = _uiState.value
                             if (state is DatasetsState.Success) {
                                 _uiState.value = state.copy(
@@ -177,6 +214,8 @@ class DatasetsViewModel @Inject constructor(
                                     detailedSyncProgress = null
                                 )
                             }
+                            // Reload all data after download - this will preserve syncMessage and show updated counts
+                            loadPrograms()
                         },
                         onFailure = { error ->
                             Log.e("DatasetsViewModel", "Download-only sync failed", error)
@@ -184,6 +223,7 @@ class DatasetsViewModel @Inject constructor(
                             val state = _uiState.value
                             if (state is DatasetsState.Success) {
                                 _uiState.value = state.copy(
+                                    isDownloadingData = false, // Clear download flag on failure
                                     syncMessage = errorMessage,
                                     detailedSyncProgress = null
                                 )
@@ -196,6 +236,7 @@ class DatasetsViewModel @Inject constructor(
                     if (state is DatasetsState.Success) {
                         _uiState.value = state.copy(
                             isSyncing = false,
+                            isDownloadingData = false, // Clear download flag on exception
                             syncMessage = e.message ?: "Failed to download datasets",
                             detailedSyncProgress = null
                         )

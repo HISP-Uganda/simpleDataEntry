@@ -96,6 +96,7 @@ From `AppNavigation.kt`:
 3. ✅ Test builds with `./gradlew assembleDebug` before claiming completion
 4. ✅ Use `.flowOn(Dispatchers.IO)` not `withContext` for Flow operations
 5. ✅ Read existing working code patterns before implementing new features
+6. use the bd tool instead of markdown for all new work and issue trackingclaude
 
 ## Recent Session Work (2025-10-13)
 

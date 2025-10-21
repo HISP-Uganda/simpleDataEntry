@@ -58,8 +58,20 @@ enum class LoadingPhase(val title: String, val defaultDetail: String, val basePe
     INITIALIZING("Initializing", "Preparing...", 0),
     AUTHENTICATING("Authenticating", "Verifying credentials...", 10),
     DOWNLOADING_METADATA("Downloading Metadata", "Fetching configuration data...", 30),
-    DOWNLOADING_DATA("Downloading Data", "Retrieving your information...", 60),
-    PREPARING_DATABASE("Preparing Data", "Setting up local storage...", 80),
+
+    // Granular metadata download phases for resilient loading
+    DOWNLOADING_SYSTEM_METADATA("System Metadata", "Downloading constants and settings...", 30),
+    DOWNLOADING_ORGUNIT_HIERARCHY("Organization Units", "Downloading org unit hierarchy...", 35),
+    DOWNLOADING_CATEGORIES("Categories", "Downloading categories and combinations...", 45),
+    DOWNLOADING_DATA_ELEMENTS("Data Elements", "Downloading data elements and indicators...", 55),
+    DOWNLOADING_DATASETS("Datasets", "Downloading aggregate datasets...", 60),
+    DOWNLOADING_PROGRAMS("Programs", "Downloading tracker and event programs...", 65),
+    DOWNLOADING_PROGRAM_STAGES("Program Stages", "Downloading program stages...", 70),
+    DOWNLOADING_OPTION_SETS("Option Sets", "Downloading option sets and legends...", 75),
+    DOWNLOADING_TRACKED_ENTITIES("Tracked Entities", "Downloading tracked entity types...", 78),
+
+    DOWNLOADING_DATA("Downloading Data", "Retrieving your information...", 80),
+    PREPARING_DATABASE("Preparing Data", "Setting up local storage...", 85),
     FINALIZING("Finalizing", "Completing setup...", 95),
     LOADING_DATA("Loading Data", "Fetching information...", 20),
     PROCESSING_DATA("Processing Data", "Preparing display...", 70),

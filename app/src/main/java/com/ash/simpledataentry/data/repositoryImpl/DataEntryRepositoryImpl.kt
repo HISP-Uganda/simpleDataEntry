@@ -49,6 +49,9 @@ class DataEntryRepositoryImpl @Inject constructor(
 
     private val d2 get() = sessionManager.getD2()!!
 
+    // Track current period offset per dataset for incremental "Show more" loading
+    private val periodOffsets = mutableMapOf<String, Int>()
+
     private fun getDataEntryType(dataElement: DataElement): DataEntryType {
         return when (dataElement.valueType()) {
             ValueType.TEXT -> DataEntryType.TEXT
@@ -423,56 +426,85 @@ class DataEntryRepositoryImpl @Inject constructor(
         }
     }
 
-    override suspend fun getAvailablePeriods(datasetId: String): List<Period> {
-        return d2.periodModule().periodHelper().getPeriodsForDataSet(datasetId).blockingGet().map {
-            Period(id = it.periodId().toString())
+    override suspend fun getAvailablePeriods(datasetId: String, limit: Int, showAll: Boolean): List<Period> {
+        return withContext(Dispatchers.IO) {
+            // CRITICAL FIX: NEVER generate full period list to prevent ANR
+            // Use incremental loading with tracked offset per dataset
+
+            val currentOffset = if (showAll) {
+                // "Show more" clicked - increment offset to fetch more periods
+                val current = periodOffsets[datasetId] ?: limit
+                val newOffset = current + limit
+                periodOffsets[datasetId] = newOffset
+                newOffset
+            } else {
+                // Initial load - reset to default limit
+                periodOffsets[datasetId] = limit
+                limit
+            }
+
+            // Generate ONLY the periods we need (prevents ANR on daily/weekly datasets)
+            d2.periodModule().periodHelper()
+                .getPeriodsForDataSet(datasetId)
+                .blockingGet()
+                .sortedByDescending { it.periodId() } // Sort before limiting
+                .take(currentOffset) // CRITICAL: Limit BEFORE mapping to prevent full materialization
+                .map { Period(id = it.periodId().toString()) }
         }
     }
 
     override suspend fun getUserOrgUnit(datasetId: String): OrganisationUnit {
-        val orgUnits = d2.organisationUnitModule().organisationUnits()
-            .byOrganisationUnitScope(org.hisp.dhis.android.core.organisationunit.OrganisationUnit.Scope.SCOPE_DATA_CAPTURE)
-            .blockingGet()
-        
-        if (orgUnits.isEmpty()) {
-            throw Exception("No organization units available for data capture")
-        }
-        
-        return OrganisationUnit(
-            id = orgUnits.first().uid(),
-            name = orgUnits.first().displayName() ?: orgUnits.first().uid()
-        )
-    }
+        return withContext(Dispatchers.IO) {
+            val orgUnits = d2.organisationUnitModule().organisationUnits()
+                .byOrganisationUnitScope(org.hisp.dhis.android.core.organisationunit.OrganisationUnit.Scope.SCOPE_DATA_CAPTURE)
+                .blockingGet()
 
-    override suspend fun getUserOrgUnits(datasetId: String): List<OrganisationUnit> {
-        val orgUnits = d2.organisationUnitModule().organisationUnits()
-            .byOrganisationUnitScope(org.hisp.dhis.android.core.organisationunit.OrganisationUnit.Scope.SCOPE_DATA_CAPTURE)
-            .blockingGet()
-        
-        return orgUnits.map { orgUnit ->
+            if (orgUnits.isEmpty()) {
+                throw Exception("No organization units available for data capture")
+            }
+
             OrganisationUnit(
-                id = orgUnit.uid(),
-                name = orgUnit.displayName() ?: orgUnit.uid()
+                id = orgUnits.first().uid(),
+                name = orgUnits.first().displayName() ?: orgUnits.first().uid()
             )
         }
     }
 
+    override suspend fun getUserOrgUnits(datasetId: String): List<OrganisationUnit> {
+        return withContext(Dispatchers.IO) {
+            val orgUnits = d2.organisationUnitModule().organisationUnits()
+                .byOrganisationUnitScope(org.hisp.dhis.android.core.organisationunit.OrganisationUnit.Scope.SCOPE_DATA_CAPTURE)
+                .blockingGet()
+
+            orgUnits.map { orgUnit ->
+                OrganisationUnit(
+                    id = orgUnit.uid(),
+                    name = orgUnit.displayName() ?: orgUnit.uid()
+                )
+            }
+        }
+    }
+
     override suspend fun getDefaultAttributeOptionCombo(): String {
-        return d2.categoryModule().categoryOptionCombos()
-            .byCategoryComboUid().eq("default")
-            .blockingGet()
-            .firstOrNull()?.uid() ?: "default"
+        return withContext(Dispatchers.IO) {
+            d2.categoryModule().categoryOptionCombos()
+                .byCategoryComboUid().eq("default")
+                .blockingGet()
+                .firstOrNull()?.uid() ?: "default"
+        }
     }
 
     override suspend fun getAttributeOptionCombos(datasetId: String): List<Pair<String, String>> {
-        val dataSet = d2.dataSetModule().dataSets()
-            .uid(datasetId)
-            .blockingGet() ?: return emptyList()
-        val categoryComboUid = dataSet.categoryCombo()?.uid() ?: return emptyList()
-        return d2.categoryModule().categoryOptionCombos()
-            .byCategoryComboUid().eq(categoryComboUid)
-            .blockingGet()
-            .map { it.uid() to (it.displayName() ?: it.uid()) }
+        return withContext(Dispatchers.IO) {
+            val dataSet = d2.dataSetModule().dataSets()
+                .uid(datasetId)
+                .blockingGet() ?: return@withContext emptyList()
+            val categoryComboUid = dataSet.categoryCombo()?.uid() ?: return@withContext emptyList()
+            d2.categoryModule().categoryOptionCombos()
+                .byCategoryComboUid().eq(categoryComboUid)
+                .blockingGet()
+                .map { it.uid() to (it.displayName() ?: it.uid()) }
+        }
     }
 
     override suspend fun getCategoryComboStructure(categoryComboUid: String): List<Pair<String, List<Pair<String, String>>>> {

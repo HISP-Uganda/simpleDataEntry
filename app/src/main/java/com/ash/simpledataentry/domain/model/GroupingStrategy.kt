@@ -30,7 +30,8 @@ data class GroupMetadata(
     val inferredCategoryCombo: InferredCategoryCombo? = null,
     val mutualExclusivityScore: Float? = null,
     val semanticSimilarityScore: Float? = null,
-    val detectionMethod: String = ""
+    val detectionMethod: String = "",
+    val numericConfidenceScore: Float? = null  // IMPROVEMENT 5: Numeric confidence (0.0-1.0) for granular ranking
 ) {
     companion object {
         fun empty() = GroupMetadata()

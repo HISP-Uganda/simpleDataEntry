@@ -3,20 +3,27 @@
 package com.ash.simpledataentry.presentation.tracker
 
 import androidx.activity.compose.BackHandler
+import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.items
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.Check
+import androidx.compose.material.icons.filled.KeyboardArrowDown
 import androidx.compose.material.icons.filled.Save
 import androidx.compose.material.icons.filled.Sync
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.rotate
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.navigation.NavController
@@ -379,38 +386,44 @@ fun EventCaptureScreen(
                         }
                     }
 
-                    // Data values section - reuse EditEntry DataValueField components
-                    item {
-                        Card(modifier = Modifier.fillMaxWidth()) {
-                            Column(
-                                modifier = Modifier.padding(16.dp),
-                                verticalArrangement = Arrangement.spacedBy(8.dp)
-                            ) {
-                                Text(
-                                    text = "Event Data",
-                                    style = MaterialTheme.typography.titleMedium,
-                                    fontWeight = FontWeight.Bold,
-                                    modifier = Modifier.padding(bottom = 8.dp)
-                                )
-
-                                if (state.dataValues.isEmpty()) {
+                    // Data values with nested accordion structure
+                    // Level 1: Sections (program stage sections)
+                    // Level 2+: Implied categories (inferred from data element names)
+                    // Leaf: Data value fields
+                    if (state.dataValues.isEmpty()) {
+                        item {
+                            Card(modifier = Modifier.fillMaxWidth()) {
+                                Column(modifier = Modifier.padding(16.dp)) {
+                                    Text(
+                                        text = "Event Data",
+                                        style = MaterialTheme.typography.titleMedium,
+                                        fontWeight = FontWeight.Bold
+                                    )
                                     Text(
                                         text = "No data elements found for this event",
                                         style = MaterialTheme.typography.bodyMedium,
-                                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                        modifier = Modifier.padding(top = 8.dp)
                                     )
-                                } else {
-                                    // Render each data value field using DHIS2 UI components
-                                    state.dataValues.forEach { dataValue ->
-                                        EventDataValueField(
-                                            dataValue = dataValue,
-                                            onValueChange = { value ->
-                                                viewModel.updateDataValue(value, dataValue)
-                                            },
-                                            programRuleEffect = state.programRuleEffect
-                                        )
-                                    }
                                 }
+                            }
+                        }
+                    } else {
+                        // Group data values by section
+                        val sections = state.dataValues.groupBy { it.sectionName }
+
+                        sections.forEach { (sectionName, sectionValues) ->
+                            item {
+                                EventSectionAccordion(
+                                    sectionName = sectionName,
+                                    dataValues = sectionValues,
+                                    impliedCombination = state.impliedCategoriesBySection[sectionName],
+                                    impliedMappings = state.impliedCategoryMappingsBySection[sectionName] ?: emptyList(),
+                                    onValueChange = { value, dataValue ->
+                                        viewModel.updateDataValue(value, dataValue)
+                                    },
+                                    programRuleEffect = state.programRuleEffect
+                                )
                             }
                         }
                     }
@@ -469,6 +482,204 @@ fun EventCaptureScreen(
             }
         }
     }
+}
+
+/**
+ * Section-level accordion for event/tracker programs
+ * Sections are the first level of grouping from program stage sections
+ */
+@Composable
+private fun EventSectionAccordion(
+    sectionName: String,
+    dataValues: List<DataValue>,
+    impliedCombination: com.ash.simpledataentry.domain.model.ImpliedCategoryCombination?,
+    impliedMappings: List<com.ash.simpledataentry.domain.model.ImpliedCategoryMapping>,
+    onValueChange: (String, DataValue) -> Unit,
+    programRuleEffect: com.ash.simpledataentry.domain.model.ProgramRuleEffect?
+) {
+    var isExpanded by remember { mutableStateOf(true) } // Sections expanded by default
+
+    val rotationState by animateFloatAsState(
+        targetValue = if (isExpanded) 180f else 0f,
+        label = "Section rotation"
+    )
+
+    Column(modifier = Modifier.fillMaxWidth()) {
+        // Section header (collapsible)
+        Surface(
+            modifier = Modifier
+                .fillMaxWidth()
+                .heightIn(min = 56.dp)
+                .clickable { isExpanded = !isExpanded },
+            color = MaterialTheme.colorScheme.primaryContainer,
+            shape = MaterialTheme.shapes.medium
+        ) {
+            Row(
+                modifier = Modifier
+                    .padding(16.dp)
+                    .fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Column(modifier = Modifier.weight(1f)) {
+                    Text(
+                        text = sectionName,
+                        style = MaterialTheme.typography.titleMedium,
+                        fontWeight = FontWeight.Bold
+                    )
+                    if (impliedCombination != null) {
+                        Text(
+                            text = "${impliedCombination.categories.size} category levels detected",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onPrimaryContainer.copy(alpha = 0.7f)
+                        )
+                    }
+                }
+                Icon(
+                    imageVector = Icons.Default.KeyboardArrowDown,
+                    contentDescription = if (isExpanded) "Collapse section" else "Expand section",
+                    modifier = Modifier
+                        .rotate(rotationState)
+                        .size(24.dp)
+                )
+            }
+        }
+
+        // Section content
+        AnimatedVisibility(visible = isExpanded) {
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(start = 8.dp, top = 8.dp, bottom = 8.dp)
+            ) {
+                if (impliedCombination != null && impliedMappings.isNotEmpty()) {
+                    // Render nested accordions based on implied categories
+                    val groupingService = com.ash.simpledataentry.domain.grouping.ImpliedCategoryInferenceService()
+                    val grouped = groupingService.groupByImpliedCategories(impliedMappings, impliedCombination)
+
+                    grouped.forEach { (categoryPath, mappings) ->
+                        key(categoryPath.joinToString("_")) {
+                            ImpliedCategoryGroup(
+                                categoryPath = categoryPath,
+                                mappings = mappings,
+                                categories = impliedCombination.categories,
+                                dataValues = dataValues,
+                                onValueChange = onValueChange,
+                                programRuleEffect = programRuleEffect,
+                                level = 0
+                            )
+                        }
+                    }
+                } else {
+                    // No implied categories - render flat list
+                    dataValues.forEach { dataValue ->
+                        key(dataValue.dataElement) {
+                            EventDataValueField(
+                                dataValue = dataValue,
+                                onValueChange = { value -> onValueChange(value, dataValue) },
+                                programRuleEffect = programRuleEffect,
+                                modifier = Modifier.padding(vertical = 4.dp)
+                            )
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    Spacer(modifier = Modifier.height(8.dp))
+}
+
+/**
+ * Nested accordion for implied categories
+ * Recursively renders category levels from the inferred structure
+ */
+@Composable
+private fun ImpliedCategoryGroup(
+    categoryPath: List<String>,
+    mappings: List<com.ash.simpledataentry.domain.model.ImpliedCategoryMapping>,
+    categories: List<com.ash.simpledataentry.domain.model.ImpliedCategory>,
+    dataValues: List<DataValue>,
+    onValueChange: (String, DataValue) -> Unit,
+    programRuleEffect: com.ash.simpledataentry.domain.model.ProgramRuleEffect?,
+    level: Int
+) {
+    var isExpanded by remember { mutableStateOf(false) } // Nested categories collapsed by default
+
+    val rotationState by animateFloatAsState(
+        targetValue = if (isExpanded) 180f else 0f,
+        label = "Category rotation"
+    )
+
+    // Get the category name for this level
+    val categoryName = if (level < categoryPath.size) categoryPath[level] else ""
+
+    // Indent based on nesting level
+    val startPadding = (level * 16).dp
+
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(start = startPadding)
+    ) {
+        // Category header
+        Surface(
+            modifier = Modifier
+                .fillMaxWidth()
+                .heightIn(min = 48.dp)
+                .clickable { isExpanded = !isExpanded },
+            color = MaterialTheme.colorScheme.secondaryContainer,
+            shape = MaterialTheme.shapes.small
+        ) {
+            Row(
+                modifier = Modifier
+                    .padding(12.dp)
+                    .fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Text(
+                    text = categoryName,
+                    style = MaterialTheme.typography.titleSmall,
+                    fontWeight = FontWeight.Medium,
+                    modifier = Modifier.weight(1f)
+                )
+                Icon(
+                    imageVector = Icons.Default.KeyboardArrowDown,
+                    contentDescription = if (isExpanded) "Collapse" else "Expand",
+                    modifier = Modifier
+                        .rotate(rotationState)
+                        .size(20.dp)
+                )
+            }
+        }
+
+        // Category content
+        AnimatedVisibility(visible = isExpanded) {
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(top = 8.dp)
+            ) {
+                // Render data value fields for this category combination
+                mappings.forEach { mapping ->
+                    val dataValue = dataValues.find { it.dataElement == mapping.dataElementId }
+                    if (dataValue != null) {
+                        key(dataValue.dataElement) {
+                            EventDataValueField(
+                                dataValue = dataValue,
+                                onValueChange = { value -> onValueChange(value, dataValue) },
+                                programRuleEffect = programRuleEffect,
+                                modifier = Modifier.padding(vertical = 4.dp)
+                            )
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    Spacer(modifier = Modifier.height(4.dp))
 }
 
 @Composable

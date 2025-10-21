@@ -4,9 +4,11 @@ import android.app.Application
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.ash.simpledataentry.data.SessionManager
+import com.ash.simpledataentry.data.cache.MetadataCacheService
 import com.ash.simpledataentry.data.sync.DetailedSyncProgress
 import com.ash.simpledataentry.data.sync.SyncQueueManager
 import com.ash.simpledataentry.data.sync.NetworkStateManager
+import com.ash.simpledataentry.domain.grouping.ImpliedCategoryInferenceService
 import com.ash.simpledataentry.domain.model.*
 import com.ash.simpledataentry.domain.repository.DatasetInstancesRepository
 import com.ash.simpledataentry.presentation.core.NavigationProgress
@@ -54,6 +56,12 @@ data class EventCaptureState(
     val dataValues: List<DataValue> = emptyList(),
     val currentDataValue: DataValue? = null,
 
+    // IMPLIED CATEGORY INFERENCE: For event/tracker programs that don't have DHIS2 category combinations
+    // This detects category structure from data element names (e.g., "ANC Visit - First Trimester - Blood Pressure")
+    // Map of sectionName -> ImpliedCategoryCombination (since each section can have different patterns)
+    val impliedCategoriesBySection: Map<String, ImpliedCategoryCombination> = emptyMap(),
+    val impliedCategoryMappingsBySection: Map<String, List<ImpliedCategoryMapping>> = emptyMap(),
+
     // Reuse validation patterns from DataEntry
     val validationState: ValidationState = ValidationState.VALID,
     val validationErrors: List<String> = emptyList(),
@@ -84,7 +92,9 @@ class EventCaptureViewModel @Inject constructor(
     private val sessionManager: SessionManager,
     private val repository: DatasetInstancesRepository,
     private val syncQueueManager: SyncQueueManager,
-    private val networkStateManager: NetworkStateManager
+    private val networkStateManager: NetworkStateManager,
+    private val impliedCategoryService: ImpliedCategoryInferenceService,
+    private val metadataCacheService: MetadataCacheService
 ) : ViewModel() {
 
     private val _state = MutableStateFlow(EventCaptureState())
@@ -144,6 +154,15 @@ class EventCaptureViewModel @Inject constructor(
                     .uid(stageId).blockingGet()
                     ?: throw Exception("Program stage not found")
 
+                // Load program stage sections (if any) - this will be the first accordion level
+                val programStageSections = d2Instance.programModule()
+                    .programStageSections()
+                    .byProgramStageUid().eq(stageId)
+                    .withDataElements()
+                    .blockingGet()
+
+                android.util.Log.d("EventCaptureVM", "Program stage sections found: ${programStageSections.size}")
+
                 // Transform program stage data elements to DataValue objects (reuse existing model)
                 val dataElementsFromStage = d2Instance.programModule()
                     .programStageDataElements()
@@ -157,11 +176,19 @@ class EventCaptureViewModel @Inject constructor(
                         .blockingGet()
 
                     dataElement?.let { de ->
+                        // Find section for this data element (if sections exist)
+                        val sectionName = programStageSections
+                            .firstOrNull { section ->
+                                section.dataElements()?.any { it.uid() == de.uid() } == true
+                            }
+                            ?.displayName()
+                            ?: programStage.displayName() ?: "Event Data"
+
                         // Convert to DataValue format to reuse all existing input components
                         DataValue(
                             dataElement = de.uid(),
                             dataElementName = de.displayName() ?: de.name() ?: "",
-                            sectionName = programStage.displayName() ?: "Event Data",
+                            sectionName = sectionName,
                             categoryOptionCombo = de.categoryCombo()?.uid() ?: "HllvX50cXC0",
                             categoryOptionComboName = "default",
                             value = null, // Will be loaded if editing existing event
@@ -263,6 +290,30 @@ class EventCaptureViewModel @Inject constructor(
                     Triple(Date(), null, false)
                 }
 
+                // INFER IMPLIED CATEGORY STRUCTURE from data element names per section
+                // This restores the previously-removed nested accordion functionality
+                // Sections are the first accordion level, implied categories are nested within sections
+                val sections = updatedDataValues.map { it.sectionName }.distinct()
+                val impliedCategoriesBySection = mutableMapOf<String, ImpliedCategoryCombination>()
+                val impliedMappingsBySection = mutableMapOf<String, List<ImpliedCategoryMapping>>()
+
+                sections.forEach { sectionName ->
+                    val sectionDataValues = updatedDataValues.filter { it.sectionName == sectionName }
+                    val impliedCombination = inferImpliedCategories(programId, sectionName, sectionDataValues)
+
+                    if (impliedCombination != null) {
+                        impliedCategoriesBySection[sectionName] = impliedCombination
+                        impliedMappingsBySection[sectionName] =
+                            impliedCategoryService.createMappings(sectionDataValues, impliedCombination)
+
+                        android.util.Log.d("EventCaptureVM", "Section '$sectionName': " +
+                            "inferred ${impliedCombination.categories.size} category levels, " +
+                            "confidence=${impliedCombination.confidence}")
+                    } else {
+                        android.util.Log.d("EventCaptureVM", "Section '$sectionName': No category pattern detected")
+                    }
+                }
+
                 _state.update {
                     it.copy(
                         isLoading = false,
@@ -274,7 +325,9 @@ class EventCaptureViewModel @Inject constructor(
                         availableOrganisationUnits = orgUnits,
                         eventDate = eventDate,
                         selectedOrganisationUnitId = orgUnitId,
-                        isCompleted = completed
+                        isCompleted = completed,
+                        impliedCategoriesBySection = impliedCategoriesBySection,
+                        impliedCategoryMappingsBySection = impliedMappingsBySection
                     )
                 }
 
@@ -671,5 +724,35 @@ class EventCaptureViewModel @Inject constructor(
                 programRuleEffect = effect
             )
         }
+    }
+
+    /**
+     * Infer implied category structure from data element names
+     * Uses caching via MetadataCacheService to avoid re-computation
+     *
+     * This restores the nested accordion functionality that was previously removed
+     * in commits 2b78f6e and c11092e
+     */
+    private fun inferImpliedCategories(
+        programId: String,
+        sectionName: String,
+        dataValues: List<DataValue>
+    ): ImpliedCategoryCombination? {
+        // Check cache first
+        val cached = metadataCacheService.getImpliedCategories(programId, sectionName)
+        if (cached != null) {
+            android.util.Log.d("EventCaptureVM", "Using cached implied categories for $programId:$sectionName")
+            return cached
+        }
+
+        // Infer from data element names
+        val inferred = impliedCategoryService.inferCategoryStructure(dataValues, sectionName)
+
+        // Store in cache if inference was successful
+        if (inferred != null) {
+            metadataCacheService.setImpliedCategories(programId, sectionName, inferred)
+        }
+
+        return inferred
     }
 }

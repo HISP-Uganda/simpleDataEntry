@@ -31,7 +31,7 @@ interface DataEntryRepository {
         value: String
     ): DataValueValidationResult
 
-    suspend fun getAvailablePeriods(datasetId: String): List<Period>
+    suspend fun getAvailablePeriods(datasetId: String, limit: Int = 5, showAll: Boolean = false): List<Period>
     suspend fun getUserOrgUnit(datasetId: String): OrganisationUnit
     suspend fun getUserOrgUnits(datasetId: String): List<OrganisationUnit>
     suspend fun getDefaultAttributeOptionCombo(): String

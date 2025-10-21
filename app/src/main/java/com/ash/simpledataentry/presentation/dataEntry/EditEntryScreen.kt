@@ -100,11 +100,7 @@ fun EditEntryScreen(
     val showSyncDialog = remember { mutableStateOf(false) }
     var showCompleteDialog by remember { mutableStateOf(false) }
     val pendingNavAction = remember { mutableStateOf<(() -> Unit)?>(null) }
-    
-    // Debug log for showSyncDialog state changes
-    LaunchedEffect(showSyncDialog.value) {
-        Log.d("EditEntryScreen", "showSyncDialog state changed to: ${showSyncDialog.value}")
-    }
+
     val context = LocalContext.current
     val focusManager = LocalFocusManager.current
     val listState = rememberLazyListState()
@@ -176,7 +172,6 @@ fun EditEntryScreen(
 
     // Sync confirmation dialog - using the same one as datasetInstances
     if (showSyncDialog.value) {
-        Log.d("EditEntryScreen", "Rendering SyncConfirmationDialog! uploadLocalData: ${state.localDraftCount > 0}, localInstanceCount: ${state.localDraftCount}")
         SyncConfirmationDialog(
             syncOptions = SyncOptions(
                 uploadLocalData = state.localDraftCount > 0,
@@ -184,15 +179,11 @@ fun EditEntryScreen(
                 isEditEntryContext = true
             ),
             onConfirm = { uploadFirst ->
-                Log.d("EditEntryScreen", "SyncConfirmationDialog onConfirm called with uploadFirst: $uploadFirst")
                 viewModel.syncDataEntry(uploadFirst)
                 showSyncDialog.value = false
-                Log.d("EditEntryScreen", "showSyncDialog set to false after confirm")
             },
-            onDismiss = { 
-                Log.d("EditEntryScreen", "SyncConfirmationDialog onDismiss called")
-                showSyncDialog.value = false 
-                Log.d("EditEntryScreen", "showSyncDialog set to false after dismiss")
+            onDismiss = {
+                showSyncDialog.value = false
             }
         )
     }
@@ -370,6 +361,13 @@ fun EditEntryScreen(
         title = "${java.net.URLDecoder.decode(datasetName, "UTF-8")} - ${period.replace("Period(id=", "").replace(")", "")} - $attrComboName",
         navController = navController,
         navigationIcon = baseScreenNavIcon,
+        // PHASE 4: Wire up progress indicator for form loading and sync operations
+        showProgress = state.isLoading || state.isSyncing,
+        progress = state.detailedSyncProgress?.let { p ->
+            p.overallPercentage.toFloat() / 100f
+        } ?: state.navigationProgress?.let { p ->
+            p.overallPercentage.toFloat() / 100f
+        },
         actions = {
             // Add save button to header bar
             IconButton(
@@ -393,9 +391,7 @@ fun EditEntryScreen(
             // Add sync button to top bar
             IconButton(
                 onClick = {
-                    Log.d("EditEntryScreen", "Sync button clicked! Current isSyncing: ${state.isSyncing}, localDraftCount: ${state.localDraftCount}")
                     showSyncDialog.value = true
-                    Log.d("EditEntryScreen", "showSyncDialog set to true")
                 },
                 enabled = !state.isSyncing
             ) {
@@ -491,13 +487,10 @@ fun EditEntryScreen(
                                 items = state.dataElementGroupedSections.entries.toList(),
                                 key = { _, (sectionName, _) -> "section_$sectionName" }
                             ) { sectionIndex, (sectionName, elementGroups) ->
-                                // Create data element ordering map to preserve dataset section order
-                                val dataElementOrder = state.dataValues
-                                    .filter { it.sectionName == sectionName }
-                                    .groupBy { it.dataElement }
-                                    .keys
-                                    .mapIndexed { index, dataElement -> dataElement to index }
-                                    .toMap()
+                                // PERFORMANCE OPTIMIZATION: Use pre-computed data element ordering from ViewModel state
+                                // This eliminates expensive filtering/grouping/mapping on every render
+                                val dataElementOrder = state.dataElementOrdering[sectionName] ?: emptyMap()
+
                                 val sectionIsExpanded = sectionIndex == state.currentSectionIndex
                                 // Count data elements that have any data entered (not individual fields)
                                 val elementsWithData = elementGroups.count { (_, dataValues) ->
@@ -570,8 +563,16 @@ fun EditEntryScreen(
                                     }
                                 }
                                 
-                                // Section Content
-                                AnimatedVisibility(visible = sectionIsExpanded) {
+                                // Section Content - Use key to prevent unnecessary recomposition
+                                AnimatedVisibility(
+                                    visible = sectionIsExpanded,
+                                    modifier = Modifier.fillMaxWidth()
+                                ) {
+                                    // Memoize the section content to prevent recomposition on every animation frame
+                                    val sectionContent = remember(sectionName, elementGroups, state.radioButtonGroups) {
+                                        elementGroups
+                                    }
+
                                     Column(
                                         modifier = Modifier.fillMaxWidth(),
                                         verticalArrangement = Arrangement.spacedBy(8.dp)
@@ -585,7 +586,7 @@ fun EditEntryScreen(
                                                 verticalArrangement = Arrangement.spacedBy(8.dp)
                                             ) {
                                                 // Collect all data elements for this section
-                                                val allDataElements = elementGroups.values.flatten()
+                                                val allDataElements = sectionContent.values.flatten()
 
                                                 // Track which fields are part of grouped radio buttons
                                                 val fieldsInGroups = state.radioButtonGroups.values.flatten().toSet()
@@ -624,20 +625,24 @@ fun EditEntryScreen(
                                                 }
 
                                                 // Then render individual fields (excluding grouped ones)
-                                                elementGroups.entries
-                                                    .sortedBy { dataElementOrder[it.key] ?: Int.MAX_VALUE } // Sort by dataset section order
-                                                    .forEach { (_, dataValues) ->
-                                                        dataValues.forEach { dataValue ->
-                                                            // Skip if this field is part of a radio button group
-                                                            if (dataValue.dataElement !in fieldsInGroups) {
-                                                                DataValueField(
-                                                                    dataValue = dataValue,
-                                                                    onValueChange = { value -> onValueChange(value, dataValue) },
-                                                                    viewModel = viewModel
-                                                                )
-                                                            }
+                                                // Use remember to prevent recomputation on every recomposition
+                                                val individualFields = remember(sectionContent, fieldsInGroups, dataElementOrder) {
+                                                    sectionContent.entries
+                                                        .sortedBy { dataElementOrder[it.key] ?: Int.MAX_VALUE }
+                                                        .flatMap { (_, dataValues) ->
+                                                            dataValues.filter { it.dataElement !in fieldsInGroups }
                                                         }
+                                                }
+
+                                                individualFields.forEach { dataValue ->
+                                                    key("field_${dataValue.dataElement}_${dataValue.categoryOptionCombo}") {
+                                                        DataValueField(
+                                                            dataValue = dataValue,
+                                                            onValueChange = { value -> onValueChange(value, dataValue) },
+                                                            viewModel = viewModel
+                                                        )
                                                     }
+                                                }
                                             }
                                         } else {
                                             // Mixed or non-default categories - render data element accordions
@@ -647,9 +652,15 @@ fun EditEntryScreen(
                                                     .padding(horizontal = 8.dp),
                                                 verticalArrangement = Arrangement.spacedBy(8.dp)
                                             ) {
-                                                elementGroups.entries
-                                                    .sortedBy { dataElementOrder[it.key] ?: Int.MAX_VALUE } // Sort by dataset section order
-                                                    .forEach { (dataElement, dataValues) ->
+                                                // Memoize sorted data elements to prevent recomputation
+                                                val sortedElements = remember(sectionContent, dataElementOrder) {
+                                                    sectionContent.entries
+                                                        .sortedBy { dataElementOrder[it.key] ?: Int.MAX_VALUE }
+                                                        .toList()
+                                                }
+
+                                                sortedElements.forEach { (dataElement, dataValues) ->
+                                                    key("de_accordion_${dataElement}") {
                                                         val hasAnyData = dataValues.any { !it.value.isNullOrBlank() }
                                                         val elementKey = "de_$sectionName$dataElement"
                                                         val isElementExpanded = expandedAccordions.value[listOf(elementKey)] != null
@@ -665,11 +676,13 @@ fun EditEntryScreen(
                                                         if (isDefaultCategoryCombo) {
                                                             // Default category - render field directly without accordion
                                                             dataValues.forEach { dataValue ->
-                                                                DataValueField(
-                                                                    dataValue = dataValue,
-                                                                    onValueChange = { value -> onValueChange(value, dataValue) },
-                                                                    viewModel = viewModel
-                                                                )
+                                                                key("default_field_${dataValue.dataElement}_${dataValue.categoryOptionCombo}") {
+                                                                    DataValueField(
+                                                                        dataValue = dataValue,
+                                                                        onValueChange = { value -> onValueChange(value, dataValue) },
+                                                                        viewModel = viewModel
+                                                                    )
+                                                                }
                                                             }
                                                         } else {
                                                             // Non-default category - render as data element accordion
@@ -745,7 +758,8 @@ fun EditEntryScreen(
                                                                 }
                                                             }
                                                         }
-                                                    }
+                                                    } // Close key block from line 670
+                                                }
                                             }
                                         }
                                     }
@@ -838,37 +852,20 @@ private fun SectionContent(
     expandedAccordions: Map<List<String>, String?>,
     onToggle: (List<String>, String) -> Unit
 ) {
-    android.util.Log.d(
-        "SectionContent",
-        "sectionName=$sectionName, structure=${structure?.map { it.first }}, values=${values.map { it.dataElement + ":" + it.categoryOptionCombo }}"
-    )
     val state by viewModel.state.collectAsState()
     val categoryComboStructures = state.categoryComboStructures
     val dataElements = values.map { it.dataElement to it.dataElementName }.distinct()
 
-    // Log category combo structures for debugging
-    android.util.Log.d("SectionContent", "Available categoryComboStructures: ${categoryComboStructures.keys}")
-    categoryComboStructures.forEach { (comboUid, struct) ->
-        android.util.Log.d("SectionContent", "  $comboUid -> ${struct.size} categories: ${struct.map { it.first }}")
-    }
-
     // --- New grouping logic per RENDERING_RULES.md ---
     val structureKeyFor = { dataValue: DataValue ->
         val structure = categoryComboStructures[dataValue.categoryOptionCombo]
-        val key = structure?.joinToString("|") { cat ->
+        structure?.joinToString("|") { cat ->
             cat.first + ":" + cat.second.joinToString(",") { it.first }
         } ?: "__DEFAULT__"
-        android.util.Log.d("SectionContent", "  DataValue ${dataValue.dataElement}:${dataValue.categoryOptionCombo} -> structure key: $key")
-        key
     }
     val groups = values.groupBy(structureKeyFor)
     val allSameStructure = groups.size == 1
     val isAllDefault = groups.keys.singleOrNull() == "__DEFAULT__"
-
-    android.util.Log.d("SectionContent", "Grouped into ${groups.size} structure groups:")
-    groups.forEach { (key, vals) ->
-        android.util.Log.d("SectionContent", "  Group '$key': ${vals.size} values")
-    }
 
     if (allSameStructure) {
         val groupValues = values
@@ -1078,8 +1075,6 @@ fun DataElementSection(
     onToggleCategoryGroup: (String, String) -> Unit,
     onValueChange: (String, DataValue) -> Unit
 ) {
-    // Add logging for troubleshooting
-    android.util.Log.d("EditEntryScreen", "DataElementSection: sectionName=$sectionName, categoryGroups=${categoryGroups.map { it.key to it.value.map { v -> v.dataElementName } }}")
     var selectedCategory by remember { mutableStateOf("") }
     var expandedFilter by remember { mutableStateOf(false) }
     Column(
@@ -1352,11 +1347,6 @@ fun DataValueField(
     val optionSet = state.optionSets[dataValue.dataElement]
     val renderType = state.renderTypes[dataValue.dataElement] ?: optionSet?.computeRenderType()
 
-    // Debug logging for option set rendering
-    if (optionSet != null) {
-        Log.d("EditEntryScreen", "Data element ${dataValue.dataElementName} has option set: ${optionSet.name}, render type: $renderType, ${optionSet.options.size} options")
-    }
-
     // Check program rule effects
     val isHidden = state.hiddenFields.contains(dataValue.dataElement)
     val isDisabledByRule = state.disabledFields.contains(dataValue.dataElement)
@@ -1388,7 +1378,6 @@ fun DataValueField(
 
     // If field is part of a group but NOT the first field, skip rendering
     if (groupEntry != null && !isFirstInGroup) {
-        Log.d("EditEntryScreen", "Skipping ${dataValue.dataElementName} - will be rendered as part of group ${groupEntry.key}")
         return
     }
 
@@ -1421,9 +1410,6 @@ fun DataValueField(
                     value?.lowercase() in listOf("true", "1", "yes")
                 }?.dataElement
 
-                Log.d("EditEntryScreen", "Rendering group '${groupEntry.key}' with ${groupFields.size} fields, selected: $selectedFieldId, enabled: $effectiveEnabled")
-                Log.d("EditEntryScreen", "Group fields: ${groupFields.map { "${it.dataElementName}=${it.value}" }}")
-
                 com.ash.simpledataentry.presentation.dataEntry.components.GroupedRadioButtons(
                     groupTitle = groupEntry.key,
                     fields = groupFields,
@@ -1451,7 +1437,6 @@ fun DataValueField(
                     isRequired = isMandatoryByRule,
                     enabled = effectiveEnabled,
                     onFieldSelected = { selectedId ->
-                        Log.d("EditEntryScreen", "GroupedRadioButtons onFieldSelected called with selectedId: $selectedId")
                         // Update all fields in the group using viewModel
                         viewModel.updateGroupedRadioFields(
                             groupFields = groupFields,
@@ -2185,9 +2170,7 @@ fun CategoryAccordionRecursiveWithFields(
                             // Use the exact combo mapping to find values for this specific combination
                             dataValue.categoryOptionCombo == expectedComboUid
                         }
-                        
-                        android.util.Log.d("CategoryAccordion", "Final level - Option: $optionName, Selected: $currentSelectionWithThisOption, Expected combo: $expectedComboUid, Matching: ${matchingValues.size}/${values.size}")
-                        
+
                         Text(
                             text = optionName,
                             style = MaterialTheme.typography.labelLarge,
@@ -2227,9 +2210,7 @@ fun CategoryAccordionRecursiveWithFields(
                         // Use the exact combo mapping to find values for this specific combination
                         dataValue.categoryOptionCombo == expectedComboUid
                     }
-                    
-                    android.util.Log.d("CategoryAccordion", "Final accordion - Option: $optionName, Selected: $currentSelectionWithThisOption, Expected combo: $expectedComboUid, Matching: ${matchingValues.size}/${values.size}")
-                    
+
                     CategoryAccordion(
                         header = optionName,
                         expanded = expanded,
@@ -2273,12 +2254,10 @@ fun CategoryAccordionRecursiveWithFields(
                     // This will progressively filter down until final level has exact matches
                     currentSelectionWithThisOption.all { it in comboOptions }
                 }
-                
-                android.util.Log.d("CategoryAccordion", "Intermediate level - Option: $optionName, Selected: $currentSelectionWithThisOption, Filtered: ${filteredValues.size}/${values.size}, Remaining categories: ${restCategories.size}")
-                
+
                 // Remove count as requested - just show option name
                 val headerText = optionName
-                
+
                 CategoryAccordion(
                     header = headerText,
                     expanded = expanded,
