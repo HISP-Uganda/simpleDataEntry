@@ -82,6 +82,20 @@ class DatasetInstancesViewModel @Inject constructor(
     val filterState: StateFlow<DatasetInstanceFilterState> = _filterState.asStateFlow()
 
     init {
+        // Account change observer - MUST come first
+        viewModelScope.launch {
+            sessionManager.currentAccountId.collect { accountId ->
+                if (accountId == null) {
+                    resetToInitialState()
+                } else {
+                    val previouslyInitialized = programId.isNotEmpty()
+                    if (previouslyInitialized) {
+                        resetToInitialState()
+                    }
+                }
+            }
+        }
+
         // Observe sync progress from SyncQueueManager
         viewModelScope.launch {
             syncQueueManager.detailedProgress.collect { progress ->
@@ -91,6 +105,15 @@ class DatasetInstancesViewModel @Inject constructor(
                 )
             }
         }
+    }
+
+    private fun resetToInitialState() {
+        programId = ""
+        currentProgramType = ProgramType.DATASET
+        _state.value = DatasetInstancesState()
+        _filterState.value = DatasetInstanceFilterState()
+        _bulkCompletionMode.value = false
+        _selectedInstances.value = emptySet()
     }
 
     /**
@@ -274,19 +297,13 @@ class DatasetInstancesViewModel @Inject constructor(
 
                 when (currentProgramType) {
                     ProgramType.DATASET -> {
-                        datasetsRepository.getDatasets().collect { datasets ->
-                            dataset = datasets.find { it.id == programId }
-                        }
+                        dataset = datasetsRepository.getDatasets().first().find { it.id == programId }
                     }
                     ProgramType.TRACKER -> {
-                        datasetsRepository.getTrackerPrograms().collect { programs ->
-                            program = programs.find { it.id == programId }
-                        }
+                        program = datasetsRepository.getTrackerPrograms().first().find { it.id == programId }
                     }
                     ProgramType.EVENT -> {
-                        datasetsRepository.getEventPrograms().collect { programs ->
-                            program = programs.find { it.id == programId }
-                        }
+                        program = datasetsRepository.getEventPrograms().first().find { it.id == programId }
                     }
                     ProgramType.ALL -> {
                         // Should not happen in this context
@@ -345,10 +362,7 @@ class DatasetInstancesViewModel @Inject constructor(
                     }
                     ProgramType.TRACKER -> {
                         try {
-                            var trackerInstances: List<ProgramInstance> = emptyList()
-                            datasetInstacesRepository.getProgramInstances(programId, currentProgramType).collect { instances ->
-                                trackerInstances = instances
-                            }
+                            val trackerInstances = datasetInstacesRepository.getProgramInstances(programId, currentProgramType).first()
                             Result.success(trackerInstances)
                         } catch (e: Exception) {
                             Result.failure(e)
@@ -356,10 +370,7 @@ class DatasetInstancesViewModel @Inject constructor(
                     }
                     ProgramType.EVENT -> {
                         try {
-                            var eventInstances: List<ProgramInstance> = emptyList()
-                            datasetInstacesRepository.getProgramInstances(programId, currentProgramType).collect { instances ->
-                                eventInstances = instances
-                            }
+                            val eventInstances = datasetInstacesRepository.getProgramInstances(programId, currentProgramType).first()
                             Result.success(eventInstances)
                         } catch (e: Exception) {
                             Result.failure(e)

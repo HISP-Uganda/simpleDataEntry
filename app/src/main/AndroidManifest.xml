@@ -3,6 +3,13 @@
     xmlns:tools="http://schemas.android.com.ash/tools">
     <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
     <uses-permission android:name="android.permission.INTERNET" />
+
+    <!-- Foreground service permission (required for Android 9+) -->
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+
+    <!-- Post notifications permission (required for Android 13+) -->
+    <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+
     <application
         android:name="com.ash.simpledataentry.SimpleDataEntry"
         android:allowBackup="true"
@@ -25,6 +32,12 @@
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
         </activity>
+
+        <!-- Foreground service for sync operations with notification -->
+        <service
+            android:name="com.ash.simpledataentry.data.sync.SyncForegroundService"
+            android:exported="false"
+            android:foregroundServiceType="dataSync" />
     </application>
 
 </manifest>

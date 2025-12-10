@@ -6,8 +6,11 @@ import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.ash.simpledataentry.domain.model.ProgramInstance
 import com.ash.simpledataentry.domain.repository.DatasetInstancesRepository
-import com.ash.simpledataentry.data.sync.DetailedSyncProgress
 import com.ash.simpledataentry.data.SessionManager
+import com.ash.simpledataentry.presentation.core.UiState
+import com.ash.simpledataentry.presentation.core.LoadingOperation
+import com.ash.simpledataentry.presentation.core.BackgroundOperation
+import com.ash.simpledataentry.util.toUiError
 import dagger.hilt.android.lifecycle.HiltViewModel
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -16,14 +19,11 @@ import kotlinx.coroutines.flow.catch
 import kotlinx.coroutines.launch
 import javax.inject.Inject
 
-data class EventInstancesState(
+// Pure data model (no UI state like isLoading)
+data class EventInstancesData(
     val events: List<ProgramInstance.EventInstance> = emptyList(),
-    val isLoading: Boolean = false,
-    val isSyncing: Boolean = false,
-    val error: String? = null,
-    val successMessage: String? = null,
     val program: com.ash.simpledataentry.domain.model.Program? = null,
-    val detailedSyncProgress: DetailedSyncProgress? = null
+    val syncMessage: String? = null
 )
 
 @HiltViewModel
@@ -35,8 +35,39 @@ class EventInstancesViewModel @Inject constructor(
 
     private var programId: String = ""
 
-    private val _state = MutableStateFlow(EventInstancesState())
-    val state: StateFlow<EventInstancesState> = _state.asStateFlow()
+    private val _uiState = MutableStateFlow<UiState<EventInstancesData>>(
+        UiState.Success(EventInstancesData())
+    )
+    val uiState: StateFlow<UiState<EventInstancesData>> = _uiState.asStateFlow()
+
+    init {
+        // Account change observer
+        viewModelScope.launch {
+            sessionManager.currentAccountId.collect { accountId ->
+                if (accountId == null) {
+                    resetToInitialState()
+                } else {
+                    val previouslyInitialized = programId.isNotEmpty()
+                    if (previouslyInitialized) {
+                        resetToInitialState()
+                    }
+                }
+            }
+        }
+    }
+
+    private fun resetToInitialState() {
+        programId = ""
+        _uiState.value = UiState.Success(EventInstancesData())
+    }
+
+    private fun getCurrentData(): EventInstancesData {
+        return when (val current = _uiState.value) {
+            is UiState.Success -> current.data
+            is UiState.Error -> current.previousData ?: EventInstancesData()
+            is UiState.Loading -> EventInstancesData()
+        }
+    }
 
     fun initialize(id: String) {
         if (id.isNotEmpty() && id != programId) {
@@ -60,34 +91,27 @@ class EventInstancesViewModel @Inject constructor(
         Log.d(TAG, "Loading event instances for program: $programId")
 
         viewModelScope.launch {
-            _state.value = _state.value.copy(isLoading = true, error = null)
-
             try {
+                _uiState.value = UiState.Loading(LoadingOperation.Initial)
+
                 // Load event instances directly
                 datasetInstancesRepository.getEventInstances(programId)
                     .catch { exception ->
                         Log.e(TAG, "Error loading event instances", exception)
-                        _state.value = _state.value.copy(
-                            isLoading = false,
-                            error = "Failed to load events: ${exception.message}"
-                        )
+                        val uiError = exception.toUiError()
+                        _uiState.value = UiState.Error(uiError, getCurrentData())
                     }
                     .collect { instances ->
                         val events = instances.filterIsInstance<ProgramInstance.EventInstance>()
                         Log.d(TAG, "Loaded ${events.size} event instances")
 
-                        _state.value = _state.value.copy(
-                            events = events,
-                            isLoading = false,
-                            error = null
-                        )
+                        val data = EventInstancesData(events = events)
+                        _uiState.value = UiState.Success(data)
                     }
             } catch (exception: Exception) {
                 Log.e(TAG, "Error loading event instances", exception)
-                _state.value = _state.value.copy(
-                    isLoading = false,
-                    error = "Failed to load events: ${exception.message}"
-                )
+                val uiError = exception.toUiError()
+                _uiState.value = UiState.Error(uiError, getCurrentData())
             }
         }
     }
@@ -101,9 +125,11 @@ class EventInstancesViewModel @Inject constructor(
         Log.d(TAG, "Starting sync for event program: $programId")
 
         viewModelScope.launch {
-            _state.value = _state.value.copy(isSyncing = true, error = null)
-
             try {
+                // Use backgroundOperation for non-blocking sync
+                val currentData = getCurrentData()
+                _uiState.value = UiState.Success(currentData, BackgroundOperation.Syncing)
+
                 // Sync event instances and data
                 val result = datasetInstancesRepository.syncProgramInstances(
                     programId = programId,
@@ -111,28 +137,21 @@ class EventInstancesViewModel @Inject constructor(
                 )
 
                 if (result.isSuccess) {
-                    _state.value = _state.value.copy(
-                        isSyncing = false,
-                        successMessage = "Sync completed successfully"
-                    )
+                    val syncData = currentData.copy(syncMessage = "Sync completed successfully")
+                    _uiState.value = UiState.Success(syncData)
                     // Refresh data after sync
                     loadData()
                 } else {
                     result.exceptionOrNull()?.let { exception ->
                         Log.e(TAG, "Error during event sync", exception)
-                        _state.value = _state.value.copy(
-                            isSyncing = false,
-                            error = "Sync failed: ${exception.message}"
-                        )
+                        val uiError = exception.toUiError()
+                        _uiState.value = UiState.Error(uiError, currentData)
                     }
                 }
             } catch (exception: Exception) {
                 Log.e(TAG, "Error during event sync", exception)
-                _state.value = _state.value.copy(
-                    isSyncing = false,
-                    error = "Sync failed: ${exception.message}",
-                    detailedSyncProgress = null
-                )
+                val uiError = exception.toUiError()
+                _uiState.value = UiState.Error(uiError, getCurrentData())
             }
         }
     }

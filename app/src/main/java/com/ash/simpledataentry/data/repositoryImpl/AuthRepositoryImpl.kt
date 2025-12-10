@@ -7,7 +7,6 @@ import com.ash.simpledataentry.data.SessionManager
 import com.ash.simpledataentry.domain.model.Dhis2Config
 import com.ash.simpledataentry.domain.repository.AuthRepository
 import com.ash.simpledataentry.domain.repository.SystemRepository
-import com.ash.simpledataentry.data.local.AppDatabase
 import javax.inject.Inject
 import javax.inject.Singleton
 import com.ash.simpledataentry.presentation.core.NavigationProgress
@@ -20,15 +19,16 @@ import kotlinx.coroutines.withContext
 @Singleton
 class AuthRepositoryImpl @Inject constructor(
     private val sessionManager: SessionManager,
-    private val metadataCacheService: com.ash.simpledataentry.data.cache.MetadataCacheService
+    private val metadataCacheService: com.ash.simpledataentry.data.cache.MetadataCacheService,
+    private val backgroundSyncManager: com.ash.simpledataentry.data.sync.BackgroundSyncManager
 ) : AuthRepository {
 
     // Scope for background tasks that survive beyond the calling coroutine
     private val backgroundScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
 
-    override suspend fun login(serverUrl: String, username: String, password: String, context: Context, db: AppDatabase): Boolean {
+    override suspend fun login(serverUrl: String, username: String, password: String, context: Context): Boolean {
         return try {
-            sessionManager.login(context, Dhis2Config(serverUrl, username, password), db)
+            sessionManager.login(context, Dhis2Config(serverUrl, username, password))
             // CRITICAL: Clear metadata caches after successful login (handles user-switch scenarios)
             metadataCacheService.clearAllCaches()
             true
@@ -42,12 +42,11 @@ class AuthRepositoryImpl @Inject constructor(
         username: String,
         password: String,
         context: Context,
-        db: AppDatabase,
         onProgress: (NavigationProgress) -> Unit
     ): Boolean {
         return try {
             // Blocking metadata download with UI lock (completes before returning)
-            sessionManager.loginWithProgress(context, Dhis2Config(serverUrl, username, password), db, onProgress)
+            sessionManager.loginWithProgress(context, Dhis2Config(serverUrl, username, password), backgroundSyncManager, onProgress)
 
             // CRITICAL: Clear metadata caches after successful login (handles user-switch scenarios)
             metadataCacheService.clearAllCaches()
@@ -59,7 +58,7 @@ class AuthRepositoryImpl @Inject constructor(
                 var syncSuccess = false
                 var syncMessage: String? = null
 
-                sessionManager.startBackgroundDataSync(context, db) { success, message ->
+                sessionManager.startBackgroundDataSync(context) { success, message ->
                     syncSuccess = success
                     syncMessage = message
                 }
@@ -89,11 +88,10 @@ class AuthRepositoryImpl @Inject constructor(
         serverUrl: String,
         username: String,
         password: String,
-        context: Context,
-        db: AppDatabase
+        context: Context
     ): Boolean {
         return try {
-            sessionManager.attemptOfflineLogin(context, Dhis2Config(serverUrl, username, password), db)
+            sessionManager.attemptOfflineLogin(context, Dhis2Config(serverUrl, username, password))
             // CRITICAL: Clear metadata caches after successful offline login (handles user-switch scenarios)
             metadataCacheService.clearAllCaches()
             true

@@ -44,6 +44,8 @@ import androidx.compose.ui.res.painterResource
 import com.ash.simpledataentry.R
 import com.ash.simpledataentry.presentation.core.FullScreenLoader
 import com.ash.simpledataentry.presentation.core.LoadingAnimationType
+import com.ash.simpledataentry.presentation.core.UiState
+import com.ash.simpledataentry.presentation.core.LoadingOperation
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
@@ -71,8 +73,6 @@ import androidx.compose.material3.SnackbarHost
 import androidx.compose.material3.SnackbarHostState
 import androidx.compose.runtime.rememberCoroutineScope
 import kotlinx.coroutines.launch
-import com.ash.simpledataentry.data.local.AppDatabase
-import androidx.room.Room
 import dagger.hilt.android.lifecycle.HiltViewModel
 import dagger.hilt.android.AndroidEntryPoint
 import javax.inject.Inject
@@ -91,20 +91,42 @@ fun LoginScreen(
     navController: NavController,
     viewModel: LoginViewModel = hiltViewModel()
 ) {
-    val state by viewModel.state.collectAsState()
+    val uiState by viewModel.uiState.collectAsState()
     val snackbarHostState = remember { SnackbarHostState() }
     val coroutineScope = rememberCoroutineScope()
 
-    LaunchedEffect(state.isLoggedIn, state.saveAccountOffered) {
-        if (state.isLoggedIn && !state.saveAccountOffered) {
+    // Extract data from UiState
+    val loginData = when (val state = uiState) {
+        is UiState.Success -> state.data
+        is UiState.Error -> state.previousData ?: LoginData()
+        is UiState.Loading -> LoginData()
+    }
+    val isLoading = uiState is UiState.Loading
+    val errorMessage = (uiState as? UiState.Error)?.error?.let { error ->
+        when (error) {
+            is com.ash.simpledataentry.presentation.core.UiError.Network -> error.message
+            is com.ash.simpledataentry.presentation.core.UiError.Server -> error.message
+            is com.ash.simpledataentry.presentation.core.UiError.Validation -> error.message
+            is com.ash.simpledataentry.presentation.core.UiError.Authentication -> error.message
+            is com.ash.simpledataentry.presentation.core.UiError.Local -> error.message
+        }
+    }
+
+    // Extract navigation progress from loading state
+    val navigationProgress = (uiState as? UiState.Loading)?.operation?.let { op ->
+        (op as? LoadingOperation.Navigation)?.progress
+    }
+
+    LaunchedEffect(loginData.isLoggedIn, loginData.saveAccountOffered) {
+        if (loginData.isLoggedIn && !loginData.saveAccountOffered) {
             navController.navigate("datasets") {
                 popUpTo("login") { inclusive = true }
             }
         }
     }
 
-    LaunchedEffect(state.error) {
-        state.error?.let { error ->
+    LaunchedEffect(errorMessage) {
+        errorMessage?.let { error ->
             coroutineScope.launch {
                 snackbarHostState.showSnackbar(error)
                 viewModel.clearError()
@@ -112,14 +134,16 @@ fun LoginScreen(
         }
     }
 
-    if (state.showSplash) {
+    // Show splash when loading OR when data says to show splash (during login flow)
+    val showSplash = isLoading || loginData.showSplash
+    if (showSplash) {
         // Enhanced loading screen with detailed progress
         FullScreenLoader(
-            message = state.navigationProgress?.phaseTitle ?: "Loading your data...",
+            message = navigationProgress?.phaseTitle ?: "Loading your data...",
             isVisible = true,
             animationType = LoadingAnimationType.DHIS2_PULSING_DOTS,
-            progress = state.navigationProgress?.overallPercentage,
-            progressStep = state.navigationProgress?.phaseDetail,
+            progress = navigationProgress?.overallPercentage,
+            progressStep = navigationProgress?.phaseDetail,
             showBackgroundWarning = true,
             modifier = Modifier.fillMaxSize()
         )
@@ -188,7 +212,7 @@ fun LoginScreen(
                 )
                 
                 // Saved Account Selection (if any accounts exist)
-                if (state.savedAccounts.isNotEmpty()) {
+                if (loginData.savedAccounts.isNotEmpty()) {
                     Box {
                         OutlinedTextField(
                             value = "", 
@@ -216,7 +240,7 @@ fun LoginScreen(
                             onDismissRequest = { showAccountDropdown = false },
                             modifier = Modifier.fillMaxWidth() // Make dropdown match field width
                         ) {
-                            state.savedAccounts.forEach { account ->
+                            loginData.savedAccounts.forEach { account ->
                                 DropdownMenuItem(
                                     text = { 
                                         Column {
@@ -262,7 +286,7 @@ fun LoginScreen(
                                     viewModel.clearUrlSuggestions()
                                 }
                             },
-                        enabled = !state.isLoading,
+                        enabled = !isLoading,
                         keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Uri),
                         leadingIcon = {
                             Icon(
@@ -272,7 +296,7 @@ fun LoginScreen(
                             )
                         },
                         trailingIcon = {
-                            if (state.cachedUrls.isNotEmpty()) {
+                            if (loginData.cachedUrls.isNotEmpty()) {
                                 IconButton(
                                     onClick = { 
                                         showUrlDropdown = !showUrlDropdown
@@ -296,7 +320,7 @@ fun LoginScreen(
                         expanded = showUrlDropdown,
                         onDismissRequest = { showUrlDropdown = false }
                     ) {
-                        state.cachedUrls.take(5).forEach { cachedUrl ->
+                        loginData.cachedUrls.take(5).forEach { cachedUrl ->
                             DropdownMenuItem(
                                 text = { Text(cachedUrl.url) },
                                 onClick = {
@@ -334,7 +358,7 @@ fun LoginScreen(
                         .onFocusChanged { focusState ->
                             usernameFocused = focusState.isFocused
                         },
-                    enabled = !state.isLoading,
+                    enabled = !isLoading,
                     leadingIcon = {
                         Icon(
                             imageVector = Icons.Default.Person,
@@ -355,7 +379,7 @@ fun LoginScreen(
                         .onFocusChanged { focusState ->
                             passwordFocused = focusState.isFocused
                         },
-                    enabled = !state.isLoading,
+                    enabled = !isLoading,
                     keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password),
                     leadingIcon = {
                         Icon(
@@ -389,17 +413,9 @@ fun LoginScreen(
                 // Login Button
                 Button(
                     onClick = {
-                        val db = Room.databaseBuilder(
-                            context,
-                            AppDatabase::class.java,
-                            "simple_data_entry_db"
-                        )
-                        // TODO: Replace fallbackToDestructiveMigration() with a real migration before production release!
-                        .fallbackToDestructiveMigration()
-                        .build()
-                        viewModel.loginWithProgress(serverUrl, username, password, context, db)
+                        viewModel.loginWithProgress(serverUrl, username, password, context)
                     },
-                    enabled = !state.isLoading &&
+                    enabled = !isLoading &&
                             serverUrl.isNotBlank() &&
                             username.isNotBlank() &&
                             password.isNotBlank(),
@@ -450,15 +466,15 @@ fun LoginScreen(
     }
 
     // Save Account Dialog (moved outside if/else)
-    if (state.saveAccountOffered && state.pendingCredentials != null) {
+    if (loginData.saveAccountOffered && loginData.pendingCredentials != null) {
         android.util.Log.d("LoginDebug", "About to show save account dialog")
-        
+
         var displayName by remember { mutableStateOf("") }
-        
+
         AlertDialog(
-            onDismissRequest = { 
+            onDismissRequest = {
                 android.util.Log.d("LoginDebug", "Dialog dismissed")
-                viewModel.dismissSaveAccountOffer() 
+                viewModel.dismissSaveAccountOffer()
             },
             title = { Text("Save Account") },
             text = {
@@ -478,7 +494,7 @@ fun LoginScreen(
                 Button(
                     onClick = {
                         if (displayName.isNotBlank()) {
-                            val (serverUrl, username, password) = state.pendingCredentials!!
+                            val (serverUrl, username, password) = loginData.pendingCredentials!!
                             android.util.Log.d("LoginDebug", "Saving account: $displayName")
                             viewModel.saveAccount(displayName, serverUrl, username, password)
                         }

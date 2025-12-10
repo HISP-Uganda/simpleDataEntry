@@ -4,7 +4,7 @@ import android.content.Context
 import android.os.PowerManager
 import android.util.Log
 import com.ash.simpledataentry.data.SessionManager
-import com.ash.simpledataentry.data.local.AppDatabase
+import com.ash.simpledataentry.data.DatabaseProvider
 import com.ash.simpledataentry.data.local.DataValueDraftEntity
 import kotlinx.coroutines.*
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -25,9 +25,15 @@ data class SyncState(
 
 enum class SyncPhase(val title: String, val defaultDetail: String) {
     INITIALIZING("Initializing Sync", "Preparing data for upload..."),
+    PREPARING("Preparing", "Preparing data for sync..."),
     VALIDATING_CONNECTION("Validating Connection", "Checking server connection..."),
+    SYNCING_METADATA("Syncing Metadata", "Downloading metadata structure..."),
+    DOWNLOADING_METADATA("Downloading Metadata", "Getting metadata structure..."),
     UPLOADING_DATA("Uploading Data", "Sending data to server..."),
-    DOWNLOADING_UPDATES("Downloading Updates", "Getting latest data..."),
+    DOWNLOADING_DATA("Downloading Data", "Getting data from server..."),
+    DOWNLOADING_DATASETS("Downloading Datasets", "Getting aggregate data..."),
+    DOWNLOADING_TRACKER_DATA("Downloading Tracker Data", "Getting enrollment data..."),
+    DOWNLOADING_EVENTS("Downloading Events", "Getting event data..."),
     FINALIZING("Finalizing", "Completing sync process...")
 }
 
@@ -48,7 +54,13 @@ data class DetailedSyncProgress(
     val canNavigateBack: Boolean = false,
     val error: SyncError? = null,
     val isAutoRetrying: Boolean = false,
-    val autoRetryCountdown: Int? = null
+    val autoRetryCountdown: Int? = null,
+    // Enhanced progress tracking
+    val currentItem: Int = 0,
+    val totalItems: Int = 0,
+    val processedItems: Int = currentItem, // Alias for compatibility
+    val itemDescription: String? = null,
+    val estimatedTimeRemaining: Long? = null // milliseconds
 ) {
     companion object {
         fun initial() = DetailedSyncProgress(
@@ -80,7 +92,7 @@ data class DetailedSyncProgress(
 class SyncQueueManager @Inject constructor(
     private val networkStateManager: NetworkStateManager,
     private val sessionManager: SessionManager,
-    private val database: AppDatabase,
+    private val databaseProvider: DatabaseProvider,
     private val context: Context
 ) {
 
@@ -139,7 +151,7 @@ class SyncQueueManager @Inject constructor(
     }
     
     suspend fun queueForSync() {
-        val currentQueueSize = database.dataValueDraftDao().getAllDrafts().size
+        val currentQueueSize = databaseProvider.getCurrentDatabase().dataValueDraftDao().getAllDrafts().size
         _syncState.value = _syncState.value.copy(queueSize = currentQueueSize)
         
         if (networkStateManager.isOnline() && !_syncState.value.isRunning) {
@@ -312,10 +324,16 @@ class SyncQueueManager @Inject constructor(
             val d2 = sessionManager.getD2()!! // Already validated in validateConnection()
 
             // Get all draft data values to sync
-            val drafts = database.dataValueDraftDao().getAllDrafts()
+            val drafts = databaseProvider.getCurrentDatabase().dataValueDraftDao().getAllDrafts()
             Log.d(tag, "Starting sync of ${drafts.size} draft values")
 
-            updateProgress(SyncPhase.INITIALIZING, 15, "Found ${drafts.size} data values to sync")
+            updateProgress(
+                phase = SyncPhase.INITIALIZING,
+                percentage = 15,
+                detail = "Found ${drafts.size} data values to sync",
+                totalItems = drafts.size,
+                itemDescription = "data values"
+            )
 
             if (drafts.isEmpty()) {
                 updateProgress(SyncPhase.FINALIZING, 100, "No data to sync")
@@ -370,7 +388,14 @@ class SyncQueueManager @Inject constructor(
 
                     // Update progress for data preparation
                     val prepProgress = 20 + ((index + 1) * 10 / drafts.size)
-                    updateProgress(SyncPhase.INITIALIZING, prepProgress, "Prepared ${index + 1} of ${drafts.size} values")
+                    updateProgress(
+                        phase = SyncPhase.INITIALIZING,
+                        percentage = prepProgress,
+                        detail = "Preparing data values for upload",
+                        currentItem = index + 1,
+                        totalItems = drafts.size,
+                        itemDescription = "data values"
+                    )
 
                 } catch (e: Exception) {
                     Log.w(tag, "Failed to set draft value for ${draft.dataElement}: ${e.message}")
@@ -385,15 +410,29 @@ class SyncQueueManager @Inject constructor(
             Log.d(tag, "Successfully set ${allSuccessfulDrafts.size} values, starting upload")
 
             // Phase 4: Upload data with chunked strategy (30-80%)
-            updateProgress(SyncPhase.UPLOADING_DATA, 35, "Preparing chunked upload for ${allSuccessfulDrafts.size} values...")
-
             // Create chunks for reliable upload
             val chunks = chunkDataValues(allSuccessfulDrafts)
             Log.d(tag, "Uploading ${allSuccessfulDrafts.size} values in ${chunks.size} chunks")
 
+            updateProgress(
+                phase = SyncPhase.UPLOADING_DATA,
+                percentage = 35,
+                detail = "Uploading data to server",
+                currentItem = 0,
+                totalItems = chunks.size,
+                itemDescription = "chunks"
+            )
+
             // Upload data using chunked strategy with retry logic
-            val uploadResult = uploadDataValuesInChunks(chunks) { phase, percentage, detail ->
-                updateProgress(phase, percentage, detail)
+            val uploadResult = uploadDataValuesInChunks(chunks) { phase, percentage, detail, currentChunk, totalChunks ->
+                updateProgress(
+                    phase = phase,
+                    percentage = percentage,
+                    detail = detail,
+                    currentItem = currentChunk,
+                    totalItems = totalChunks,
+                    itemDescription = "chunks"
+                )
             }
 
             uploadResult.fold(
@@ -410,17 +449,17 @@ class SyncQueueManager @Inject constructor(
 
             // Phase 5: Download updates (80-95%)
             try {
-                updateProgress(SyncPhase.DOWNLOADING_UPDATES, 85, "Downloading latest data...")
+                updateProgress(SyncPhase.DOWNLOADING_DATASETS, 85, "Downloading latest data...")
 
                 withTimeout(downloadTimeoutMs) {
                     d2.dataValueModule().dataValues().get()
                 }
 
-                updateProgress(SyncPhase.DOWNLOADING_UPDATES, 95, "Download completed")
+                updateProgress(SyncPhase.DOWNLOADING_DATASETS, 95, "Download completed")
             } catch (e: Exception) {
                 Log.w(tag, "Failed to download latest data after upload: ${e.message}")
                 // Don't fail the entire sync just because download failed
-                updateProgress(SyncPhase.DOWNLOADING_UPDATES, 95, "Download failed but upload succeeded")
+                updateProgress(SyncPhase.DOWNLOADING_DATASETS, 95, "Download failed but upload succeeded")
             }
 
             // Phase 6: Finalize (95-100%)
@@ -428,7 +467,7 @@ class SyncQueueManager @Inject constructor(
 
             _syncState.value = _syncState.value.copy(
                 isRunning = false,
-                queueSize = database.dataValueDraftDao().getAllDrafts().size,
+                queueSize = databaseProvider.getCurrentDatabase().dataValueDraftDao().getAllDrafts().size,
                 lastSuccessfulSync = System.currentTimeMillis(),
                 failedAttempts = 0,
                 error = null
@@ -486,14 +525,93 @@ class SyncQueueManager @Inject constructor(
             }
 
             val d2 = sessionManager.getD2()!! // Already validated in validateConnection()
-            updateProgress(SyncPhase.DOWNLOADING_UPDATES, 30, "Downloading latest data...")
+
+            // Count available items to show granular progress
+            val datasetCount = try {
+                d2.dataSetModule().dataSets().blockingCount()
+            } catch (e: Exception) {
+                Log.w(tag, "Could not count datasets: ${e.message}")
+                0
+            }
+
+            val trackerProgramCount = try {
+                d2.programModule().programs().byProgramType().eq(org.hisp.dhis.android.core.program.ProgramType.WITH_REGISTRATION).blockingCount()
+            } catch (e: Exception) {
+                Log.w(tag, "Could not count tracker programs: ${e.message}")
+                0
+            }
+
+            val eventProgramCount = try {
+                d2.programModule().programs().byProgramType().eq(org.hisp.dhis.android.core.program.ProgramType.WITHOUT_REGISTRATION).blockingCount()
+            } catch (e: Exception) {
+                Log.w(tag, "Could not count event programs: ${e.message}")
+                0
+            }
+
+            val totalItems = datasetCount + trackerProgramCount + eventProgramCount
+
+            updateProgress(
+                SyncPhase.DOWNLOADING_DATASETS,
+                30,
+                "Downloading data for programs...",
+                currentItem = 0,
+                totalItems = totalItems,
+                itemDescription = "programs"
+            )
 
             try {
-                // Download latest data from server without uploading
-                withTimeout(downloadTimeoutMs) {
-                    d2.dataValueModule().dataValues().get()
+                // Download aggregate data
+                if (datasetCount > 0) {
+                    updateProgress(
+                        SyncPhase.DOWNLOADING_DATASETS,
+                        40,
+                        "Downloading aggregate data...",
+                        currentItem = datasetCount,
+                        totalItems = totalItems,
+                        itemDescription = "datasets"
+                    )
+                    withTimeout(downloadTimeoutMs) {
+                        d2.aggregatedModule().data().blockingDownload()
+                    }
                 }
-                updateProgress(SyncPhase.DOWNLOADING_UPDATES, 80, "Download completed")
+
+                // Download tracker data
+                if (trackerProgramCount > 0) {
+                    updateProgress(
+                        SyncPhase.DOWNLOADING_TRACKER_DATA,
+                        60,
+                        "Downloading tracker enrollments...",
+                        currentItem = datasetCount + trackerProgramCount,
+                        totalItems = totalItems,
+                        itemDescription = "enrollments"
+                    )
+                    withTimeout(downloadTimeoutMs) {
+                        d2.trackedEntityModule().trackedEntityInstanceDownloader()
+                            .limit(200)
+                            .limitByProgram(true)
+                            .blockingDownload()
+                    }
+                }
+
+                // Download event data
+                if (eventProgramCount > 0) {
+                    updateProgress(
+                        SyncPhase.DOWNLOADING_EVENTS,
+                        80,
+                        "Downloading event data...",
+                        currentItem = totalItems,
+                        totalItems = totalItems,
+                        itemDescription = "events"
+                    )
+                    withTimeout(downloadTimeoutMs) {
+                        d2.eventModule().eventDownloader()
+                            .limit(200)
+                            .limitByProgram(true)
+                            .blockingDownload()
+                    }
+                }
+
+                updateProgress(SyncPhase.DOWNLOADING_DATASETS, 95, "Download completed")
             } catch (e: Exception) {
                 Log.w(tag, "Failed to download latest data: ${e.message}")
                 // Continue anyway - this is just a refresh operation
@@ -543,7 +661,7 @@ class SyncQueueManager @Inject constructor(
             }
 
             // Get drafts for specific dataset instance only
-            val drafts = database.dataValueDraftDao().getDraftsForInstance(
+            val drafts = databaseProvider.getCurrentDatabase().dataValueDraftDao().getDraftsForInstance(
                 datasetId, period, orgUnit, attributeOptionCombo
             )
             Log.d(tag, "Starting sync for dataset instance: $datasetId, period: $period, orgUnit: $orgUnit")
@@ -552,7 +670,7 @@ class SyncQueueManager @Inject constructor(
             if (drafts.isEmpty()) {
                 _syncState.value = _syncState.value.copy(
                     isRunning = false,
-                    queueSize = database.dataValueDraftDao().getAllDrafts().size,
+                    queueSize = databaseProvider.getCurrentDatabase().dataValueDraftDao().getAllDrafts().size,
                     lastSuccessfulSync = System.currentTimeMillis(),
                     failedAttempts = 0
                 )
@@ -609,7 +727,7 @@ class SyncQueueManager @Inject constructor(
 
                     // Remove successfully synced drafts for this instance
                     for (draft in allSuccessfulDrafts) {
-                        database.dataValueDraftDao().deleteDraft(draft)
+                        databaseProvider.getCurrentDatabase().dataValueDraftDao().deleteDraft(draft)
                     }
 
                     Log.d(tag, "Upload completed successfully for ${allSuccessfulDrafts.size} values from instance")
@@ -668,7 +786,7 @@ class SyncQueueManager @Inject constructor(
 
             _syncState.value = _syncState.value.copy(
                 isRunning = false,
-                queueSize = database.dataValueDraftDao().getAllDrafts().size,
+                queueSize = databaseProvider.getCurrentDatabase().dataValueDraftDao().getAllDrafts().size,
                 lastSuccessfulSync = if (allSuccessfulDrafts.isNotEmpty()) System.currentTimeMillis() else _syncState.value.lastSuccessfulSync,
                 failedAttempts = if (allSuccessfulDrafts.isNotEmpty()) 0 else _syncState.value.failedAttempts + 1,
                 error = if (allSuccessfulDrafts.isEmpty()) "Upload failed for dataset instance" else null
@@ -707,8 +825,8 @@ class SyncQueueManager @Inject constructor(
     }
     
     suspend fun clearQueue() {
-        database.dataValueDraftDao().getAllDrafts().forEach { draft ->
-            database.dataValueDraftDao().deleteDraft(draft)
+        databaseProvider.getCurrentDatabase().dataValueDraftDao().getAllDrafts().forEach { draft ->
+            databaseProvider.getCurrentDatabase().dataValueDraftDao().deleteDraft(draft)
         }
         _syncState.value = _syncState.value.copy(queueSize = 0)
     }
@@ -745,14 +863,22 @@ class SyncQueueManager @Inject constructor(
         phase: SyncPhase,
         percentage: Int,
         detail: String? = null,
-        canNavigateBack: Boolean = false
+        canNavigateBack: Boolean = false,
+        currentItem: Int = 0,
+        totalItems: Int = 0,
+        itemDescription: String? = null,
+        estimatedTimeRemaining: Long? = null
     ) {
         _detailedProgress.value = DetailedSyncProgress(
             phase = phase,
             overallPercentage = percentage,
             phaseTitle = phase.title,
             phaseDetail = detail ?: phase.defaultDetail,
-            canNavigateBack = canNavigateBack
+            canNavigateBack = canNavigateBack,
+            currentItem = currentItem,
+            totalItems = totalItems,
+            itemDescription = itemDescription,
+            estimatedTimeRemaining = estimatedTimeRemaining
         )
         delay(100) // Small delay for UI feedback
     }
@@ -1204,7 +1330,7 @@ class SyncQueueManager @Inject constructor(
      */
     private suspend fun uploadDataValuesInChunks(
         chunks: List<List<DataValueDraftEntity>>,
-        updateProgress: suspend (SyncPhase, Int, String) -> Unit
+        updateProgress: suspend (SyncPhase, Int, String, Int, Int) -> Unit
     ): Result<Unit> {
         var successfulChunks = 0
         val totalChunks = chunks.size
@@ -1216,13 +1342,13 @@ class SyncQueueManager @Inject constructor(
             while (chunkAttempt < maxRetryAttempts && !chunkUploaded) {
                 try {
                     val progressPercentage = 40 + (30 * (successfulChunks + 0.5f) / totalChunks).toInt()
-                    val progressDetail = if (totalChunks > 1) {
-                        "Uploading chunk ${chunkIndex + 1} of $totalChunks (${chunk.size} values)${if (chunkAttempt > 0) " - attempt ${chunkAttempt + 1}" else ""}"
+                    val progressDetail = if (chunkAttempt > 0) {
+                        "Uploading (attempt ${chunkAttempt + 1})"
                     } else {
-                        "Uploading ${chunk.size} data values${if (chunkAttempt > 0) " - attempt ${chunkAttempt + 1}" else ""}"
+                        "Uploading data to server"
                     }
 
-                    updateProgress(SyncPhase.UPLOADING_DATA, progressPercentage, progressDetail)
+                    updateProgress(SyncPhase.UPLOADING_DATA, progressPercentage, progressDetail, chunkIndex + 1, totalChunks)
 
                     // Set chunk data values in DHIS2
                     for (draft in chunk) {
@@ -1249,7 +1375,7 @@ class SyncQueueManager @Inject constructor(
 
                     // Remove successfully uploaded drafts
                     for (draft in chunk) {
-                        database.dataValueDraftDao().deleteDraft(draft)
+                        databaseProvider.getCurrentDatabase().dataValueDraftDao().deleteDraft(draft)
                     }
 
                     Log.d(tag, "Successfully uploaded chunk ${chunkIndex + 1}/${totalChunks} with ${chunk.size} values")

@@ -1,6 +1,6 @@
 package com.ash.simpledataentry.data.repositoryImpl
 
-import com.ash.simpledataentry.data.local.AppDatabase
+import com.ash.simpledataentry.data.DatabaseProvider
 import com.ash.simpledataentry.data.local.CachedUrlEntity
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
@@ -10,9 +10,9 @@ import javax.inject.Singleton
 
 @Singleton
 class LoginUrlCacheRepository @Inject constructor(
-    private val database: AppDatabase
+    private val databaseProvider: DatabaseProvider
 ) {
-    private val cachedUrlDao = database.cachedUrlDao()
+    private val cachedUrlDao get() = databaseProvider.getCurrentDatabase().cachedUrlDao()
     
     // URL validation pattern for DHIS2 server URLs
     private val urlPattern = Pattern.compile(

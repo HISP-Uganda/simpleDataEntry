@@ -20,9 +20,13 @@ import com.ash.simpledataentry.data.local.DataValueDao
         CategoryOptionComboEntity::class,
         OrganisationUnitEntity::class,
         CachedUrlEntity::class,
-        SavedAccountEntity::class
+        SavedAccountEntity::class,
+        TrackerProgramEntity::class,
+        EventProgramEntity::class,
+        TrackerEnrollmentEntity::class,
+        EventInstanceEntity::class
     ],
-    version = 6,
+    version = 8,  // Incremented for tracker enrollment and event instance tables
     exportSchema = false
 )
 abstract class AppDatabase : RoomDatabase() {
@@ -35,4 +39,8 @@ abstract class AppDatabase : RoomDatabase() {
     abstract fun dataValueDao(): DataValueDao
     abstract fun cachedUrlDao(): CachedUrlDao
     abstract fun savedAccountDao(): SavedAccountDao
+    abstract fun trackerProgramDao(): TrackerProgramDao
+    abstract fun eventProgramDao(): EventProgramDao
+    abstract fun trackerEnrollmentDao(): TrackerEnrollmentDao
+    abstract fun eventInstanceDao(): EventInstanceDao
 }

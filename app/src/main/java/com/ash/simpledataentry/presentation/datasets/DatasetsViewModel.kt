@@ -15,6 +15,11 @@ import com.ash.simpledataentry.util.PeriodHelper
 import com.ash.simpledataentry.data.sync.BackgroundDataPrefetcher
 import com.ash.simpledataentry.data.SessionManager
 import com.ash.simpledataentry.data.repositoryImpl.SavedAccountRepository
+import com.ash.simpledataentry.presentation.core.UiState
+import com.ash.simpledataentry.presentation.core.UiError
+import com.ash.simpledataentry.presentation.core.LoadingOperation
+import com.ash.simpledataentry.presentation.core.BackgroundOperation
+import com.ash.simpledataentry.util.toUiError
 import dagger.hilt.android.lifecycle.HiltViewModel
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -24,23 +29,17 @@ import kotlinx.coroutines.launch
 import androidx.work.WorkInfo
 import javax.inject.Inject
 
-sealed class DatasetsState {
-    data object Loading : DatasetsState()
-    data class Error(val message: String) : DatasetsState()
-    data class Success(
-        val programs: List<ProgramItem>,
-        val filteredPrograms: List<ProgramItem> = programs,
-        val currentFilter: FilterState = FilterState(),
-        val currentProgramType: ProgramType = ProgramType.ALL,
-        val isSyncing: Boolean = false,
-        val isLoadingRemote: Boolean = false, // Background loading from remote
-        val isDownloadingData: Boolean = false, // Separate flag for download-only sync
-        val syncMessage: String? = null,
-        val syncProgress: Int = 0,
-        val syncStep: String? = null,
-        val detailedSyncProgress: DetailedSyncProgress? = null // Enhanced sync progress
-    ) : DatasetsState()
-}
+/**
+ * Datasets data model - contains only data, no UI state flags
+ */
+data class DatasetsData(
+    val programs: List<ProgramItem> = emptyList(),
+    val filteredPrograms: List<ProgramItem> = programs,
+    val currentFilter: FilterState = FilterState(),
+    val currentProgramType: ProgramType = ProgramType.ALL,
+    val syncMessage: String? = null
+)
+
 @HiltViewModel
 class DatasetsViewModel @Inject constructor(
     private val datasetsRepository: com.ash.simpledataentry.domain.repository.DatasetsRepository,
@@ -52,91 +51,129 @@ class DatasetsViewModel @Inject constructor(
     private val backgroundDataPrefetcher: BackgroundDataPrefetcher,
     private val sessionManager: SessionManager,
     private val savedAccountRepository: SavedAccountRepository,
-    private val syncQueueManager: SyncQueueManager
+    private val syncQueueManager: SyncQueueManager,
+    private val databaseProvider: com.ash.simpledataentry.data.DatabaseProvider
 ) : ViewModel() {
 
-    private val _uiState = MutableStateFlow<DatasetsState>(DatasetsState.Loading)
-    val uiState: StateFlow<DatasetsState> = _uiState.asStateFlow()
+    private val _uiState = MutableStateFlow<UiState<DatasetsData>>(
+        UiState.Success(DatasetsData())
+    )
+    val uiState: StateFlow<UiState<DatasetsData>> = _uiState.asStateFlow()
 
     init {
+        // Account change observer - MUST come first
+        // When account changes (including session restoration), reload programs from the new database
+        viewModelScope.launch {
+            sessionManager.currentAccountId.collect { accountId ->
+                if (accountId == null) {
+                    resetToInitialState()
+                } else {
+                    // Account switched or restored - reload programs from correct database
+                    Log.d("DatasetsViewModel", "Account changed/restored: $accountId - reloading programs")
+                    loadPrograms()
+                }
+            }
+        }
+
+        // Initial load (may use fallback database if session not yet restored)
         loadPrograms()
         // Start background prefetching after programs are loaded
         backgroundDataPrefetcher.startPrefetching()
 
-        // Observe sync progress from SyncQueueManager
-        viewModelScope.launch {
-            syncQueueManager.detailedProgress.collect { progress ->
-                val currentState = _uiState.value
-                if (currentState is DatasetsState.Success) {
-                    _uiState.value = currentState.copy(
-                        detailedSyncProgress = progress,
-                        isSyncing = progress != null
-                    )
-                }
-            }
+        // REMOVED: Background sync progress observer
+        // Background sync after login should NOT block the UI with an overlay
+        // Only user-initiated syncs (via syncDatasets() method) should show the overlay
+    }
+
+    private fun resetToInitialState() {
+        _uiState.value = UiState.Success(DatasetsData())
+    }
+
+    /**
+     * Helper to get current data from UiState
+     */
+    private fun getCurrentData(): DatasetsData {
+        return when (val current = _uiState.value) {
+            is UiState.Success -> current.data
+            is UiState.Error -> current.previousData ?: DatasetsData()
+            is UiState.Loading -> DatasetsData()
         }
     }
 
     fun refreshPrograms() {
-        loadPrograms()
+        viewModelScope.launch {
+            syncQueueManager.startDownloadOnlySync()
+            // loadPrograms() will auto-update via reactive Flow when sync completes
+        }
     }
 
     fun loadPrograms() {
         viewModelScope.launch {
-            _uiState.value = DatasetsState.Loading
-            var isFirstEmission = true
+            _uiState.value = UiState.Loading(LoadingOperation.Initial)
+
             datasetsRepository.getAllPrograms()
                 .catch { exception ->
-                    _uiState.value = DatasetsState.Error(
-                        message = exception.message ?: "Failed to load programs"
-                    )
+                    val uiError = exception.toUiError()
+                    _uiState.value = UiState.Error(uiError, getCurrentData())
                 }
                 .collect { programs ->
-                    val currentState = _uiState.value
-                    val wasSyncing = (currentState as? DatasetsState.Success)?.isSyncing == true
-                    // CRITICAL FIX: Preserve syncMessage AND download state from previous state
-                    val preservedSyncMessage = (currentState as? DatasetsState.Success)?.syncMessage
-                    val isDownloading = (currentState as? DatasetsState.Success)?.isDownloadingData == true
+                    // Room Flow automatically re-emits when database changes
+                    // Preserve sync message from current state
+                    val currentData = getCurrentData()
+                    val preservedSyncMessage = currentData.syncMessage
+                    val currentFilter = currentData.currentFilter
+                    val currentProgramType = currentData.currentProgramType
 
-                    if (isFirstEmission) {
-                        // First emission - could be cached data or fresh data if no cache
-                        _uiState.value = DatasetsState.Success(
-                            programs = programs,
-                            filteredPrograms = programs,
-                            isSyncing = false,
-                            isLoadingRemote = true, // Show spinner - remote fetch is happening
-                            isDownloadingData = isDownloading, // PRESERVE download state during Flow emissions
-                            syncMessage = preservedSyncMessage ?: if (wasSyncing) "Sync completed successfully!" else null,
-                            syncProgress = 0,
-                            syncStep = null
-                        )
-                        isFirstEmission = false
-                    } else {
-                        // Second emission - fresh data from remote with updated counts
-                        _uiState.value = DatasetsState.Success(
-                            programs = programs,
-                            filteredPrograms = programs,
-                            isSyncing = false,
-                            isLoadingRemote = false, // Hide spinner - remote fetch complete
-                            isDownloadingData = false, // NOW safe to clear download flag - fresh data loaded
-                            syncMessage = preservedSyncMessage, // KEEP message so toast can display
-                            syncProgress = 0,
-                            syncStep = null
-                        )
-                    }
+                    // Filter programs if needed
+                    val filteredPrograms = filterPrograms(programs, currentFilter, currentProgramType)
+
+                    val newData = DatasetsData(
+                        programs = programs,
+                        filteredPrograms = filteredPrograms,
+                        currentFilter = currentFilter,
+                        currentProgramType = currentProgramType,
+                        syncMessage = preservedSyncMessage
+                    )
+
+                    // Check if there's an active sync operation from background
+                    val currentUiState = _uiState.value
+                    val backgroundOp = if (currentUiState is UiState.Success) {
+                        currentUiState.backgroundOperation
+                    } else null
+
+                    _uiState.value = UiState.Success(newData, backgroundOperation = backgroundOp)
                 }
         }
     }
 
     fun syncDatasets(uploadFirst: Boolean = false) {
-        val currentState = _uiState.value
-        if (currentState is DatasetsState.Success && !currentState.isSyncing) {
+        val currentUiState = _uiState.value
+
+        // Check if already syncing
+        val alreadySyncing = currentUiState is UiState.Loading && currentUiState.operation is LoadingOperation.Syncing
+
+        if (!alreadySyncing) {
             Log.d("DatasetsViewModel", "Starting enhanced sync for datasets, uploadFirst: $uploadFirst")
 
             viewModelScope.launch {
                 try {
+                    // Observe progress only for this user-initiated sync
+                    val progressJob = launch {
+                        syncQueueManager.detailedProgress.collect { progress ->
+                            if (progress != null) {
+                                _uiState.value = UiState.Loading(
+                                    operation = LoadingOperation.Syncing(progress)
+                                )
+                            }
+                        }
+                    }
+
                     // Use the enhanced SyncQueueManager which provides detailed progress tracking
                     val syncResult = syncQueueManager.startSync(forceSync = uploadFirst)
+
+                    // Cancel progress observation after sync completes
+                    progressJob.cancel()
+
                     syncResult.fold(
                         onSuccess = {
                             Log.d("DatasetsViewModel", "Enhanced sync completed successfully")
@@ -145,129 +182,89 @@ class DatasetsViewModel @Inject constructor(
                             } else {
                                 "Datasets synced successfully"
                             }
-                            // Set success message BEFORE reloading programs
-                            val state = _uiState.value
-                            if (state is DatasetsState.Success) {
-                                _uiState.value = state.copy(
-                                    syncMessage = message,
-                                    detailedSyncProgress = null // Clear progress when done
-                                )
-                            }
+
+                            // Update data with success message
+                            val currentData = getCurrentData()
+                            val newData = currentData.copy(syncMessage = message)
+                            _uiState.value = UiState.Success(newData)
+
                             // Reload all data after sync - this will preserve syncMessage and show updated counts
                             loadPrograms()
                         },
                         onFailure = { error ->
                             Log.e("DatasetsViewModel", "Enhanced sync failed", error)
-                            val errorMessage = error.message ?: "Failed to sync datasets"
-                            val state = _uiState.value
-                            if (state is DatasetsState.Success) {
-                                _uiState.value = state.copy(
-                                    isLoadingRemote = false,
-                                    syncMessage = errorMessage,
-                                    detailedSyncProgress = null // Clear progress on failure
-                                )
-                            }
+                            val uiError = error.toUiError()
+                            _uiState.value = UiState.Error(uiError, getCurrentData())
                         }
                     )
                 } catch (e: Exception) {
                     Log.e("DatasetsViewModel", "Enhanced sync failed", e)
-                    val state = _uiState.value
-                    if (state is DatasetsState.Success) {
-                        _uiState.value = state.copy(
-                            isSyncing = false,
-                            isLoadingRemote = false,
-                            syncMessage = e.message ?: "Failed to sync datasets",
-                            detailedSyncProgress = null
-                        )
-                    }
+                    val uiError = e.toUiError()
+                    _uiState.value = UiState.Error(uiError, getCurrentData())
                 }
             }
         } else {
-            Log.w("DatasetsViewModel", "DATASETS SYNC: Cannot sync - already syncing or state is not Success")
+            Log.w("DatasetsViewModel", "DATASETS SYNC: Cannot sync - already syncing")
         }
     }
 
     fun downloadOnlySync() {
-        val currentState = _uiState.value
-        if (currentState is DatasetsState.Success && !currentState.isSyncing) {
-            Log.d("DatasetsViewModel", "Starting download-only sync for datasets")
+        Log.d("DatasetsViewModel", "Starting download-only sync for datasets")
 
-            // CRITICAL FIX: Set download flag to show spinner during entire download + reload cycle
-            _uiState.value = currentState.copy(
-                isDownloadingData = true, // This flag persists through loadPrograms() emissions
-                syncMessage = null
-            )
+        viewModelScope.launch {
+            try {
+                // Show background operation indicator
+                val currentData = getCurrentData()
+                _uiState.value = UiState.Success(
+                    data = currentData,
+                    backgroundOperation = BackgroundOperation.Syncing
+                )
 
-            viewModelScope.launch {
-                try {
-                    val syncResult = syncQueueManager.startDownloadOnlySync()
-                    syncResult.fold(
-                        onSuccess = {
-                            Log.d("DatasetsViewModel", "Download-only sync completed successfully")
-                            // Small delay to ensure SDK database writes are committed
-                            kotlinx.coroutines.delay(100)
-                            // Set success message BEFORE reloading programs
-                            val state = _uiState.value
-                            if (state is DatasetsState.Success) {
-                                _uiState.value = state.copy(
-                                    syncMessage = "Latest data downloaded successfully",
-                                    detailedSyncProgress = null
-                                )
-                            }
-                            // Reload all data after download - this will preserve syncMessage and show updated counts
-                            loadPrograms()
-                        },
-                        onFailure = { error ->
-                            Log.e("DatasetsViewModel", "Download-only sync failed", error)
-                            val errorMessage = error.message ?: "Failed to download latest data"
-                            val state = _uiState.value
-                            if (state is DatasetsState.Success) {
-                                _uiState.value = state.copy(
-                                    isDownloadingData = false, // Clear download flag on failure
-                                    syncMessage = errorMessage,
-                                    detailedSyncProgress = null
-                                )
-                            }
-                        }
-                    )
-                } catch (e: Exception) {
-                    Log.e("DatasetsViewModel", "Download-only sync failed", e)
-                    val state = _uiState.value
-                    if (state is DatasetsState.Success) {
-                        _uiState.value = state.copy(
-                            isSyncing = false,
-                            isDownloadingData = false, // Clear download flag on exception
-                            syncMessage = e.message ?: "Failed to download datasets",
-                            detailedSyncProgress = null
-                        )
+                val syncResult = syncQueueManager.startDownloadOnlySync()
+                syncResult.fold(
+                    onSuccess = {
+                        Log.d("DatasetsViewModel", "Download-only sync completed successfully")
+                        kotlinx.coroutines.delay(100) // Ensure SDK database writes committed
+
+                        // Update data with success message
+                        val updatedData = getCurrentData().copy(syncMessage = "Latest data downloaded successfully")
+                        _uiState.value = UiState.Success(updatedData)
+
+                        // Reload programs
+                        loadPrograms()
+                    },
+                    onFailure = { error ->
+                        Log.e("DatasetsViewModel", "Download-only sync failed", error)
+                        val uiError = error.toUiError()
+                        _uiState.value = UiState.Error(uiError, getCurrentData())
                     }
-                }
+                )
+            } catch (e: Exception) {
+                Log.e("DatasetsViewModel", "Download-only sync failed", e)
+                val uiError = e.toUiError()
+                _uiState.value = UiState.Error(uiError, getCurrentData())
             }
-        } else {
-            Log.w("DatasetsViewModel", "DATASETS DOWNLOAD: Cannot download - already syncing or state is not Success")
         }
     }
 
     fun applyFilter(filterState: FilterState) {
-        val currentState = _uiState.value
-        if (currentState is DatasetsState.Success) {
-            val filteredPrograms = filterPrograms(currentState.programs, filterState, currentState.currentProgramType)
-            _uiState.value = currentState.copy(
-                filteredPrograms = filteredPrograms,
-                currentFilter = filterState
-            )
-        }
+        val currentData = getCurrentData()
+        val filteredPrograms = filterPrograms(currentData.programs, filterState, currentData.currentProgramType)
+        val newData = currentData.copy(
+            filteredPrograms = filteredPrograms,
+            currentFilter = filterState
+        )
+        _uiState.value = UiState.Success(newData)
     }
 
     fun filterByProgramType(programType: ProgramType) {
-        val currentState = _uiState.value
-        if (currentState is DatasetsState.Success) {
-            val filteredPrograms = filterPrograms(currentState.programs, currentState.currentFilter, programType)
-            _uiState.value = currentState.copy(
-                filteredPrograms = filteredPrograms,
-                currentProgramType = programType
-            )
-        }
+        val currentData = getCurrentData()
+        val filteredPrograms = filterPrograms(currentData.programs, currentData.currentFilter, programType)
+        val newData = currentData.copy(
+            filteredPrograms = filteredPrograms,
+            currentProgramType = programType
+        )
+        _uiState.value = UiState.Success(newData)
     }
 
     private fun filterPrograms(programs: List<ProgramItem>, filterState: FilterState, programType: ProgramType): List<ProgramItem> {
@@ -319,32 +316,34 @@ class DatasetsViewModel @Inject constructor(
     }
 
     fun clearFilters() {
-        val currentState = _uiState.value
-        if (currentState is DatasetsState.Success) {
-            _uiState.value = currentState.copy(
-                filteredPrograms = currentState.programs,
-                currentFilter = FilterState(),
-                currentProgramType = ProgramType.ALL
-            )
-        }
+        val currentData = getCurrentData()
+        val newData = currentData.copy(
+            filteredPrograms = currentData.programs,
+            currentFilter = FilterState(),
+            currentProgramType = ProgramType.ALL
+        )
+        _uiState.value = UiState.Success(newData)
     }
 
     fun clearSyncMessage() {
-        val currentState = _uiState.value
-        if (currentState is DatasetsState.Success) {
-            _uiState.value = currentState.copy(syncMessage = null)
-        }
+        val currentData = getCurrentData()
+        val newData = currentData.copy(syncMessage = null)
+        _uiState.value = UiState.Success(newData)
     }
 
     fun dismissSyncOverlay() {
-        val currentState = _uiState.value
-        if (currentState is DatasetsState.Success) {
-            // Clear error state in SyncQueueManager to prevent persistent dialogs
-            syncQueueManager.clearErrorState()
-            _uiState.value = currentState.copy(
-                detailedSyncProgress = null,
-                isSyncing = false
-            )
+        // Clear error state in SyncQueueManager to prevent persistent dialogs
+        syncQueueManager.clearErrorState()
+
+        // Convert back to success state
+        val currentUiState = _uiState.value
+        if (currentUiState is UiState.Loading || currentUiState is UiState.Error) {
+            val data = when (currentUiState) {
+                is UiState.Loading -> getCurrentData()
+                is UiState.Error -> currentUiState.previousData ?: DatasetsData()
+                else -> getCurrentData()
+            }
+            _uiState.value = UiState.Success(data)
         }
     }
 
@@ -355,11 +354,9 @@ class DatasetsViewModel @Inject constructor(
                 // Stop background prefetching and clear caches
                 backgroundDataPrefetcher.clearAllCaches()
                 logoutUseCase()
-
             } catch (e: Exception) {
-                _uiState.value = DatasetsState.Error(
-                    message = "Failed to logout: ${e.message}"
-                )
+                val uiError = e.toUiError()
+                _uiState.value = UiState.Error(uiError, getCurrentData())
             }
         }
     }
@@ -369,20 +366,18 @@ class DatasetsViewModel @Inject constructor(
             try {
                 // Stop background prefetching and clear caches
                 backgroundDataPrefetcher.clearAllCaches()
-                
+
                 // Delete all saved accounts
                 savedAccountRepository.deleteAllAccounts()
-                
+
                 // Wipe all DHIS2 data and local data
-                sessionManager.wipeAllData(context)
-                
+                sessionManager.wipeAllData(context, databaseProvider.getCurrentDatabase())
+
                 // Logout from current session
                 logoutUseCase()
-                
             } catch (e: Exception) {
-                _uiState.value = DatasetsState.Error(
-                    message = "Failed to delete account: ${e.message}"
-                )
+                val uiError = e.toUiError()
+                _uiState.value = UiState.Error(uiError, getCurrentData())
             }
         }
     }

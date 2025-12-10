@@ -23,8 +23,8 @@ import androidx.navigation.NavController
 import com.ash.simpledataentry.domain.model.CompletionStatus
 import com.ash.simpledataentry.domain.model.SyncStatus
 import com.ash.simpledataentry.presentation.core.BaseScreen
-import com.ash.simpledataentry.presentation.core.FullScreenLoader
-import com.ash.simpledataentry.presentation.core.DetailedSyncOverlay
+import com.ash.simpledataentry.presentation.core.AdaptiveLoadingOverlay
+import com.ash.simpledataentry.presentation.core.UiState
 import com.ash.simpledataentry.ui.theme.DHIS2BlueDeep
 import org.hisp.dhis.mobile.ui.designsystem.theme.TextColor
 import java.net.URLEncoder
@@ -46,7 +46,7 @@ fun TrackerEnrollmentsScreen(
 ) {
     val coroutineScope = rememberCoroutineScope()
     val snackbarHostState = remember { SnackbarHostState() }
-    val state by viewModel.state.collectAsState()
+    val uiState by viewModel.uiState.collectAsState()
     var showSyncDialog by remember { mutableStateOf(false) }
 
     // Initialize with program ID
@@ -59,19 +59,16 @@ fun TrackerEnrollmentsScreen(
         viewModel.refreshData()
     }
 
-    // Show errors in snackbar
-    LaunchedEffect(state.error) {
-        state.error?.let {
-            snackbarHostState.showSnackbar(
-                message = it,
-                duration = SnackbarDuration.Short
-            )
-        }
+    // Extract data safely from UiState
+    val data = when (val state = uiState) {
+        is UiState.Success -> state.data
+        is UiState.Error -> state.previousData ?: com.ash.simpledataentry.presentation.tracker.TrackerEnrollmentsData()
+        is UiState.Loading -> com.ash.simpledataentry.presentation.tracker.TrackerEnrollmentsData()
     }
 
-    // Show success messages
-    LaunchedEffect(state.successMessage) {
-        state.successMessage?.let {
+    // Show success messages via snackbar
+    LaunchedEffect(data.syncMessage) {
+        data.syncMessage?.let {
             snackbarHostState.showSnackbar(
                 message = it,
                 duration = SnackbarDuration.Short
@@ -84,15 +81,18 @@ fun TrackerEnrollmentsScreen(
         navController = navController,
         actions = {
             // Sync button
+            val isLoading = uiState is UiState.Loading
+            val isSyncing = (uiState as? UiState.Success)?.backgroundOperation != null
+
             IconButton(
                 onClick = {
-                    if (!state.isSyncing) {
+                    if (!isSyncing) {
                         showSyncDialog = true
                     }
                 },
-                enabled = !state.isLoading && !state.isSyncing
+                enabled = !isLoading && !isSyncing
             ) {
-                if (state.isSyncing) {
+                if (isSyncing) {
                     CircularProgressIndicator(
                         modifier = Modifier.size(24.dp),
                         strokeWidth = 2.dp,
@@ -125,71 +125,52 @@ fun TrackerEnrollmentsScreen(
         },
     ) {
         Box(modifier = Modifier.fillMaxSize()) {
-            when {
-                state.isLoading -> {
-                    FullScreenLoader(
-                        message = "Loading enrollments...",
-                        isVisible = true
-                    )
-                }
-                state.error != null -> {
-                    Column(
-                        modifier = Modifier
-                            .fillMaxSize()
-                            .padding(16.dp),
-                        horizontalAlignment = Alignment.CenterHorizontally,
-                        verticalArrangement = Arrangement.Center
-                    ) {
-                        Text(
-                            text = state.error ?: "Unknown error",
-                            style = MaterialTheme.typography.bodyLarge,
-                            color = MaterialTheme.colorScheme.error
-                        )
-                        Spacer(modifier = Modifier.height(16.dp))
-                        Button(onClick = { viewModel.refreshData() }) {
-                            Text("Retry")
+            AdaptiveLoadingOverlay(
+                uiState = uiState,
+                modifier = Modifier.fillMaxSize()
+            ) {
+                // Content with data
+                when {
+                    data.enrollments.isEmpty() -> {
+                        Column(
+                            modifier = Modifier
+                                .fillMaxSize()
+                                .padding(16.dp),
+                            horizontalAlignment = Alignment.CenterHorizontally,
+                            verticalArrangement = Arrangement.Center
+                        ) {
+                            Text(
+                                text = "No enrollments found",
+                                style = MaterialTheme.typography.bodyLarge,
+                                color = MaterialTheme.colorScheme.onSurface
+                            )
+                            Spacer(modifier = Modifier.height(8.dp))
+                            Text(
+                                text = "Tap + to create a new enrollment",
+                                style = MaterialTheme.typography.bodyMedium,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
                         }
                     }
-                }
-                state.enrollments.isEmpty() -> {
-                    Column(
-                        modifier = Modifier
-                            .fillMaxSize()
-                            .padding(16.dp),
-                        horizontalAlignment = Alignment.CenterHorizontally,
-                        verticalArrangement = Arrangement.Center
-                    ) {
-                        Text(
-                            text = "No enrollments found",
-                            style = MaterialTheme.typography.bodyLarge,
-                            color = MaterialTheme.colorScheme.onSurface
-                        )
-                        Spacer(modifier = Modifier.height(8.dp))
-                        Text(
-                            text = "Tap + to create a new enrollment",
-                            style = MaterialTheme.typography.bodyMedium,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant
-                        )
-                    }
-                }
-                else -> {
-                    LazyColumn(
-                        modifier = Modifier
-                            .fillMaxSize()
-                            .padding(horizontal = 16.dp, vertical = 8.dp),
-                        verticalArrangement = Arrangement.spacedBy(8.dp)
-                    ) {
-                        items(state.enrollments) { enrollment ->
-                            EnrollmentCard(
-                                enrollment = enrollment,
-                                onClick = {
-                                    val encodedProgramId = URLEncoder.encode(programId, "UTF-8")
-                                    val encodedProgramName = URLEncoder.encode(programName, "UTF-8")
-                                    navController.navigate("TrackerDashboard/${enrollment.id}/$encodedProgramId/$encodedProgramName") {
-                                        launchSingleTop = true
+                    else -> {
+                        LazyColumn(
+                            modifier = Modifier
+                                .fillMaxSize()
+                                .padding(horizontal = 16.dp, vertical = 8.dp),
+                            verticalArrangement = Arrangement.spacedBy(8.dp)
+                        ) {
+                            items(data.enrollments) { enrollment ->
+                                EnrollmentCard(
+                                    enrollment = enrollment,
+                                    onClick = {
+                                        val encodedProgramId = URLEncoder.encode(programId, "UTF-8")
+                                        val encodedProgramName = URLEncoder.encode(programName, "UTF-8")
+                                        navController.navigate("TrackerDashboard/${enrollment.id}/$encodedProgramId/$encodedProgramName") {
+                                            launchSingleTop = true
+                                        }
                                     }
-                                }
-                            )
+                                )
+                            }
                         }
                     }
                 }
@@ -216,15 +197,6 @@ fun TrackerEnrollmentsScreen(
                             Text("Cancel")
                         }
                     }
-                )
-            }
-
-            // Detailed sync progress overlay
-            if (state.isSyncing && state.detailedSyncProgress != null) {
-                DetailedSyncOverlay(
-                    progress = state.detailedSyncProgress!!,
-                    onNavigateBack = { },
-                    content = { }
                 )
             }
 

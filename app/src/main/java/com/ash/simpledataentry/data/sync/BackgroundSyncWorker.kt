@@ -8,7 +8,7 @@ import androidx.work.WorkerParameters
 import androidx.work.workDataOf
 import androidx.work.Data
 import com.ash.simpledataentry.data.SessionManager
-import com.ash.simpledataentry.data.local.AppDatabase
+import com.ash.simpledataentry.data.DatabaseProvider
 import com.ash.simpledataentry.domain.repository.DatasetInstancesRepository
 import com.ash.simpledataentry.domain.repository.DatasetsRepository
 import dagger.assisted.Assisted
@@ -33,7 +33,8 @@ class BackgroundSyncWorker @AssistedInject constructor(
     private val datasetsRepository: DatasetsRepository,
     private val datasetInstancesRepository: DatasetInstancesRepository,
     private val networkStateManager: NetworkStateManager,
-    private val database: AppDatabase
+    private val databaseProvider: DatabaseProvider,
+    private val syncQueueManager: SyncQueueManager
 ) : CoroutineWorker(context, workerParams) {
     
     companion object {
@@ -50,18 +51,23 @@ class BackgroundSyncWorker @AssistedInject constructor(
 
     override suspend fun doWork(): Result = withContext(Dispatchers.IO) {
         try {
+            // Start foreground service to show sync notification (Android 8+ requirement)
+            SyncForegroundService.startService(applicationContext)
+
             updateProgress("Initializing sync...", 0)
             Log.d(TAG, "Starting background sync...")
 
             // Check if we have an active session
             if (!sessionManager.isSessionActive()) {
                 Log.d(TAG, "No active session - skipping sync")
+                SyncForegroundService.stopService(applicationContext)
                 return@withContext Result.success()
             }
 
             // Check network connectivity
             if (!networkStateManager.isOnline()) {
                 Log.d(TAG, "No network connectivity - skipping sync")
+                SyncForegroundService.stopService(applicationContext)
                 return@withContext Result.retry()
             }
 
@@ -99,8 +105,7 @@ class BackgroundSyncWorker @AssistedInject constructor(
             try {
                 updateProgress("Uploading pending data values...", 80)
                 Log.d(TAG, "Uploading pending data values...")
-                // Use SyncQueueManager to handle all pending uploads
-                val syncQueueManager = SyncQueueManager(networkStateManager, sessionManager, database, applicationContext)
+                // Use injected SyncQueueManager singleton to handle all pending uploads
                 syncQueueManager.startSync()
                 updateProgress("Data upload completed", 95)
                 Log.d(TAG, "Pending data upload completed")
@@ -118,11 +123,16 @@ class BackgroundSyncWorker @AssistedInject constructor(
                 Log.w(TAG, "Background sync completed with some failures - will retry")
                 Result.retry()
             }
-            
+
+            // Stop foreground service (service will stop itself when sync completes, but ensure cleanup)
+            SyncForegroundService.stopService(applicationContext)
+
             return@withContext result
-            
+
         } catch (e: Exception) {
             Log.e(TAG, "Background sync failed with exception", e)
+            // Stop foreground service on error
+            SyncForegroundService.stopService(applicationContext)
             return@withContext Result.retry()
         }
     }

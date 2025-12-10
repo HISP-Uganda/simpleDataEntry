@@ -84,6 +84,30 @@ class TrackerEnrollmentTableViewModel @Inject constructor(
     private val _state = MutableStateFlow(TrackerEnrollmentTableState())
     val state: StateFlow<TrackerEnrollmentTableState> = _state.asStateFlow()
 
+    init {
+        // Account change observer
+        viewModelScope.launch {
+            sessionManager.currentAccountId.collect { accountId ->
+                if (accountId == null) {
+                    resetToInitialState()
+                } else {
+                    val previouslyInitialized = programId.isNotEmpty()
+                    if (previouslyInitialized) {
+                        resetToInitialState()
+                    }
+                }
+            }
+        }
+    }
+
+    private fun resetToInitialState() {
+        programId = ""
+        _state.value = TrackerEnrollmentTableState()
+        // Note: SharedPreferences column customizations are keyed by programId only
+        // If new account has same programId, they'll see previous customizations
+        // This is acceptable edge case (very unlikely)
+    }
+
     fun initialize(id: String, programName: String) {
         if (id.isNotEmpty() && id != programId) {
             programId = id

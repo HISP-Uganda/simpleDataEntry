@@ -8,8 +8,9 @@ import com.ash.simpledataentry.domain.repository.DatasetInstancesRepository
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.flow.flowOn
+import kotlinx.coroutines.flow.map
 import com.ash.simpledataentry.data.SessionManager
-import com.ash.simpledataentry.data.local.AppDatabase
+import com.ash.simpledataentry.data.DatabaseProvider
 import com.ash.simpledataentry.data.local.DraftInstanceSummary
 import org.hisp.dhis.android.core.D2
 import org.hisp.dhis.android.core.organisationunit.OrganisationUnit
@@ -19,10 +20,14 @@ private const val TAG = "DatasetInstancesRepo"
 
 class DatasetInstancesRepositoryImpl @Inject constructor(
     private val sessionManager: SessionManager,
-    private val database: AppDatabase
+    private val databaseProvider: DatabaseProvider
 ) : DatasetInstancesRepository {
 
     private val d2 get() = sessionManager.getD2()!!
+
+    // Lazy DAO accessors - always get from current account's database
+    private val trackerEnrollmentDao get() = databaseProvider.getCurrentDatabase().trackerEnrollmentDao()
+    private val eventInstanceDao get() = databaseProvider.getCurrentDatabase().eventInstanceDao()
 
     override suspend fun getDatasetInstances(datasetId: String): List<DatasetInstance> {
         Log.d(TAG, "Fetching dataset instances for dataset: $datasetId")
@@ -86,7 +91,7 @@ class DatasetInstancesRepositoryImpl @Inject constructor(
                 }
                 
                 // Get draft instances that don't have corresponding SDK instances
-                val draftInstances = database.dataValueDraftDao().getDistinctDraftInstances(datasetId)
+                val draftInstances = databaseProvider.getCurrentDatabase().dataValueDraftDao().getDistinctDraftInstances(datasetId)
                 Log.d(TAG, "Found ${draftInstances.size} draft instances")
                 
                 val sdkInstanceKeys = sdkInstances.map { "${it.period.id}-${it.organisationUnit.id}-${it.attributeOptionCombo}" }.toSet()
@@ -289,8 +294,8 @@ class DatasetInstancesRepositoryImpl @Inject constructor(
             }
 
             // STEP 2: Check and resolve foreign key violations BEFORE download
-            Log.d(TAG, "STEP 2: Pre-download foreign key violation check...")
-            sessionManager.checkForeignKeyViolations()
+            Log.d(TAG, "STEP 2: Pre-download foreign key violation check... (Skipped - using standard SDK handling)")
+            // sessionManager.checkForeignKeyViolations() - Removed as part of simplification
 
             // STEP 3: Get user's org unit scope for tracker data
             val userOrgUnits = d2.organisationUnitModule().organisationUnits()
@@ -322,7 +327,7 @@ class DatasetInstancesRepositoryImpl @Inject constructor(
             Log.d(TAG, "STEP 5: Post-download validation...")
 
             // Check for any foreign key violations that may have occurred during download
-            sessionManager.checkForeignKeyViolations()
+            // sessionManager.checkForeignKeyViolations() - Removed as part of simplification
 
             // STEP 6: Verify what was actually stored
             Log.d(TAG, "STEP 6: Verifying stored tracker data...")
@@ -369,10 +374,14 @@ class DatasetInstancesRepositoryImpl @Inject constructor(
                 Log.d(TAG, "DIAGNOSTIC: Org unit overlap (data exists + user access): ${overlap.joinToString(", ")}")
             }
 
+            // PHASE 2: Populate Room cache after successful SDK sync
+            Log.d(TAG, "STEP 7: Populating Room cache...")
+            populateTrackerEnrollmentsCache(programId)
+
             Log.d(TAG, "=== TRACKER DATA SYNC COMPLETED ===")
 
         } catch (e: Exception) {
-            Log.e(TAG, "=== TRACKER DATA SYNC FAILED ===")
+            Log.d(TAG, "=== TRACKER DATA SYNC FAILED ===")
             Log.e(TAG, "Error: ${e.message}", e)
             throw e
         }
@@ -498,6 +507,10 @@ class DatasetInstancesRepositoryImpl @Inject constructor(
                             Log.d(TAG, "EVENT SYNC: - Event ${event.uid()}: status=${event.status()}, orgUnit=${event.organisationUnit()}, date=${event.eventDate()}")
                         }
 
+                        // PHASE 2: Populate Room cache after successful SDK sync
+                        Log.d(TAG, "EVENT SYNC: Populating Room cache...")
+                        populateEventInstancesCache(programId)
+
                         Log.d(TAG, "=== EVENT DATA SYNC COMPLETED for program $programId ===")
                     }
                     else -> { /* Do nothing */ }
@@ -511,154 +524,96 @@ class DatasetInstancesRepositoryImpl @Inject constructor(
     }
 
     // Tracker-specific methods
+    // PHASE 2 REFACTOR: Now uses Room Flow for reactive, non-blocking data access
     override suspend fun getTrackerEnrollments(programId: String): kotlinx.coroutines.flow.Flow<List<com.ash.simpledataentry.domain.model.ProgramInstance.TrackerEnrollment>> =
-        kotlinx.coroutines.flow.flow {
-            try {
-                Log.d(TAG, "Fetching tracker enrollments for program: $programId")
-
-                // Get user's data capture org units AND their descendants (children)
-                val userOrgUnits = d2.organisationUnitModule().organisationUnits()
-                    .byOrganisationUnitScope(OrganisationUnit.Scope.SCOPE_DATA_CAPTURE)
+        trackerEnrollmentDao.getByProgram(programId).map { entities ->
+            withContext(Dispatchers.IO) {
+                // PHASE 2 FIX: Read from Room cache (populated by sync)
+                // Fetch program name once (metadata, not data-intensive)
+                val program = d2.programModule().programs()
+                    .uid(programId)
                     .blockingGet()
+                val programName = program?.displayName() ?: program?.name() ?: "Unknown Program"
 
-                Log.d(TAG, "Found ${userOrgUnits.size} user org units for tracker enrollments")
-
-                if (userOrgUnits.isEmpty()) {
-                    Log.e(TAG, "No organization units found for user")
-                    emit(emptyList())
-                    return@flow
-                }
-
-                // Get all descendant org units (children) of user's org units
-                val allAccessibleOrgUnits = mutableSetOf<String>()
-                userOrgUnits.forEach { userOrgUnit ->
-                    // Add the user's org unit itself
-                    allAccessibleOrgUnits.add(userOrgUnit.uid())
-
-                    // Add all descendants using the path-based approach
-                    val descendants = d2.organisationUnitModule().organisationUnits()
-                        .byPath().like("${userOrgUnit.path()}/%")
-                        .blockingGet()
-
-                    descendants.forEach { descendant ->
-                        allAccessibleOrgUnits.add(descendant.uid())
-                    }
-                }
-
-                Log.d(TAG, "Total accessible org units (including children): ${allAccessibleOrgUnits.size}")
-
-                // Get enrollments using the expanded org unit list
-                val enrollments = d2.enrollmentModule().enrollments()
-                    .byProgram().eq(programId)
-                    .byOrganisationUnit().`in`(allAccessibleOrgUnits.toList())
-                    .byStatus().`in`(listOf(
-                        org.hisp.dhis.android.core.enrollment.EnrollmentStatus.ACTIVE,
-                        org.hisp.dhis.android.core.enrollment.EnrollmentStatus.COMPLETED
-                    ))
-                    .byDeleted().eq(false)
-                    .blockingGet()
-
-                Log.d(TAG, "Found ${enrollments.size} enrollments for program $programId (filtered by ${allAccessibleOrgUnits.size} org units including children, active/completed status, not deleted)")
-
-                // Additional debugging: Check what enrollments exist without any filters
-                val allEnrollmentsInProgram = d2.enrollmentModule().enrollments()
-                    .byProgram().eq(programId)
-                    .blockingGet()
-
-                Log.d(TAG, "DEBUG: Found ${allEnrollmentsInProgram.size} total enrollments for program $programId (no filters)")
-
-                if (allEnrollmentsInProgram.isNotEmpty()) {
-                    allEnrollmentsInProgram.forEach { enrollment ->
-                        Log.d(TAG, "DEBUG: Enrollment ${enrollment.uid()} - orgUnit: ${enrollment.organisationUnit()}, status: ${enrollment.status()}, deleted: ${enrollment.deleted()}")
-                    }
-                } else {
-                    Log.w(TAG, "DEBUG: No enrollments found at all for program $programId - this means no tracker data exists for this program on the DHIS2 server within user's org unit scope")
-                }
-
-                // Additional debugging: Check what org units actually have data for this program
-                val allEnrollmentsAnyProgram = d2.enrollmentModule().enrollments()
-                    .blockingGet()
-
-                Log.d(TAG, "DEBUG: Found ${allEnrollmentsAnyProgram.size} total enrollments across ALL programs")
-
-                val orgUnitsWithData = allEnrollmentsAnyProgram.map { it.organisationUnit() }.distinct()
-                Log.d(TAG, "DEBUG: Organization units that have enrollment data: ${orgUnitsWithData.joinToString(", ")}")
-                Log.d(TAG, "DEBUG: User's accessible org units: ${allAccessibleOrgUnits.joinToString(", ")}")
-
-                val programInstances = enrollments.map { enrollment ->
-                    val orgUnit = d2.organisationUnitModule().organisationUnits()
-                        .uid(enrollment.organisationUnit())
-                        .blockingGet()
-
-                    val program = d2.programModule().programs()
-                        .uid(programId)
-                        .blockingGet()
-
-                    // Load tracked entity attribute values for this enrollment
-                    val teiUid = enrollment.trackedEntityInstance() ?: ""
+                // Map Room entities to domain models
+                entities.map { entity ->
+                    // Fetch TEI attributes from SDK (still blocking but much faster than full enrollment query)
+                    val teiUid = entity.trackedEntityInstanceId
                     val attributeValues = if (teiUid.isNotEmpty()) {
-                        d2.trackedEntityModule().trackedEntityAttributeValues()
-                            .byTrackedEntityInstance().eq(teiUid)
-                            .blockingGet()
-                            .mapNotNull { attrValue ->
-                                val attribute = d2.trackedEntityModule().trackedEntityAttributes()
-                                    .uid(attrValue.trackedEntityAttribute())
-                                    .blockingGet()
+                        try {
+                            d2.trackedEntityModule().trackedEntityAttributeValues()
+                                .byTrackedEntityInstance().eq(teiUid)
+                                .blockingGet()
+                                .mapNotNull { attrValue ->
+                                    val attribute = d2.trackedEntityModule().trackedEntityAttributes()
+                                        .uid(attrValue.trackedEntityAttribute())
+                                        .blockingGet()
 
-                                attribute?.let {
-                                    com.ash.simpledataentry.domain.model.TrackedEntityAttributeValue(
-                                        id = it.uid(),
-                                        displayName = it.displayName() ?: it.name() ?: "",
-                                        trackedEntityAttribute = it.uid(),
-                                        trackedEntityInstance = teiUid,
-                                        value = attrValue.value(),
-                                        created = attrValue.created() ?: java.util.Date(),
-                                        lastUpdated = attrValue.lastUpdated() ?: java.util.Date()
-                                    )
+                                    attribute?.let {
+                                        com.ash.simpledataentry.domain.model.TrackedEntityAttributeValue(
+                                            id = it.uid(),
+                                            displayName = it.displayName() ?: it.name() ?: "",
+                                            trackedEntityAttribute = it.uid(),
+                                            trackedEntityInstance = teiUid,
+                                            value = attrValue.value(),
+                                            created = attrValue.created() ?: java.util.Date(),
+                                            lastUpdated = attrValue.lastUpdated() ?: java.util.Date()
+                                        )
+                                    }
                                 }
-                            }
+                        } catch (e: Exception) {
+                            Log.w(TAG, "Failed to fetch attributes for TEI $teiUid", e)
+                            emptyList()
+                        }
                     } else {
                         emptyList()
                     }
 
+                    // Parse dates from strings
+                    val enrollmentDate = try {
+                        entity.enrollmentDate?.let { java.text.SimpleDateFormat("yyyy-MM-dd", java.util.Locale.US).parse(it) } ?: java.util.Date()
+                    } catch (e: Exception) {
+                        java.util.Date()
+                    }
+
+                    val incidentDate = try {
+                        entity.incidentDate?.let { java.text.SimpleDateFormat("yyyy-MM-dd", java.util.Locale.US).parse(it) }
+                    } catch (e: Exception) {
+                        null
+                    }
+
+                    val lastUpdated = try {
+                        entity.lastUpdated?.let { java.text.SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss.SSS", java.util.Locale.US).parse(it) } ?: java.util.Date()
+                    } catch (e: Exception) {
+                        java.util.Date()
+                    }
+
                     com.ash.simpledataentry.domain.model.ProgramInstance.TrackerEnrollment(
-                        id = enrollment.uid(),
+                        id = entity.id,
                         programId = programId,
-                        programName = program?.displayName() ?: program?.name() ?: "Unknown Program",
+                        programName = programName,
                         organisationUnit = com.ash.simpledataentry.domain.model.OrganisationUnit(
-                            id = orgUnit?.uid() ?: "",
-                            name = orgUnit?.displayName() ?: "Unknown"
+                            id = entity.organisationUnitId,
+                            name = entity.organisationUnitName
                         ),
-                        lastUpdated = enrollment.lastUpdated() ?: java.util.Date(),
-                        state = when (enrollment.status()) {
-                            org.hisp.dhis.android.core.enrollment.EnrollmentStatus.ACTIVE ->
-                                com.ash.simpledataentry.domain.model.ProgramInstanceState.ACTIVE
-                            org.hisp.dhis.android.core.enrollment.EnrollmentStatus.COMPLETED ->
-                                com.ash.simpledataentry.domain.model.ProgramInstanceState.COMPLETED
-                            org.hisp.dhis.android.core.enrollment.EnrollmentStatus.CANCELLED ->
-                                com.ash.simpledataentry.domain.model.ProgramInstanceState.CANCELLED
+                        lastUpdated = lastUpdated,
+                        state = when (entity.status) {
+                            "ACTIVE" -> com.ash.simpledataentry.domain.model.ProgramInstanceState.ACTIVE
+                            "COMPLETED" -> com.ash.simpledataentry.domain.model.ProgramInstanceState.COMPLETED
+                            "CANCELLED" -> com.ash.simpledataentry.domain.model.ProgramInstanceState.CANCELLED
                             else -> com.ash.simpledataentry.domain.model.ProgramInstanceState.ACTIVE
                         },
-                        syncStatus = when (enrollment.aggregatedSyncState()) {
-                            org.hisp.dhis.android.core.common.State.SYNCED -> com.ash.simpledataentry.domain.model.SyncStatus.SYNCED
-                            org.hisp.dhis.android.core.common.State.TO_UPDATE -> com.ash.simpledataentry.domain.model.SyncStatus.NOT_SYNCED
-                            org.hisp.dhis.android.core.common.State.TO_POST -> com.ash.simpledataentry.domain.model.SyncStatus.NOT_SYNCED
-                            else -> com.ash.simpledataentry.domain.model.SyncStatus.SYNCED
-                        },
+                        syncStatus = com.ash.simpledataentry.domain.model.SyncStatus.SYNCED,  // TODO: Track sync status in Room
                         trackedEntityInstance = teiUid,
-                        enrollmentDate = enrollment.enrollmentDate() ?: java.util.Date(),
-                        incidentDate = enrollment.incidentDate(),
-                        followUp = enrollment.followUp() ?: false,
-                        completedDate = enrollment.completedDate(),
+                        enrollmentDate = enrollmentDate,
+                        incidentDate = incidentDate,
+                        followUp = entity.followUp,
+                        completedDate = null,  // TODO: Add to Room entity if needed
                         attributes = attributeValues
                     )
                 }
-                emit(programInstances)
-            } catch (e: Exception) {
-                Log.e(TAG, "Failed to get tracker enrollments for program $programId", e)
-                emit(emptyList())
             }
-        }.flowOn(Dispatchers.IO)
+        }
 
     override suspend fun createTrackerEnrollment(
         programId: String,
@@ -747,6 +702,8 @@ class DatasetInstancesRepositoryImpl @Inject constructor(
                 Log.d(TAG, "Total accessible org units for events (including children): ${allAccessibleOrgUnits.size}")
 
                 // Get events using the expanded org unit list
+                // NOTE: Cannot add .limit() here - DHIS2 SDK event queries don't support it
+                // Full fix in Phase 2: Convert to Room DAOs with proper pagination
                 val events = d2.eventModule().events()
                     .byProgramUid().eq(programId)
                     .byOrganisationUnitUid().`in`(allAccessibleOrgUnits.toList())
@@ -758,6 +715,7 @@ class DatasetInstancesRepositoryImpl @Inject constructor(
                     ))
                     .byDeleted().eq(false)
                     .blockingGet()
+                    .take(50)  // EMERGENCY FIX: Limit in-memory to prevent OOM until Phase 2 Room DAOs ready
 
                 Log.d(TAG, "Found ${events.size} events for program $programId (filtered by ${allAccessibleOrgUnits.size} org units including children, valid statuses, not deleted)")
 
@@ -861,6 +819,94 @@ class DatasetInstancesRepositoryImpl @Inject constructor(
                 Log.e(TAG, "Failed to skip event", e)
                 Result.failure(e)
             }
+        }
+    }
+
+    // PHASE 2 HELPER: Populate Room cache from SDK data after sync
+    private suspend fun populateTrackerEnrollmentsCache(programId: String) = withContext(Dispatchers.IO) {
+        try {
+            Log.d(TAG, "Populating Room cache for tracker enrollments (program: $programId)")
+
+            // Fetch enrollments from SDK (already downloaded by sync)
+            val sdkEnrollments = d2.enrollmentModule().enrollments()
+                .byProgram().eq(programId)
+                .byDeleted().eq(false)
+                .blockingGet()
+
+            Log.d(TAG, "Found ${sdkEnrollments.size} enrollments in SDK to cache")
+
+            // Convert to Room entities
+            val entities = sdkEnrollments.map { enrollment ->
+                val orgUnit = d2.organisationUnitModule().organisationUnits()
+                    .uid(enrollment.organisationUnit())
+                    .blockingGet()
+
+                com.ash.simpledataentry.data.local.TrackerEnrollmentEntity(
+                    id = enrollment.uid(),
+                    programId = programId,
+                    trackedEntityInstanceId = enrollment.trackedEntityInstance() ?: "",
+                    organisationUnitId = enrollment.organisationUnit() ?: "",
+                    organisationUnitName = orgUnit?.displayName() ?: "Unknown",
+                    enrollmentDate = enrollment.enrollmentDate()?.toString(),
+                    incidentDate = enrollment.incidentDate()?.toString(),
+                    status = enrollment.status()?.name ?: "ACTIVE",
+                    followUp = enrollment.followUp() ?: false,
+                    deleted = enrollment.deleted() ?: false,
+                    lastUpdated = enrollment.lastUpdated()?.toString()
+                )
+            }
+
+            // Clear old cache and insert new data
+            trackerEnrollmentDao.deleteByProgram(programId)
+            trackerEnrollmentDao.insertAll(entities)
+
+            Log.d(TAG, "Room cache populated: ${entities.size} enrollments cached")
+        } catch (e: Exception) {
+            Log.e(TAG, "Failed to populate tracker enrollments cache", e)
+            // Don't throw - cache population failure shouldn't break sync
+        }
+    }
+
+    private suspend fun populateEventInstancesCache(programId: String) = withContext(Dispatchers.IO) {
+        try {
+            Log.d(TAG, "Populating Room cache for event instances (program: $programId)")
+
+            // Fetch events from SDK (already downloaded by sync)
+            val sdkEvents = d2.eventModule().events()
+                .byProgramUid().eq(programId)
+                .byDeleted().eq(false)
+                .blockingGet()
+
+            Log.d(TAG, "Found ${sdkEvents.size} events in SDK to cache")
+
+            // Convert to Room entities
+            val entities = sdkEvents.map { event ->
+                val orgUnit = d2.organisationUnitModule().organisationUnits()
+                    .uid(event.organisationUnit())
+                    .blockingGet()
+
+                com.ash.simpledataentry.data.local.EventInstanceEntity(
+                    id = event.uid(),
+                    programId = programId,
+                    programStageId = event.programStage() ?: "",
+                    organisationUnitId = event.organisationUnit() ?: "",
+                    organisationUnitName = orgUnit?.displayName() ?: "Unknown",
+                    eventDate = event.eventDate()?.toString(),
+                    status = event.status()?.name ?: "ACTIVE",
+                    deleted = event.deleted() ?: false,
+                    lastUpdated = event.lastUpdated()?.toString(),
+                    enrollmentId = event.enrollment()
+                )
+            }
+
+            // Clear old cache and insert new data
+            eventInstanceDao.deleteByProgram(programId)
+            eventInstanceDao.insertAll(entities)
+
+            Log.d(TAG, "Room cache populated: ${entities.size} events cached")
+        } catch (e: Exception) {
+            Log.e(TAG, "Failed to populate event instances cache", e)
+            // Don't throw - cache population failure shouldn't break sync
         }
     }
 }

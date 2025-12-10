@@ -91,8 +91,10 @@ import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import com.ash.simpledataentry.presentation.datasets.components.DatasetIcon
 import com.ash.simpledataentry.presentation.datasets.components.ProgramType
-import com.ash.simpledataentry.presentation.core.DetailedSyncOverlay
-import com.ash.simpledataentry.presentation.core.OverlayLoader
+import com.ash.simpledataentry.presentation.core.AdaptiveLoadingOverlay
+import com.ash.simpledataentry.presentation.core.UiState
+import com.ash.simpledataentry.presentation.core.LoadingOperation
+import com.ash.simpledataentry.presentation.core.BackgroundOperation
 import com.ash.simpledataentry.ui.theme.DHIS2BlueDeep
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -255,7 +257,7 @@ fun DatasetsScreen(
 ) {
     val drawerState = rememberDrawerState(initialValue = DrawerValue.Closed)
     val scope = rememberCoroutineScope()
-    val datasetsState by viewModel.uiState.collectAsState()
+    val uiState by viewModel.uiState.collectAsState()
     val snackbarHostState = remember { SnackbarHostState() }
     var showDeleteConfirmation by remember { mutableStateOf(false) }
     var showFilterSection by remember { mutableStateOf(false) }
@@ -355,15 +357,9 @@ fun DatasetsScreen(
         BaseScreen(
             title = "Home",
             navController = navController,
-            // PHASE 4: Wire up progress indicator for sync operations
-            showProgress = (datasetsState as? DatasetsState.Success)?.isSyncing == true ||
-                          (datasetsState as? DatasetsState.Success)?.isDownloadingData == true,
-            progress = (datasetsState as? DatasetsState.Success)?.detailedSyncProgress?.let { p ->
-                p.overallPercentage.toFloat() / 100f
-            },
             actions = {
-                // Background loading indicator during download (small, non-interactive)
-                if ((datasetsState as? DatasetsState.Success)?.isDownloadingData == true) {
+                // Background loading indicator during download-only sync
+                if ((uiState as? UiState.Success)?.backgroundOperation is BackgroundOperation.Syncing) {
                     CircularProgressIndicator(
                         modifier = Modifier.size(20.dp),
                         strokeWidth = 2.dp,
@@ -371,28 +367,20 @@ fun DatasetsScreen(
                     )
                 }
 
-                // Sync button with loading indicator
+                // Sync button
                 IconButton(
                     onClick = {
-                        if ((datasetsState as? DatasetsState.Success)?.isSyncing != true) {
+                        if (uiState !is UiState.Loading) {
                             viewModel.downloadOnlySync()
                         }
                     }
                 ) {
-                    if ((datasetsState as? DatasetsState.Success)?.isSyncing == true) {
-                        CircularProgressIndicator(
-                            modifier = Modifier.size(24.dp),
-                            strokeWidth = 2.dp,
-                            color = MaterialTheme.colorScheme.primary
-                        )
-                    } else {
-                        Icon(
-                            imageVector = Icons.Default.Sync,
-                            contentDescription = "Download latest data",
-                            tint = TextColor.OnSurface,
-                            modifier = Modifier.size(24.dp)
-                        )
-                    }
+                    Icon(
+                        imageVector = Icons.Default.Sync,
+                        contentDescription = "Download latest data",
+                        tint = TextColor.OnSurface,
+                        modifier = Modifier.size(24.dp)
+                    )
                 }
 
                 IconButton(onClick = { showFilterSection = !showFilterSection }) {
@@ -421,14 +409,17 @@ fun DatasetsScreen(
                 }
             }
         ) {
-            // Use DetailedSyncOverlay for enhanced sync operations
-            DetailedSyncOverlay(
-                progress = (datasetsState as? DatasetsState.Success)?.detailedSyncProgress,
-                onNavigateBack = { navController.popBackStack() },
-                onRetry = { viewModel.syncDatasets(uploadFirst = true) },
-                onCancel = { viewModel.dismissSyncOverlay() },
+            AdaptiveLoadingOverlay(
+                uiState = uiState,
                 modifier = Modifier.fillMaxSize()
             ) {
+                // Extract data safely from UiState
+                val data = when (val state = uiState) {
+                    is UiState.Success -> state.data
+                    is UiState.Error -> state.previousData ?: DatasetsData()
+                    is UiState.Loading -> DatasetsData()
+                }
+
                 Column {
                     // Pull-down filter section
                     AnimatedVisibility(
@@ -451,7 +442,7 @@ fun DatasetsScreen(
                             shape = RoundedCornerShape(topStart = 0.dp, topEnd = 0.dp, bottomStart = 8.dp, bottomEnd = 8.dp)
                         ) {
                             DatasetsFilterSection(
-                                currentFilter = (datasetsState as? DatasetsState.Success)?.currentFilter ?: FilterState(),
+                                currentFilter = data.currentFilter,
                                 onApplyFilter = { newFilter ->
                                     viewModel.applyFilter(newFilter)
                                 }
@@ -460,22 +451,19 @@ fun DatasetsScreen(
                     }
 
                     // Program type filter tabs
-                    if (datasetsState is DatasetsState.Success) {
-                        val successState = datasetsState as DatasetsState.Success
-
-                        ScrollableTabRow(
-                            selectedTabIndex = when (successState.currentProgramType) {
-                                DomainProgramType.ALL -> 0
-                                DomainProgramType.DATASET -> 1
-                                DomainProgramType.TRACKER -> 2
-                                DomainProgramType.EVENT -> 3
-                            },
+                    ScrollableTabRow(
+                        selectedTabIndex = when (data.currentProgramType) {
+                            DomainProgramType.ALL -> 0
+                            DomainProgramType.DATASET -> 1
+                            DomainProgramType.TRACKER -> 2
+                            DomainProgramType.EVENT -> 3
+                        },
                             modifier = Modifier.fillMaxWidth(),
                             containerColor = MaterialTheme.colorScheme.surface,
                             contentColor = MaterialTheme.colorScheme.onSurface,
                             indicator = { tabPositions ->
                                 TabRowDefaults.Indicator(
-                                    modifier = Modifier.tabIndicatorOffset(tabPositions[when (successState.currentProgramType) {
+                                    modifier = Modifier.tabIndicatorOffset(tabPositions[when (data.currentProgramType) {
                                         DomainProgramType.ALL -> 0
                                         DomainProgramType.DATASET -> 1
                                         DomainProgramType.TRACKER -> 2
@@ -487,7 +475,7 @@ fun DatasetsScreen(
                         ) {
                             // All Programs Tab
                             Tab(
-                                selected = successState.currentProgramType == DomainProgramType.ALL,
+                                selected = data.currentProgramType == DomainProgramType.ALL,
                                 onClick = { viewModel.filterByProgramType(DomainProgramType.ALL) },
                                 text = {
                                     Text(
@@ -499,7 +487,7 @@ fun DatasetsScreen(
 
                             // Datasets Tab
                             Tab(
-                                selected = successState.currentProgramType == DomainProgramType.DATASET,
+                                selected = data.currentProgramType == DomainProgramType.DATASET,
                                 onClick = { viewModel.filterByProgramType(DomainProgramType.DATASET) },
                                 text = {
                                     Text(
@@ -511,7 +499,7 @@ fun DatasetsScreen(
 
                             // Tracker Programs Tab
                             Tab(
-                                selected = successState.currentProgramType == DomainProgramType.TRACKER,
+                                selected = data.currentProgramType == DomainProgramType.TRACKER,
                                 onClick = { viewModel.filterByProgramType(DomainProgramType.TRACKER) },
                                 text = {
                                     Text(
@@ -523,7 +511,7 @@ fun DatasetsScreen(
 
                             // Event Programs Tab
                             Tab(
-                                selected = successState.currentProgramType == DomainProgramType.EVENT,
+                                selected = data.currentProgramType == DomainProgramType.EVENT,
                                 onClick = { viewModel.filterByProgramType(DomainProgramType.EVENT) },
                                 text = {
                                     Text(
@@ -533,48 +521,20 @@ fun DatasetsScreen(
                                 }
                             )
                         }
+
+                    // Show sync success message
+                    LaunchedEffect(data.syncMessage) {
+                        data.syncMessage?.let { message ->
+                            snackbarHostState.showSnackbar(message)
+                            // Don't clear immediately - let snackbar show first
+                            kotlinx.coroutines.delay(2000)
+                            viewModel.clearSyncMessage()
+                        }
                     }
 
-                    // Main content
-                    when (datasetsState) {
-                        is DatasetsState.Loading -> {
-                            Box(
-                                modifier = Modifier.fillMaxSize(),
-                                contentAlignment = Alignment.Center
-                            ) {
-                                CircularProgressIndicator()
-                            }
-                        }
-
-                        is DatasetsState.Error -> {
-                            LaunchedEffect(datasetsState) {
-                                snackbarHostState.showSnackbar((datasetsState as DatasetsState.Error).message)
-                            }
-                            Box(
-                                modifier = Modifier.fillMaxSize(),
-                                contentAlignment = Alignment.Center
-                            ) {
-                                Text(
-                                    text = (datasetsState as DatasetsState.Error).message,
-                                    color = MaterialTheme.colorScheme.error,
-                                    textAlign = TextAlign.Center
-                                )
-                            }
-                        }
-
-                        is DatasetsState.Success -> {
-                            val successState = datasetsState as DatasetsState.Success
-                            // Show sync success message
-                            LaunchedEffect(successState.syncMessage) {
-                                successState.syncMessage?.let { message ->
-                                    snackbarHostState.showSnackbar(message)
-                                    viewModel.clearSyncMessage()
-                                }
-                            }
-
-
-                            val programs = successState.filteredPrograms
-                            LazyColumn(
+                    // Main content - programs list
+                    val programs = data.filteredPrograms
+                    LazyColumn(
                                 modifier = Modifier.fillMaxSize(),
                                 contentPadding = PaddingValues(16.dp),
                                 verticalArrangement = Arrangement.spacedBy(8.dp)
@@ -788,5 +748,5 @@ fun DatasetsScreen(
             }
         }
 
-        }
-    }
+
+

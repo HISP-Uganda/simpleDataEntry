@@ -7,9 +7,14 @@ import com.ash.simpledataentry.data.security.AccountEncryption
 import com.ash.simpledataentry.domain.model.SavedAccount
 import com.ash.simpledataentry.domain.repository.SettingsRepository
 import com.ash.simpledataentry.data.sync.BackgroundSyncManager
-import com.ash.simpledataentry.data.local.AppDatabase
+import com.ash.simpledataentry.data.DatabaseProvider
 import com.ash.simpledataentry.data.SessionManager
-// BuildConfig should be automatically available - remove explicit import
+import com.ash.simpledataentry.presentation.core.UiState
+import com.ash.simpledataentry.presentation.core.UiError
+import com.ash.simpledataentry.presentation.core.LoadingOperation
+import com.ash.simpledataentry.presentation.core.BackgroundOperation
+import com.ash.simpledataentry.presentation.core.LoadingProgress
+import com.ash.simpledataentry.util.toUiError
 import dagger.hilt.android.lifecycle.HiltViewModel
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -22,6 +27,22 @@ import java.net.HttpURLConnection
 import java.net.URL
 import javax.inject.Inject
 
+/**
+ * Settings data model - contains only data, no UI state flags
+ */
+data class SettingsData(
+    val accounts: List<SavedAccount> = emptyList(),
+    val isEncryptionAvailable: Boolean = false,
+    val syncFrequency: SyncFrequency = SyncFrequency.DAILY,
+    val updateAvailable: Boolean = false,
+    val latestVersion: String? = null
+)
+
+/**
+ * DEPRECATED: Old state model for backward compatibility
+ * Use UiState<SettingsData> instead
+ */
+@Deprecated("Use UiState<SettingsData> instead")
 data class SettingsState(
     val accounts: List<SavedAccount> = emptyList(),
     val isLoading: Boolean = false,
@@ -51,13 +72,22 @@ class SettingsViewModel @Inject constructor(
     private val accountEncryption: AccountEncryption,
     private val settingsRepository: SettingsRepository,
     private val backgroundSyncManager: BackgroundSyncManager,
-    private val database: AppDatabase,
+    private val databaseProvider: DatabaseProvider,
     private val sessionManager: SessionManager
 ) : ViewModel() {
-    
+
+    // New UiState pattern
+    private val _uiState = MutableStateFlow<UiState<SettingsData>>(
+        UiState.Success(SettingsData())
+    )
+    val uiState: StateFlow<UiState<SettingsData>> = _uiState.asStateFlow()
+
+    // Deprecated state for backward compatibility
+    @Deprecated("Use uiState instead")
     private val _state = MutableStateFlow(SettingsState())
+    @Deprecated("Use uiState instead")
     val state: StateFlow<SettingsState> = _state.asStateFlow()
-    
+
     init {
         checkEncryptionAvailability()
         loadSyncFrequency()
@@ -65,20 +95,51 @@ class SettingsViewModel @Inject constructor(
     
     fun loadAccounts() {
         viewModelScope.launch {
+            // Update both states for backward compatibility
             _state.value = _state.value.copy(isLoading = true, error = null)
-            
+            _uiState.value = UiState.Loading(LoadingOperation.Initial)
+
             try {
                 val accounts = savedAccountRepository.getAllSavedAccounts()
+                val currentData = getCurrentData()
+                val newData = currentData.copy(accounts = accounts)
+
+                // Update new state
+                _uiState.value = UiState.Success(newData)
+
+                // Update old state for backward compatibility
                 _state.value = _state.value.copy(
                     accounts = accounts,
                     isLoading = false
                 )
             } catch (e: Exception) {
+                val uiError = e.toUiError()
+
+                // Update new state
+                _uiState.value = UiState.Error(uiError, getCurrentData())
+
+                // Update old state for backward compatibility
                 _state.value = _state.value.copy(
                     isLoading = false,
-                    error = "Failed to load accounts: ${e.message}"
+                    error = when (uiError) {
+                        is UiError.Network -> uiError.message
+                        is UiError.Server -> uiError.message
+                        is UiError.Local -> uiError.message
+                        else -> "Failed to load accounts"
+                    }
                 )
             }
+        }
+    }
+
+    /**
+     * Helper to get current data from UiState
+     */
+    private fun getCurrentData(): SettingsData {
+        return when (val current = _uiState.value) {
+            is UiState.Success -> current.data
+            is UiState.Error -> current.previousData ?: SettingsData()
+            is UiState.Loading -> SettingsData()
         }
     }
     
@@ -90,18 +151,23 @@ class SettingsViewModel @Inject constructor(
                     // Reload accounts after deletion
                     loadAccounts()
                 } else {
+                    val error = result.exceptionOrNull()?.toUiError()
+                        ?: UiError.Local("Failed to delete account")
+                    _uiState.value = UiState.Error(error, getCurrentData())
                     _state.value = _state.value.copy(
                         error = "Failed to delete account: ${result.exceptionOrNull()?.message}"
                     )
                 }
             } catch (e: Exception) {
+                val uiError = e.toUiError()
+                _uiState.value = UiState.Error(uiError, getCurrentData())
                 _state.value = _state.value.copy(
                     error = "Failed to delete account: ${e.message}"
                 )
             }
         }
     }
-    
+
     fun deleteAllAccounts() {
         viewModelScope.launch {
             try {
@@ -110,18 +176,23 @@ class SettingsViewModel @Inject constructor(
                     // Reload accounts after deletion (should be empty)
                     loadAccounts()
                 } else {
+                    val error = result.exceptionOrNull()?.toUiError()
+                        ?: UiError.Local("Failed to delete all accounts")
+                    _uiState.value = UiState.Error(error, getCurrentData())
                     _state.value = _state.value.copy(
                         error = "Failed to delete all accounts: ${result.exceptionOrNull()?.message}"
                     )
                 }
             } catch (e: Exception) {
+                val uiError = e.toUiError()
+                _uiState.value = UiState.Error(uiError, getCurrentData())
                 _state.value = _state.value.copy(
                     error = "Failed to delete all accounts: ${e.message}"
                 )
             }
         }
     }
-    
+
     fun updateAccountDisplayName(accountId: String, newDisplayName: String) {
         viewModelScope.launch {
             try {
@@ -130,11 +201,16 @@ class SettingsViewModel @Inject constructor(
                     // Reload accounts to reflect changes
                     loadAccounts()
                 } else {
+                    val error = result.exceptionOrNull()?.toUiError()
+                        ?: UiError.Local("Failed to update account")
+                    _uiState.value = UiState.Error(error, getCurrentData())
                     _state.value = _state.value.copy(
                         error = "Failed to update account: ${result.exceptionOrNull()?.message}"
                     )
                 }
             } catch (e: Exception) {
+                val uiError = e.toUiError()
+                _uiState.value = UiState.Error(uiError, getCurrentData())
                 _state.value = _state.value.copy(
                     error = "Failed to update account: ${e.message}"
                 )
@@ -146,8 +222,14 @@ class SettingsViewModel @Inject constructor(
         viewModelScope.launch {
             try {
                 val isAvailable = accountEncryption.isEncryptionAvailable()
+                val currentData = getCurrentData()
+                val newData = currentData.copy(isEncryptionAvailable = isAvailable)
+
+                _uiState.value = UiState.Success(newData)
                 _state.value = _state.value.copy(isEncryptionAvailable = isAvailable)
             } catch (e: Exception) {
+                val uiError = e.toUiError()
+                _uiState.value = UiState.Error(uiError, getCurrentData())
                 _state.value = _state.value.copy(
                     isEncryptionAvailable = false,
                     error = "Failed to check encryption availability: ${e.message}"
@@ -155,8 +237,13 @@ class SettingsViewModel @Inject constructor(
             }
         }
     }
-    
+
     fun clearError() {
+        // Convert error state back to success with previous data
+        val current = _uiState.value
+        if (current is UiState.Error) {
+            _uiState.value = UiState.Success(current.previousData ?: SettingsData())
+        }
         _state.value = _state.value.copy(error = null)
     }
     
@@ -167,28 +254,41 @@ class SettingsViewModel @Inject constructor(
             try {
                 // Persist the setting
                 settingsRepository.setSyncFrequency(frequency)
-                
+
                 // Update UI state
+                val currentData = getCurrentData()
+                val newData = currentData.copy(syncFrequency = frequency)
+                _uiState.value = UiState.Success(newData)
                 _state.value = _state.value.copy(syncFrequency = frequency)
-                
+
                 // Configure background sync with WorkManager
                 backgroundSyncManager.configureSyncSchedule(frequency)
-                
+
             } catch (e: Exception) {
+                val uiError = e.toUiError()
+                _uiState.value = UiState.Error(uiError, getCurrentData())
                 _state.value = _state.value.copy(
                     error = "Failed to save sync frequency: ${e.message}"
                 )
             }
         }
     }
-    
+
     private fun loadSyncFrequency() {
         viewModelScope.launch {
             try {
                 val savedFrequency = settingsRepository.getSyncFrequency()
+                val currentData = getCurrentData()
+                val newData = currentData.copy(syncFrequency = savedFrequency)
+
+                _uiState.value = UiState.Success(newData)
                 _state.value = _state.value.copy(syncFrequency = savedFrequency)
             } catch (e: Exception) {
-                // Use default frequency if loading fails
+                // Use default frequency if loading fails - not an error state
+                val currentData = getCurrentData()
+                val newData = currentData.copy(syncFrequency = SyncFrequency.DAILY)
+
+                _uiState.value = UiState.Success(newData)
                 _state.value = _state.value.copy(syncFrequency = SyncFrequency.DAILY)
             }
         }
@@ -197,30 +297,40 @@ class SettingsViewModel @Inject constructor(
     fun exportData() {
         viewModelScope.launch {
             try {
+                // Show background operation indicator
+                val currentData = getCurrentData()
+                _uiState.value = UiState.Success(
+                    data = currentData,
+                    backgroundOperation = BackgroundOperation.Exporting
+                )
                 _state.value = _state.value.copy(
                     isExporting = true,
                     exportProgress = 0f,
                     error = null
                 )
-                
+
                 // Simulate export progress
                 for (progress in 0..100 step 10) {
                     _state.value = _state.value.copy(exportProgress = progress / 100f)
                     kotlinx.coroutines.delay(200) // Simulate work
                 }
-                
+
                 // TODO: Implement actual data export to ZIP file
                 // This should:
                 // 1. Query all data from Room database
                 // 2. Create offline-compatible data files
                 // 3. Package into ZIP format
                 // 4. Save to external storage or share via intent
-                
+
+                // Clear background operation
+                _uiState.value = UiState.Success(currentData)
                 _state.value = _state.value.copy(
                     isExporting = false,
                     exportProgress = 0f
                 )
             } catch (e: Exception) {
+                val uiError = e.toUiError()
+                _uiState.value = UiState.Error(uiError, getCurrentData())
                 _state.value = _state.value.copy(
                     isExporting = false,
                     exportProgress = 0f,
@@ -233,30 +343,37 @@ class SettingsViewModel @Inject constructor(
     fun deleteAllData() {
         viewModelScope.launch {
             try {
+                // Show background operation indicator
+                val currentData = getCurrentData()
+                _uiState.value = UiState.Success(
+                    data = currentData,
+                    backgroundOperation = BackgroundOperation.Deleting
+                )
                 _state.value = _state.value.copy(
                     isDeleting = true,
                     error = null
                 )
-                
+
                 // 1. Clear all Room database tables
+                val database = databaseProvider.getCurrentDatabase()
                 database.dataValueDraftDao().deleteAllDrafts()
-                database.dataValueDao().deleteAllDataValues() 
+                database.dataValueDao().deleteAllDataValues()
                 database.datasetDao().clearAll()
                 database.dataElementDao().clearAll()
                 database.categoryComboDao().clearAll()
                 database.categoryOptionComboDao().clearAll()
                 database.organisationUnitDao().clearAll()
                 database.cachedUrlDao().clearAll()
-                
+
                 // 2. Clear saved accounts
                 savedAccountRepository.deleteAllAccounts()
-                
+
                 // 3. Clear all settings
                 settingsRepository.clearAllSettings()
-                
+
                 // 4. Cancel any background sync
                 backgroundSyncManager.cancelBackgroundSync()
-                
+
                 // 5. Clear DHIS2 session if active
                 try {
                     if (sessionManager.isSessionActive()) {
@@ -266,15 +383,22 @@ class SettingsViewModel @Inject constructor(
                     // Log but don't fail the deletion for session issues
                     android.util.Log.w("SettingsViewModel", "Failed to clear DHIS2 session", e)
                 }
-                
+
+                // Reset to clean state
+                val cleanData = SettingsData(
+                    accounts = emptyList(),
+                    syncFrequency = SyncFrequency.DAILY
+                )
+                _uiState.value = UiState.Success(cleanData)
                 _state.value = _state.value.copy(
                     isDeleting = false,
-                    // Reset local state after deletion
                     accounts = emptyList(),
-                    syncFrequency = SyncFrequency.DAILY // Reset to default
+                    syncFrequency = SyncFrequency.DAILY
                 )
-                
+
             } catch (e: Exception) {
+                val uiError = e.toUiError()
+                _uiState.value = UiState.Error(uiError, getCurrentData())
                 _state.value = _state.value.copy(
                     isDeleting = false,
                     error = "Failed to delete data: ${e.message}"
@@ -286,24 +410,36 @@ class SettingsViewModel @Inject constructor(
     fun checkForUpdates() {
         viewModelScope.launch {
             try {
+                // Show loading state
+                _uiState.value = UiState.Loading(LoadingOperation.Initial)
                 _state.value = _state.value.copy(
                     updateCheckInProgress = true,
                     error = null
                 )
-                
+
                 val currentVersion = "1.0" // Current app version from build.gradle
                 val latestVersion = fetchLatestVersionFromGitHub()
-                
+
                 val updateAvailable = if (latestVersion != null) {
                     compareVersions(currentVersion, latestVersion) < 0
                 } else false
-                
+
+                // Update data with version check results
+                val currentData = getCurrentData()
+                val newData = currentData.copy(
+                    updateAvailable = updateAvailable,
+                    latestVersion = if (updateAvailable) latestVersion else null
+                )
+
+                _uiState.value = UiState.Success(newData)
                 _state.value = _state.value.copy(
                     updateCheckInProgress = false,
                     updateAvailable = updateAvailable,
                     latestVersion = if (updateAvailable) latestVersion else null
                 )
             } catch (e: Exception) {
+                val uiError = e.toUiError()
+                _uiState.value = UiState.Error(uiError, getCurrentData())
                 _state.value = _state.value.copy(
                     updateCheckInProgress = false,
                     error = "Failed to check for updates: ${e.message}"

@@ -1,0 +1,29 @@
+{
+  "user_id": "sean",
+  "project": "simpleDataEntry",
+  "sdk_version": "2.7.0",
+  "last_updated": "2025-11-28T00:00:00Z",
+  "learned_patterns": {
+    "blocking_sdk_calls": {
+      "preferred_pattern": "repository_suspend_withContext",
+      "confidence": 0.70,
+      "reinforcements": [],
+      "examples": [
+        "DatasetInstancesRepositoryImpl.kt:30-40"
+      ],
+      "notes": "Repository-layer suspend functions with withContext(Dispatchers.IO)"
+    },
+    "metadata_caching": {
+      "pattern": "viewmodel_init_batch_fetch",
+      "confidence": 0.60,
+      "notes": "Batch fetch metadata on initialization, cache for instant lookups"
+    },
+    "error_handling": {
+      "pattern": "try_catch_with_logging",
+      "confidence": 0.85,
+      "fallback_strategy": "return_empty_or_default",
+      "log_level": "Log.e for errors, Log.w for warnings"
+    }
+  },
+  "rejected_patterns": []
+}

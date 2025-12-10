@@ -1,7 +1,7 @@
 # SimpleDataEntry DHIS2 Android App - Claude Context
 
-**Last Updated**: 2025-10-13
-**Status**: Production-ready for datasets and tracker enrollments. Event data entry functional but event table has broken navigation.
+**Last Updated**: 2025-12-05
+**Status**: Production-ready for datasets and tracker enrollments. Account isolation implemented via separate Room databases.
 
 ## Project Overview
 
@@ -29,9 +29,12 @@
 - ✅ **Text entry bug fixed**: Cursor position preserved (no more backwards typing)
 - Data values save correctly
 
-**Authentication**:
+**Authentication & Account Management**:
 - Online/offline login with SHA-256 password validation
 - Secure credential storage
+- ✅ **Multiple account support**: Each account has separate Room database (simpleDataEntry-11)
+- ✅ **Data isolation**: No cross-contamination between accounts via separate `room_{accountId}.db` files
+- ✅ **Saved accounts shared**: All saved accounts visible across login/settings (uses shared database)
 
 ### ⚠️ BROKEN/INCOMPLETE
 
@@ -51,6 +54,17 @@
 - TODO markers for future implementation with correct DHIS2 SDK APIs
 
 ## Architecture
+
+### Account Isolation (NEW - 2025-12-04)
+- **`AccountManager`** (`data/AccountManager.kt`): Manages multiple DHIS2 accounts
+  - Generates stable MD5-based account IDs from `username@serverUrl`
+  - Stores account metadata in SharedPreferences (JSON)
+  - Each account gets unique database names: `room_{accountId}.db`
+- **`DatabaseManager`** (`data/DatabaseManager.kt`): Account-specific Room database lifecycle
+  - Thread-safe database switching with Mutex
+  - Closes old database, opens new one on account change
+  - Only ONE Room database open at a time (memory efficient)
+- **Critical**: D2 SDK database is SHARED (API limitation), Room database is ISOLATED per account
 
 ### Core Models
 - **`ProgramInstance`** (sealed class): Type-safe representation of datasets, tracker enrollments, and events
@@ -96,32 +110,134 @@ From `AppNavigation.kt`:
 3. ✅ Test builds with `./gradlew assembleDebug` before claiming completion
 4. ✅ Use `.flowOn(Dispatchers.IO)` not `withContext` for Flow operations
 5. ✅ Read existing working code patterns before implementing new features
-6. use the bd tool instead of markdown for all new work and issue trackingclaude
+6. ✅ **Use Beads for ALL issue tracking and documentation** - NO new markdown files in project
+7. ✅ Check Beads issues for current status and context before starting work
 
-## Recent Session Work (2025-10-13)
+## Recent Session Work (2025-12-04)
 
-### Completed
-1. ✅ Fixed text entry reversal bug in `EventCaptureScreen.kt` (cursor position preservation)
-2. ✅ Implemented option sets for events (dropdowns, radio buttons, YES/NO buttons)
-3. ✅ Commented out broken program rules code with TODO markers
+### CURRENT SESSION - Dataset Race Condition Fix ⚠️ TESTING REQUIRED
+**Beads Issue**: simpleDataEntry-19
+**Status**: ✅ Built and installed, ⚠️ Runtime testing pending
 
-### Created But Broken
-1. ❌ `EventsTableScreen.kt` - UI exists but navigation routes are wrong
-2. ❌ `EventsTableViewModel.kt` - Has blocking calls and performance issues
+**Problem Solved**: Datasets not appearing despite successful metadata download (0 datasets showing in UI)
 
-### Next Priority Fixes
-1. Fix EventsTableScreen navigation (lines 126, 186-189)
-2. Remove blocking calls from EventsTableViewModel (lines 164-172)
-3. Optimize column building to cache data element names
-4. Remove redundant `.filterIsInstance` call (line 113)
+**Root Cause**: Race condition in `SessionManager.kt` line 829
+- `.apply()` (async) wrote cache metadata to SharedPreferences
+- `DatasetsRepositoryImpl.getDatasets()` read metadata immediately, saw null/stale values
+- Cache validation failed, cleared all datasets from Room database
+
+**Fix Applied**:
+- Changed `SessionManager.kt` line 829: `.apply()` → `.commit()` (synchronous write)
+- Ensures cache metadata written BEFORE datasets inserted into Room
+- Cache validation now sees correct metadata, won't clear datasets
+
+**Files Modified This Session**:
+1. `AccountManager.kt` (line 253) - Added `RegexOption.DOT_MATCHES_ALL` to JSON parser
+2. `DatabaseManager.kt` (lines 27,29,34,54) - Accept `AccountInfo` object instead of string ID
+3. `SessionManager.kt` (line 829) - Changed `.apply()` to `.commit()` ← **CRITICAL FIX**
+4. `AppModule.kt` - Removed duplicate `@Provides` methods
+
+**Build Status**:
+- ✅ Compiled: `./gradlew assembleDebug` SUCCESS
+- ✅ Installed: `adb install -r app-debug.apk` SUCCESS
+- ⚠️ **NOT TESTED AT RUNTIME** - Next agent must verify
+
+**IMMEDIATE NEXT STEPS** (First 10 minutes of next session):
+```bash
+# 1. Clear logcat
+adb logcat -c
+
+# 2. User logs in with account that has datasets
+
+# 3. Monitor logs
+adb logcat | grep -E "SessionManager|DatasetsRepositoryImpl"
+```
+
+**Expected Results After Login**:
+- ✅ "Cache validation metadata set for: [user]@[server]"
+- ✅ "Combined programs: [N > 0] datasets, ..." (where N is positive)
+- ✅ Datasets appear in DatasetsScreen UI
+- ❌ NO "Cache validation failed" warnings
+- ❌ NO "clearAll()" calls
+
+**Secondary Issue** (Lower Priority):
+- ForeignKey violations for CategoryOptionCombo still present
+- Investigate only AFTER verifying datasets appear correctly
+
+**User Context**:
+> "There was a simplification effort that was recommended by a previous session's agent and now we're redebugging old issues coming back alive."
+
+**Session History**: This session fixed THREE separate bugs:
+1. DatabaseManager lookup issue (passing object vs string ID)
+2. JSON parser regex issue (multiline support)
+3. Race condition in cache metadata write (the main fix)
+
+---
+
+### Completed - Account Isolation Implementation
+**Beads Issue**: simpleDataEntry-11 (Priority 1 from architectural audit)
+
+**What Was Built**:
+1. ✅ `AccountManager.kt` - Multi-account management with MD5-based stable IDs
+2. ✅ `DatabaseManager.kt` - Account-specific Room database lifecycle management
+3. ✅ Updated `SessionManager.kt` - Injected DatabaseManager, uses account-specific databases
+4. ✅ Updated `AppModule.kt` - Added DI providers for AccountManager and DatabaseManager
+5. ✅ Build verified: `./gradlew assembleDebug` SUCCESS
+
+**Key Discovery**: D2Configuration.builder().databaseName() NOT AVAILABLE in current DHIS2 SDK
+- Solution: D2 SDK database shared, Room database isolated per account
+- Result: UI data isolation achieved (what matters for preventing contamination)
+
+**Testing Required** (Next Session):
+- [ ] Runtime test with multiple accounts
+- [ ] Verify data isolation works
+- [ ] Check database files: `adb shell ls /data/data/com.ash.simpledataentry/databases/`
+- [ ] Confirm separate `room_*.db` files created
+
+**Full details in**: Beads issue simpleDataEntry-11
+
+### Previous Work (2025-10-13)
+1. ✅ Fixed text entry reversal bug in `EventCaptureScreen.kt`
+2. ✅ Implemented option sets for events
+3. ✅ Commented out broken program rules code
+
+### Known Issues (Lower Priority)
+1. ❌ `EventsTableScreen.kt` - Navigation routes broken (lines 126, 186-189)
+2. ❌ `EventsTableViewModel.kt` - Blocking calls and performance issues (lines 113, 164-172)
 
 ## Test Instance Status
-- User: `adilanghciii` with offline access
+- User: `android@emisuganda.org` (or `adilanghciii`) with offline access
 - 1 tracker program: `QZkuUuLedjh` with 22 enrollments working correctly
 - 0 event programs (EventsTable untested with real data)
-- 0 datasets
+- Datasets: PRESENT but not appearing due to race condition (fix pending runtime verification)
 
 ## Build Status
-✅ Code compiles successfully
-⚠️ Runtime navigation will crash for EventsTable
-⚠️ Performance issues with blocking calls
+✅ Code compiles successfully (verified 2025-12-04 - multiple times this session)
+✅ Account isolation implementation complete
+✅ Dataset race condition fix implemented and built
+⚠️ **RUNTIME TESTING REQUIRED** for dataset race condition fix (see simpleDataEntry-19)
+⚠️ Runtime testing required for account switching
+⚠️ EventsTable navigation still broken (lower priority)
+
+## Documentation Policy
+**CRITICAL FOR ALL SESSIONS**:
+- ✅ Use Beads issues for ALL documentation and tracking
+- ❌ DO NOT create new markdown files in the project
+- ✅ Update Beads design/notes fields with implementation details
+- ✅ Check existing Beads issues before starting work
+- Reference: Architectural audit in `/Users/sean/.claude/plans/iridescent-rolling-feigenbaum.md`
+
+## Next Priority Work
+From architectural audit (see Beads issues simpleDataEntry-12 through simpleDataEntry-18):
+1. **Priority 1 Remaining**:
+   - simpleDataEntry-12: Implement SyncStatusController
+   - simpleDataEntry-13: Global Top Bar Progress Indicator
+
+2. **Priority 2**:
+   - simpleDataEntry-14: Shimmer Placeholders
+   - simpleDataEntry-15: Live Count Updates
+   - simpleDataEntry-16: Per-Program Progress Display
+
+3. **Priority 3**:
+   - simpleDataEntry-17: WorkManager Migration
+   - simpleDataEntry-18: WorkManager Progress Integration

@@ -70,6 +70,28 @@ class EventsTableViewModel @Inject constructor(
     private val _state = MutableStateFlow(EventsTableState())
     val state: StateFlow<EventsTableState> = _state.asStateFlow()
 
+    init {
+        // Account change observer
+        viewModelScope.launch {
+            sessionManager.currentAccountId.collect { accountId ->
+                if (accountId == null) {
+                    resetToInitialState()
+                } else {
+                    val previouslyInitialized = programId.isNotEmpty()
+                    if (previouslyInitialized) {
+                        resetToInitialState()
+                    }
+                }
+            }
+        }
+    }
+
+    private fun resetToInitialState() {
+        programId = ""
+        dataElementNameCache.clear() // CRITICAL: Clear cached names from previous account
+        _state.value = EventsTableState()
+    }
+
     fun initialize(id: String, programName: String) {
         if (id.isNotEmpty() && id != programId) {
             programId = id
@@ -83,7 +105,49 @@ class EventsTableViewModel @Inject constructor(
                 return
             }
 
+            // Pre-load data element names for this program
+            viewModelScope.launch {
+                loadDataElementNamesForProgram(programId)
+            }
+
             loadData()
+        }
+    }
+
+    /**
+     * Pre-load all data element names for the program to avoid blocking calls later
+     */
+    private suspend fun loadDataElementNamesForProgram(programId: String) {
+        try {
+            kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
+                // Get program stages for this program
+                val programStages = d2Instance.programModule().programStages()
+                    .byProgramUid().eq(programId)
+                    .blockingGet()
+
+                // For each stage, get its data elements
+                programStages.forEach { stage ->
+                    val stageDataElements = d2Instance.programModule().programStageDataElements()
+                        .byProgramStage().eq(stage.uid())
+                        .blockingGet()
+
+                    stageDataElements.forEach { psde ->
+                        val dataElementUid = psde.dataElement()?.uid()
+                        if (dataElementUid != null) {
+                            val dataElement = d2Instance.dataElementModule().dataElements()
+                                .uid(dataElementUid)
+                                .blockingGet()
+
+                            dataElement?.let { de ->
+                                dataElementNameCache[de.uid()] = de.displayName() ?: de.uid()
+                            }
+                        }
+                    }
+                }
+                Log.d(TAG, "Pre-loaded ${dataElementNameCache.size} data element names")
+            }
+        } catch (e: Exception) {
+            Log.w(TAG, "Failed to pre-load data element names: ${e.message}")
         }
     }
 
@@ -166,18 +230,10 @@ class EventsTableViewModel @Inject constructor(
             // Get data elements from the event's data values
             firstEvent.dataValues.forEach { dataValue ->
                 if (columns.none { it.id == dataValue.dataElement }) {
-                    // Use cached data element name, or fetch from DHIS2 SDK if not cached
-                    val dataElementName = dataElementNameCache.getOrPut(dataValue.dataElement) {
-                        try {
-                            val de = d2Instance.dataElementModule().dataElements()
-                                .uid(dataValue.dataElement)
-                                .blockingGet()
-                            de?.displayName() ?: dataValue.dataElement
-                        } catch (e: Exception) {
-                            Log.w(TAG, "Failed to load data element name: ${e.message}")
-                            dataValue.dataElement
-                        }
-                    }
+                    // Use cached data element name (pre-loaded in initialize())
+                    // Fallback to data element ID if not found in cache
+                    val dataElementName = dataElementNameCache[dataValue.dataElement]
+                        ?: dataValue.dataElement
 
                     columns.add(
                         EventTableColumn(
