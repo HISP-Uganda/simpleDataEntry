@@ -381,9 +381,24 @@ class SessionManager @Inject constructor(
 
             // Check if critical metadata failed
             if (metadataResult.hasCriticalFailures) {
-                val criticalErrors = metadataResult.criticalFailures.joinToString(", ") { it.type }
-                Log.e("SessionManager", "CRITICAL metadata failures: $criticalErrors")
-                throw IllegalStateException("Critical metadata download failed: $criticalErrors")
+                val criticalErrors = metadataResult.criticalFailures.joinToString(", ") { it.error ?: "Unknown" }
+                Log.e("SessionManager", "CRITICAL metadata failures after all retries: $criticalErrors")
+
+                // Provide actionable error message
+                val userMessage = when {
+                    criticalErrors.contains("Null attribute", ignoreCase = true) ->
+                        "Server has invalid metadata configuration. Please contact your administrator or try a different server."
+                    criticalErrors.contains("timeout", ignoreCase = true) ->
+                        "Connection timed out. Please check your internet and try again."
+                    criticalErrors.contains("Unable to resolve host", ignoreCase = true) ->
+                        "Cannot reach server. Please check your internet connection."
+                    criticalErrors.contains("401", ignoreCase = true) || criticalErrors.contains("Unauthorized", ignoreCase = true) ->
+                        "Authentication failed. Please check your credentials."
+                    else ->
+                        "Failed to download data from server. Error: $criticalErrors"
+                }
+
+                throw IllegalStateException(userMessage)
             }
 
             // Log warnings for non-critical failures
@@ -801,88 +816,97 @@ class SessionManager @Inject constructor(
      * FIXED: Catches JSON errors but continues if critical metadata exists
      */
     /**
-     * Standard metadata download following official SDK patterns
-     * Removes complex verification loops that were causing issues
+     * Resilient metadata download with retry logic
+     * Retries up to 3 times on failure before giving up
      */
     suspend fun downloadMetadataResilient(
         onProgress: (NavigationProgress) -> Unit
     ): MetadataDownloadResult = withContext(Dispatchers.IO) {
         val d2Instance = d2 ?: throw IllegalStateException("D2 not initialized")
 
-        Log.d("SessionManager", "Starting metadata download (non-blocking pattern)...")
+        var lastError: String? = null
+        val maxRetries = 3
 
-        onProgress(NavigationProgress(
-            phase = LoadingPhase.DOWNLOADING_METADATA,
-            overallPercentage = 30,
-            phaseTitle = "Downloading Metadata",
-            phaseDetail = "Fetching metadata from server..."
-        ))
+        for (attempt in 1..maxRetries) {
+            Log.d("SessionManager", "Metadata download attempt $attempt of $maxRetries")
 
-        var downloadError: String? = null
+            onProgress(NavigationProgress(
+                phase = LoadingPhase.DOWNLOADING_METADATA,
+                overallPercentage = 30,
+                phaseTitle = "Downloading Metadata",
+                phaseDetail = if (attempt > 1) "Retrying... (attempt $attempt)" else "Fetching metadata from server..."
+            ))
 
-        try {
-            // Following official DHIS2 Capture app pattern exactly:
-            // Use non-blocking download() with onErrorComplete() to swallow errors
-            // See SyncPresenterImpl.kt lines 214-228 in the official app
-            //
-            // The official app does:
-            //   Completable.fromObservable(d2.metadataModule().download()...)
-            //     .doOnError { Timber.d("error while downloading Metadata") }
-            //     .onErrorComplete()  // <-- Swallows ALL errors
-            //     .blockingAwait()
-            //
-            // This ensures that even if some metadata fails (e.g., a TrackedEntityAttribute
-            // with null required fields), the download continues and saves what it can.
-            io.reactivex.Completable.fromObservable(
-                d2Instance.metadataModule().download()
-                    .doOnNext { progress ->
-                        val percent = progress.percentage() ?: 0.0
-                        Log.d("SessionManager", "Metadata progress: ${percent.toInt()}%")
-                    }
-            )
-            .doOnError { error ->
-                Log.w("SessionManager", "Metadata download error (ignored per official app pattern): ${error.message}")
-                downloadError = error.message
+            var downloadError: String? = null
+
+            try {
+                // Following official DHIS2 Capture app pattern:
+                // Use non-blocking download() with onErrorComplete() to swallow errors
+                io.reactivex.Completable.fromObservable(
+                    d2Instance.metadataModule().download()
+                        .doOnNext { progress ->
+                            val percent = progress.percentage() ?: 0.0
+                            Log.d("SessionManager", "Metadata progress: ${percent.toInt()}%")
+                            onProgress(NavigationProgress(
+                                phase = LoadingPhase.DOWNLOADING_METADATA,
+                                overallPercentage = 30 + (percent * 0.5).toInt(),
+                                phaseTitle = "Downloading Metadata",
+                                phaseDetail = "Progress: ${percent.toInt()}%"
+                            ))
+                        }
+                )
+                .doOnError { error ->
+                    Log.w("SessionManager", "Metadata download error: ${error.message}")
+                    downloadError = error.message
+                }
+                .onErrorComplete() // Swallow errors like official app
+                .blockingAwait()
+
+                Log.d("SessionManager", "Metadata download stream completed for attempt $attempt")
+            } catch (e: Exception) {
+                Log.e("SessionManager", "Metadata download exception: ${e.message}", e)
+                downloadError = e.message
             }
-            .onErrorComplete() // Critical: swallow errors just like official app
-            .blockingAwait()
 
-            Log.d("SessionManager", "✓ Metadata download completed (errors were swallowed if any)")
-        } catch (e: Exception) {
-            // This should rarely happen since onErrorComplete() swallows most errors
-            Log.e("SessionManager", "Unexpected error during metadata download: ${e.message}", e)
-            downloadError = e.message
+            // Check what we have after the download attempt
+            val hasOrgUnits = d2Instance.organisationUnitModule().organisationUnits().blockingCount() > 0
+            val hasPrograms = d2Instance.programModule().programs().blockingCount() > 0
+            val hasDatasets = d2Instance.dataSetModule().dataSets().blockingCount() > 0
+            val hasUser = try {
+                d2Instance.userModule().user().blockingGet() != null
+            } catch (e: Exception) {
+                false
+            }
+
+            Log.d("SessionManager", "Attempt $attempt result: User=$hasUser, OrgUnits=$hasOrgUnits, Programs=$hasPrograms, Datasets=$hasDatasets")
+
+            // Success if we have ANY usable metadata (org units, programs, or datasets)
+            val hasAnyData = hasOrgUnits || hasPrograms || hasDatasets
+
+            if (hasAnyData) {
+                Log.d("SessionManager", "✓ Metadata download successful on attempt $attempt")
+                return@withContext MetadataDownloadResult(
+                    successful = 1,
+                    failed = 0,
+                    criticalFailures = emptyList(),
+                    details = emptyList()
+                )
+            }
+
+            lastError = downloadError ?: "No metadata downloaded"
+
+            if (attempt < maxRetries) {
+                Log.w("SessionManager", "Metadata incomplete, waiting 2s before retry...")
+                kotlinx.coroutines.delay(2000) // Wait 2 seconds before retry
+            }
         }
 
-        // Check what data we have after the download attempt (partial or complete)
-        val hasOrgUnits = d2Instance.organisationUnitModule().organisationUnits().blockingCount() > 0
-        val hasPrograms = d2Instance.programModule().programs().blockingCount() > 0
-        val hasDatasets = d2Instance.dataSetModule().dataSets().blockingCount() > 0
-        val hasUser = try {
-            d2Instance.userModule().user().blockingGet() != null
-        } catch (e: Exception) {
-            false
-        }
-
-        Log.d("SessionManager", "Metadata Status: User=$hasUser, OrgUnits=$hasOrgUnits, Programs=$hasPrograms, Datasets=$hasDatasets")
-
-        // Following official app pattern: if we have ANY usable data, proceed
-        // The user is logged in (that already succeeded), so we should let them
-        // access whatever data is available. They can sync again later.
-        val hasAnyData = hasOrgUnits || hasPrograms || hasDatasets
-
-        // Special case: if we have the user but no other data, the server might
-        // just not have any programs/datasets configured. That's OK too.
-        val canProceed = hasUser || hasAnyData
-
-        if (canProceed && downloadError != null) {
-            Log.w("SessionManager", "Proceeding with partial metadata - user can sync again later")
-        }
-
+        // All retries failed
+        Log.e("SessionManager", "All $maxRetries metadata download attempts failed: $lastError")
         MetadataDownloadResult(
-            successful = if (canProceed) 1 else 0,
-            failed = if (canProceed) 0 else 1,
-            criticalFailures = if (!canProceed) listOf(MetadataTypeResult("CoreMetadata", false, true, downloadError)) else emptyList(),
+            successful = 0,
+            failed = 1,
+            criticalFailures = listOf(MetadataTypeResult("CoreMetadata", false, true, lastError)),
             details = emptyList()
         )
     }
