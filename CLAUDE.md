@@ -1,7 +1,7 @@
 # SimpleDataEntry DHIS2 Android App - Claude Context
 
-**Last Updated**: 2025-12-11
-**Status**: Production-ready for datasets and tracker enrollments. Login flow resilient with retry logic.
+**Last Updated**: 2025-12-17
+**Status**: Production-ready for datasets and tracker enrollments. Login flow resilient. Nested accordion data entry fully functional.
 
 ## Project Overview
 
@@ -16,6 +16,9 @@
 - Offline data entry with sync
 - Period and org unit selection
 - CategoryOptionCombo support
+- ✅ **Nested accordion rendering**: Data elements → Category options → Entry fields
+- ✅ **Polished UI styling**: White cards with left accent, lavender nested accordions
+- ✅ **Has data/No data indicators**: Visual feedback on accordion headers
 
 **Tracker Program Support**:
 - Enrollment listing in table/pivot view (`TrackerEnrollmentTableScreen`)
@@ -114,50 +117,229 @@ From `AppNavigation.kt`:
 6. ✅ **Use Beads for ALL issue tracking and documentation** - NO new markdown files in project
 7. ✅ Check Beads issues for current status and context before starting work
 
-## Recent Session Work (2025-12-11)
+## Recent Session Work (2025-12-17)
 
-### COMPLETED - Login Flow Resilience Fix ✅
+### COMPLETED - Nested Accordion Data Entry System ✅
+**Plan File**: `/Users/sean/.claude/plans/drifting-bouncing-orbit.md`
+**Status**: ✅ Fully functional with polished UI styling
+
+#### Problem Statement
+Dataset data entry with category combinations (disaggregations) was rendering incorrectly:
+- Entry fields appeared as a flat list instead of nested accordions
+- Category option combo lookups failed, resulting in empty entry fields
+- Room database was being wiped during offline login/session restoration
+
+#### Root Cause Analysis (Multi-Layer Issue)
+
+**Layer 1: Stale DAO References**
+- `MetadataCacheService` and `DataEntryRepositoryImpl` were `@Singleton` scoped
+- They captured Room DAOs at construction time via dependency injection
+- When accounts switched, the cached DAOs still pointed to the old/fallback database
+- Result: Service reported 0 dataElements/categoryOptionCombos even though Room had data
+
+**Layer 2: Room Database Hydration**
+- `hydrateRoomFromSdk()` cleared Room tables before inserting SDK data
+- During offline login, SDK returns empty data (can't fetch from server)
+- Result: Room was wiped clean, losing all cached metadata
+
+**Layer 3: Missing Data Element Accordion Wrapper**
+- `SectionContent` was calling `CategoryAccordionRecursive` directly with categories
+- The data element should be the FIRST accordion level, with categories nested inside
+- Result: First category OPTIONS appeared as top-level accordions instead of data elements
+
+**Layer 4: Combo UID Lookup Path Mismatch**
+- `parentPath` included element key prefix (e.g., `["element_abc123", "gradeUid", "sexUid"]`)
+- `optionUidsToComboUid` map was keyed by option UIDs only (e.g., `setOf("gradeUid", "sexUid")`)
+- Result: Lookup always failed, `filteredValues` was always empty
+
+#### Solutions Implemented
+
+**Fix 1: Dynamic DAO Access** (`MetadataCacheService.kt`, `DataEntryRepositoryImpl.kt`)
+```kotlin
+// Before: DAOs captured at construction (stale after account switch)
+@Singleton
+class MetadataCacheService @Inject constructor(
+    private val dataElementDao: DataElementDao,  // Captured once!
+    ...
+)
+
+// After: Dynamic DAO access via DatabaseProvider
+@Singleton
+class MetadataCacheService @Inject constructor(
+    private val databaseProvider: DatabaseProvider
+) {
+    // Always gets current database's DAO
+    private val dataElementDao: DataElementDao
+        get() = databaseProvider.getCurrentDatabase().dataElementDao()
+}
+```
+
+**Fix 2: Protected Room Hydration** (`SessionManager.kt`)
+```kotlin
+// Only clear and re-insert if SDK returns data
+if (dataElements.isNotEmpty()) {
+    db.dataElementDao().clearAll()
+    db.dataElementDao().insertAll(dataElements)
+} else {
+    Log.w("SessionManager", "SDK returned 0 dataElements - preserving existing Room data")
+}
+```
+
+**Fix 3: Data Element Accordion Wrapper** (`EditEntryScreen.kt`)
+```kotlin
+// SectionContent now wraps each data element as FIRST accordion level
+dataElements.forEach { (dataElement, dataElementName) ->
+    DataElementAccordion(
+        header = dataElementName,
+        hasData = hasData,
+        expanded = isExpanded,
+        onToggleExpand = { onToggle(emptyList(), elementKey) }
+    ) {
+        CategoryAccordionRecursive(
+            categories = structure,
+            values = dataElementValues,
+            parentPath = listOf(elementKey),  // Include element in path
+            ...
+        )
+    }
+}
+```
+
+**Fix 4: Option-Only Path for Combo Lookup** (`EditEntryScreen.kt`)
+```kotlin
+// Helper filters out element_ prefix for combo UID lookup
+fun optionOnlyPath(path: List<String>): Set<String> {
+    return path.filter { !it.startsWith("element_") }.toSet()
+}
+
+// Usage: Only use option UIDs for the lookup
+val comboUid = optionUidsToComboUid[optionOnlyPath(fullPath)]
+```
+
+#### Expected Accordion Hierarchy
+```
+Section Header (e.g., "B: Enrolment Information")
+└── Data Element accordion (e.g., "Grade 2 Enrolment") - WHITE card, left accent
+    └── Age Category accordion (e.g., "<7", "7", "8") - LAVENDER background
+        └── Sex columns (Male | Female) - Entry fields
+```
+
+#### UI Styling (Polished Version)
+
+**DataElementAccordion** (first level):
+- White card background with subtle shadow
+- Left accent border (pink/primary if has data, muted if no data)
+- "Has data" / "No data" indicator text
+- Bold title with chevron
+
+**CategoryAccordion** (nested levels):
+- Light lavender/purple background (`surfaceVariant`)
+- Simpler, smaller styling
+- Medium font weight
+
+#### Files Modified
+1. `MetadataCacheService.kt` - Dynamic DAO access via DatabaseProvider
+2. `DataEntryRepositoryImpl.kt` - Dynamic DAO access via DatabaseProvider
+3. `AppModule.kt` - Updated provider methods for new constructor signatures
+4. `SessionManager.kt` - Protected Room hydration, diagnostic logging
+5. `EditEntryScreen.kt` - Data element wrapper, option-only path lookup, styling
+
+---
+
+### COMPLETED - Login Flow Resilience (DHIS2 Capture App Pattern) ✅
 **Plan File**: `/Users/sean/.claude/plans/parsed-cooking-taco.md`
-**Status**: ✅ Implemented, built, installed, and verified working
+**Status**: ✅ Implemented, verified working
 
-**Problem Solved**: Login completes but metadata/data doesn't download on some DHIS2 servers
+#### Design Philosophy: Matching Official DHIS2 Android Capture App
+
+The official DHIS2 Android Capture app handles unreliable metadata downloads gracefully. Our implementation now mirrors their approach:
+
+1. **Incremental Metadata Download**: SDK saves metadata as it downloads (not transactional)
+2. **Retry on Failure**: Up to 3 retry attempts with delays
+3. **Usable Metadata Check**: Verify essential data exists after each attempt
+4. **User-Friendly Errors**: Translate technical errors to actionable messages
+
+#### Problem Solved
+Login completes but metadata/data doesn't download on some DHIS2 servers:
 - Metadata download failed at 41% with "NullPointerException: Null attribute"
 - UI showed nothing after login (empty dataset list)
 - BackgroundSyncWorker failed to instantiate due to WorkManager/Hilt conflict
 
-**Root Cause Analysis**:
+#### Root Cause Analysis
 - SDK metadata download is **incremental** (not transactional) - saves as it goes
 - When error occurred at 41%, OrgUnits/Programs/Datasets hadn't been downloaded yet
 - Official DHIS2 Capture app uses retry logic and `WAS_INITIAL_SYNC_DONE` flag pattern
 - WorkManager's default initializer was running before Hilt could provide workers
 
-**Fixes Applied**:
+#### Fixes Applied
 
-1. **`SessionManager.kt` - Retry Logic** (lines ~807-888):
-   - Rewrote `downloadMetadataResilient()` to retry up to 3 times
-   - 2-second delay between retry attempts
-   - Checks for usable metadata (OrgUnits, Programs, or Datasets) after each attempt
-   - Clear progress updates: "Retrying... (attempt 2)"
+**1. Resilient Metadata Download** (`SessionManager.kt`):
+```kotlin
+private suspend fun downloadMetadataResilient(): Result<Unit> {
+    var lastError: Throwable? = null
+    repeat(3) { attempt ->
+        try {
+            d2.metadataModule().download().await()
 
-2. **`SessionManager.kt` - User-Friendly Errors** (lines 382-402):
-   - "Null attribute" → "Server has invalid metadata configuration..."
-   - Timeout → "Connection timed out. Please check your internet..."
-   - Unable to resolve host → "Cannot reach server..."
-   - 401/Unauthorized → "Authentication failed..."
+            // Check if we got usable metadata
+            val hasOrgUnits = d2.organisationUnitModule().organisationUnits()
+                .blockingCount() > 0
+            val hasPrograms = d2.programModule().programs().blockingCount() > 0
+            val hasDatasets = d2.dataSetModule().dataSets().blockingCount() > 0
 
-3. **`AndroidManifest.xml` - WorkManager Fix** (lines 25-35):
-   - Added provider block to disable default WorkManagerInitializer
-   - Allows Hilt to provide `@HiltWorker`-annotated `BackgroundSyncWorker`
-   - Fixes `NoSuchMethodException: BackgroundSyncWorker.<init>` error
+            if (hasOrgUnits || hasPrograms || hasDatasets) {
+                return Result.success(Unit)  // Success!
+            }
+        } catch (e: Exception) {
+            lastError = e
+            if (attempt < 2) {
+                updateProgress("Retrying... (attempt ${attempt + 2})")
+                delay(2000)
+            }
+        }
+    }
+    return Result.failure(lastError ?: Exception("Metadata download failed"))
+}
+```
 
-**Build & Test Status**:
-- ✅ `./gradlew assembleDebug` SUCCESS
-- ✅ APK installed on device SUCCESS
-- ✅ **RUNTIME VERIFIED WORKING** by user
+**2. User-Friendly Error Messages** (`SessionManager.kt`):
+| Technical Error | User Message |
+|----------------|--------------|
+| "Null attribute" | "Server has invalid metadata configuration. Contact administrator." |
+| Timeout | "Connection timed out. Please check your internet connection." |
+| Unable to resolve host | "Cannot reach server. Check your connection and server URL." |
+| 401/Unauthorized | "Authentication failed. Please check your credentials." |
+
+**3. WorkManager/Hilt Integration** (`AndroidManifest.xml`):
+```xml
+<provider
+    android:name="androidx.startup.InitializationProvider"
+    android:authorities="${applicationId}.androidx-startup"
+    android:exported="false"
+    tools:node="merge">
+    <meta-data
+        android:name="androidx.work.WorkManagerInitializer"
+        android:value="androidx.startup"
+        tools:node="remove" />
+</provider>
+```
+
+#### Session Restoration Flow
+```
+App Launch
+├── Check for existing session (SharedPreferences)
+├── If session exists:
+│   ├── Restore D2 instance
+│   ├── Check Room database has data
+│   │   ├── If empty: Re-hydrate from SDK cache
+│   │   └── If has data: Use existing data
+│   └── Navigate to home screen
+└── If no session: Show login screen
+```
 
 ---
 
-### Previous Work (2025-12-04)
+### Previous Work (2025-12-11)
 
 **Dataset Race Condition Fix** (simpleDataEntry-19):
 - Changed `SessionManager.kt`: `.apply()` → `.commit()` for synchronous SharedPreferences write
@@ -179,10 +361,12 @@ From `AppNavigation.kt`:
 - Login flow: Resilient across different DHIS2 server configurations
 
 ## Build Status
-✅ Code compiles successfully (verified 2025-12-11)
+✅ Code compiles successfully (verified 2025-12-17)
+✅ Nested accordion data entry fully functional with polished UI
 ✅ Login flow resilience implemented and verified working
 ✅ Account isolation implementation complete
 ✅ Dataset race condition fix verified
+✅ Dynamic DAO access prevents stale reference issues
 ⚠️ EventsTable navigation still broken (lower priority)
 
 ## Documentation Policy
