@@ -10,6 +10,7 @@ import kotlinx.coroutines.async
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.first
 import org.hisp.dhis.android.core.D2
 import org.hisp.dhis.android.core.D2Configuration
 import org.hisp.dhis.android.core.D2Manager
@@ -1101,21 +1102,46 @@ class SessionManager @Inject constructor(
         val fetchTime = System.currentTimeMillis() - startTime
 
         // Insert all data sequentially (Room doesn't handle parallel writes well)
+        // CRITICAL: Log what SDK returns to diagnose empty Room issues
+        Log.d("SessionManager", "SDK returned: ${datasets.size} datasets, ${dataElements.size} dataElements, ${categoryCombos.size} categoryCombos, ${categoryOptionCombos.size} COCs, ${orgUnits.size} orgUnits")
+
         db.datasetDao().clearAll()
         db.datasetDao().insertAll(datasets)
         Log.d("SessionManager", "Hydrated Room with ${datasets.size} datasets")
 
-        db.dataElementDao().clearAll()
-        db.dataElementDao().insertAll(dataElements)
+        // CRITICAL FIX: Only clear and re-insert if SDK returned data
+        // This prevents wiping Room when SDK returns empty (e.g., during offline mode)
+        if (dataElements.isNotEmpty()) {
+            db.dataElementDao().clearAll()
+            db.dataElementDao().insertAll(dataElements)
+            Log.d("SessionManager", "Hydrated Room with ${dataElements.size} dataElements")
+        } else {
+            Log.w("SessionManager", "SDK returned 0 dataElements - preserving existing Room data")
+        }
 
-        db.categoryComboDao().clearAll()
-        db.categoryComboDao().insertAll(categoryCombos)
+        if (categoryCombos.isNotEmpty()) {
+            db.categoryComboDao().clearAll()
+            db.categoryComboDao().insertAll(categoryCombos)
+            Log.d("SessionManager", "Hydrated Room with ${categoryCombos.size} categoryCombos")
+        } else {
+            Log.w("SessionManager", "SDK returned 0 categoryCombos - preserving existing Room data")
+        }
 
-        db.categoryOptionComboDao().clearAll()
-        db.categoryOptionComboDao().insertAll(categoryOptionCombos)
+        if (categoryOptionCombos.isNotEmpty()) {
+            db.categoryOptionComboDao().clearAll()
+            db.categoryOptionComboDao().insertAll(categoryOptionCombos)
+            Log.d("SessionManager", "Hydrated Room with ${categoryOptionCombos.size} categoryOptionCombos")
+        } else {
+            Log.w("SessionManager", "SDK returned 0 categoryOptionCombos - preserving existing Room data")
+        }
 
-        db.organisationUnitDao().clearAll()
-        db.organisationUnitDao().insertAll(orgUnits)
+        if (orgUnits.isNotEmpty()) {
+            db.organisationUnitDao().clearAll()
+            db.organisationUnitDao().insertAll(orgUnits)
+            Log.d("SessionManager", "Hydrated Room with ${orgUnits.size} orgUnits")
+        } else {
+            Log.w("SessionManager", "SDK returned 0 orgUnits - preserving existing Room data")
+        }
 
         // PHASE 2 FIX: Insert tracker and event programs into Room
         db.trackerProgramDao().clearAll()
@@ -1267,8 +1293,32 @@ class SessionManager @Inject constructor(
                 // Without this, the fallback database is used and datasets won't appear
                 val activeAccountInfo = accountManager.getActiveAccount(context)
                 if (activeAccountInfo != null) {
-                    databaseManager.getDatabaseForAccount(context, activeAccountInfo)
+                    val db = databaseManager.getDatabaseForAccount(context, activeAccountInfo)
                     Log.d("SessionManager", "Switched to account database: ${activeAccountInfo.roomDatabaseName}")
+
+                    // CRITICAL FIX: Check if Room database is hydrated, re-hydrate if empty
+                    // This handles cases where Room was cleared, or a new account was created
+                    // NOTE: Use AND logic - we need ALL critical metadata tables populated
+                    val dataElements = db.dataElementDao().getAll()
+                    val categoryOptionCombos = db.categoryOptionComboDao().getAll()
+                    val datasets = db.datasetDao().getAll().first()
+
+                    // Check if critical metadata exists (dataElements and categoryOptionCombos are essential for data entry)
+                    val hasFullMetadata = dataElements.isNotEmpty() && categoryOptionCombos.isNotEmpty()
+                    Log.d("SessionManager", "Room metadata check: ${dataElements.size} dataElements, ${categoryOptionCombos.size} COCs, ${datasets.size} datasets")
+
+
+                    if (!hasFullMetadata) {
+                        Log.w("SessionManager", "Room database is empty - triggering re-hydration from SDK cache")
+                        try {
+                            hydrateRoomFromSdk(context, db)
+                            Log.d("SessionManager", "Room re-hydration completed successfully")
+                        } catch (e: Exception) {
+                            Log.e("SessionManager", "Failed to re-hydrate Room: ${e.message}")
+                        }
+                    } else {
+                        Log.d("SessionManager", "Room database has metadata, skipping hydration")
+                    }
 
                     // Emit account ID to trigger ViewModel reloads
                     // This ensures DatasetsViewModel reloads from the correct database

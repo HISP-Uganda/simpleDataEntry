@@ -215,3 +215,52 @@ fun GroupedRadioButtons(
         }
     }
 }
+
+/**
+ * Grouped checkboxes for multi-select boolean fields detected from validation rules.
+ */
+@Composable
+fun GroupedCheckboxes(
+    groupTitle: String,
+    fields: List<DataValue>,
+    calculatedValues: Map<String, String>,
+    isRequired: Boolean = false,
+    enabled: Boolean = true,
+    onFieldToggled: (DataValue, Boolean) -> Unit,
+    modifier: Modifier = Modifier
+) {
+    Column(modifier = modifier) {
+        Text(
+            text = if (isRequired) "$groupTitle *" else groupTitle,
+            style = MaterialTheme.typography.titleSmall
+        )
+        Spacer(modifier = Modifier.height(8.dp))
+
+        fields.forEach { field ->
+            val resolvedValue = calculatedValues[field.dataElement] ?: field.value
+            val isChecked = resolvedValue?.lowercase() in listOf("1", "true", "yes")
+
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(vertical = 4.dp),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Checkbox(
+                    checked = isChecked,
+                    onCheckedChange = { checked ->
+                        if (enabled) {
+                            onFieldToggled(field, checked)
+                        }
+                    },
+                    enabled = enabled
+                )
+                Spacer(modifier = Modifier.width(8.dp))
+                Text(
+                    text = field.dataElementName,
+                    style = MaterialTheme.typography.bodyMedium
+                )
+            }
+        }
+    }
+}

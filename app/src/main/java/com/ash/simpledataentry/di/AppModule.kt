@@ -270,19 +270,11 @@ object AppModule {
     @Singleton
     fun provideMetadataCacheService(
         sessionManager: SessionManager,
-        dataElementDao: DataElementDao,
-        categoryComboDao: CategoryComboDao,
-        categoryOptionComboDao: CategoryOptionComboDao,
-        organisationUnitDao: OrganisationUnitDao,
-        dataValueDao: DataValueDao
+        databaseProvider: DatabaseProvider
     ): MetadataCacheService {
         return MetadataCacheService(
             sessionManager,
-            dataElementDao,
-            categoryComboDao,
-            categoryOptionComboDao,
-            organisationUnitDao,
-            dataValueDao
+            databaseProvider
         )
     }
 
@@ -323,12 +315,7 @@ object AppModule {
     @Singleton
     fun provideDataEntryRepository(
         sessionManager: SessionManager,
-        draftDao: DataValueDraftDao,
-        dataElementDao: DataElementDao,
-        categoryComboDao: CategoryComboDao,
-        categoryOptionComboDao: CategoryOptionComboDao,
-        organisationUnitDao: OrganisationUnitDao,
-        dataValueDao: DataValueDao,
+        databaseProvider: DatabaseProvider,
         metadataCacheService: MetadataCacheService,
         networkStateManager: NetworkStateManager,
         syncQueueManager: SyncQueueManager,
@@ -336,13 +323,8 @@ object AppModule {
     ): DataEntryRepository {
         return DataEntryRepositoryImpl(
             sessionManager,
-            draftDao,
-            dataElementDao,
-            categoryComboDao,
-            categoryOptionComboDao,
-            organisationUnitDao,
+            databaseProvider,
             context,
-            dataValueDao,
             metadataCacheService,
             networkStateManager,
             syncQueueManager

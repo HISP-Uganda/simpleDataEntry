@@ -7,10 +7,10 @@
       </SelectionState>
       <SelectionState runConfigName="SimpleDataEntry.app">
         <option name="selectionMode" value="DROPDOWN" />
-        <DropdownSelection timestamp="2025-11-26T11:20:49.657565Z">
+        <DropdownSelection timestamp="2025-12-17T07:16:36.265465Z">
           <Target type="DEFAULT_BOOT">
             <handle>
-              <DeviceId pluginId="Default" identifier="serial=127.0.0.1:6555;connection=dabbad5a" />
+              <DeviceId pluginId="Default" identifier="serial=127.0.0.1:6555;connection=606da48c" />
             </handle>
           </Target>
         </DropdownSelection>

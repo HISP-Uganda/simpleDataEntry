@@ -14,6 +14,7 @@ class DataElementGroupingAnalyzer {
     companion object {
         private const val TAG = "GroupingAnalyzer"
         private const val DEFAULT_CATEGORY_COMBO = "HllvX50cXC0"
+        private const val ENABLE_VERBOSE_LOGS = false
     }
 
     /**
@@ -33,11 +34,11 @@ class DataElementGroupingAnalyzer {
         // Strategy 0.5: HIGHEST CONFIDENCE - Validation rule analysis (ALWAYS RUNS)
         // PHASE 6: Validation rules are the ULTIMATE authority - they OVERRIDE all other strategies
         if (validationRules.isNotEmpty()) {
-            Log.d(TAG, "=== PHASE 6: Validation rules take precedence (ULTIMATE SOURCE OF TRUTH) ===")
-            Log.d(TAG, "=== STRATEGY 0.5: Validation rule-based grouping (${validationRules.size} rules) ===")
+            if (ENABLE_VERBOSE_LOGS) Log.d(TAG, "=== PHASE 6: Validation rules take precedence (ULTIMATE SOURCE OF TRUTH) ===")
+            if (ENABLE_VERBOSE_LOGS) Log.d(TAG, "=== STRATEGY 0.5: Validation rule-based grouping (${validationRules.size} rules) ===")
             val validationGroups = extractGroupsFromValidationRules(dataElements, validationRules)
             if (validationGroups.isNotEmpty()) {
-                Log.d(TAG, "Found ${validationGroups.size} validation-rule-based groups (HIGHEST confidence)")
+                if (ENABLE_VERBOSE_LOGS) Log.d(TAG, "Found ${validationGroups.size} validation-rule-based groups (HIGHEST confidence)")
                 strategies.addAll(validationGroups)
 
                 // Remove already grouped elements
@@ -55,7 +56,7 @@ class DataElementGroupingAnalyzer {
         // Strategy 1: HIGH CONFIDENCE - Category Combo based grouping
         val categoryGroups = groupByCategoryCombos(dataElements, categoryComboStructures)
         if (categoryGroups.isNotEmpty()) {
-            Log.d(TAG, "Found ${categoryGroups.size} category combo groups (HIGH confidence)")
+            if (ENABLE_VERBOSE_LOGS) Log.d(TAG, "Found ${categoryGroups.size} category combo groups (HIGH confidence)")
             strategies.addAll(categoryGroups)
 
             // Remove already grouped elements
@@ -91,7 +92,7 @@ class DataElementGroupingAnalyzer {
             val structure = categoryComboStructures[firstCombo.categoryOptionCombo]
 
             if (structure != null && structure.isNotEmpty()) {
-                Log.d(TAG, "Category combo group: ${firstCombo.dataElementName} with ${combos.size} combos")
+                if (ENABLE_VERBOSE_LOGS) Log.d(TAG, "Category combo group: ${firstCombo.dataElementName} with ${combos.size} combos")
 
                 GroupingStrategy(
                     confidence = ConfidenceLevel.HIGH,
@@ -122,7 +123,7 @@ class DataElementGroupingAnalyzer {
         // Strategy 2: MEDIUM CONFIDENCE - Dimensional pattern recognition
         val dimensionalGroups = extractDimensionalPatterns(remaining)
         if (dimensionalGroups.isNotEmpty()) {
-            Log.d(TAG, "Found ${dimensionalGroups.size} dimensional pattern groups (MEDIUM confidence)")
+            if (ENABLE_VERBOSE_LOGS) Log.d(TAG, "Found ${dimensionalGroups.size} dimensional pattern groups (MEDIUM confidence)")
             strategies.addAll(dimensionalGroups)
 
             val grouped = dimensionalGroups.flatMap { it.members }.toSet()
@@ -132,7 +133,7 @@ class DataElementGroupingAnalyzer {
         // Strategy 3: MEDIUM CONFIDENCE - Option set semantic analysis
         val optionSetGroups = analyzeOptionSetGrouping(remaining, optionSets)
         if (optionSetGroups.isNotEmpty()) {
-            Log.d(TAG, "Found ${optionSetGroups.size} option set groups (MEDIUM confidence)")
+            if (ENABLE_VERBOSE_LOGS) Log.d(TAG, "Found ${optionSetGroups.size} option set groups (MEDIUM confidence)")
             strategies.addAll(optionSetGroups)
 
             val grouped = optionSetGroups.flatMap { it.members }.toSet()
@@ -142,7 +143,7 @@ class DataElementGroupingAnalyzer {
         // Strategy 3.5: MEDIUM CONFIDENCE - Boolean mutually exclusive detection (without option sets)
         val booleanGroups = detectMutuallyExclusiveBooleans(remaining)
         if (booleanGroups.isNotEmpty()) {
-            Log.d(TAG, "Found ${booleanGroups.size} mutually exclusive boolean groups (MEDIUM confidence)")
+            if (ENABLE_VERBOSE_LOGS) Log.d(TAG, "Found ${booleanGroups.size} mutually exclusive boolean groups (MEDIUM confidence)")
             strategies.addAll(booleanGroups)
 
             val grouped = booleanGroups.flatMap { it.members }.toSet()
@@ -154,7 +155,7 @@ class DataElementGroupingAnalyzer {
         if (remaining.size >= 2) {
             val semanticClusters = clusterBySemanticSimilarity(remaining)
             if (semanticClusters.isNotEmpty()) {
-                Log.d(TAG, "Found ${semanticClusters.size} semantic clusters (LOW confidence)")
+                if (ENABLE_VERBOSE_LOGS) Log.d(TAG, "Found ${semanticClusters.size} semantic clusters (LOW confidence)")
                 strategies.addAll(semanticClusters)
 
                 val grouped = semanticClusters.flatMap { it.members }.toSet()
@@ -164,7 +165,7 @@ class DataElementGroupingAnalyzer {
 
         // Fallback: FLAT_LIST for any remaining ungrouped elements
         if (remaining.isNotEmpty()) {
-            Log.d(TAG, "${remaining.size} elements remain ungrouped - using FLAT_LIST")
+            if (ENABLE_VERBOSE_LOGS) Log.d(TAG, "${remaining.size} elements remain ungrouped - using FLAT_LIST")
             strategies.add(
                 GroupingStrategy(
                     confidence = ConfidenceLevel.LOW,
@@ -229,16 +230,16 @@ class DataElementGroupingAnalyzer {
             // Build inferred category combo from dimensional pattern
             val inferredCatCombo = buildInferredCategoryCombo(baseName, dimensions, members)
 
-            Log.d(TAG, "Dimensional pattern: '$baseName' with ${dimensions.size} dimensions: ${dimensions.map { "${it.name}(${it.values.size})" }}")
+            if (ENABLE_VERBOSE_LOGS) Log.d(TAG, "Dimensional pattern: '$baseName' with ${dimensions.size} dimensions: ${dimensions.map { "${it.name}(${it.values.size})" }}")
             if (inferredCatCombo != null) {
-                Log.d(TAG, "  Inferred CategoryCombo: ${inferredCatCombo.name}")
+                if (ENABLE_VERBOSE_LOGS) Log.d(TAG, "  Inferred CategoryCombo: ${inferredCatCombo.name}")
                 inferredCatCombo.categories.forEach { cat ->
-                    Log.d(TAG, "    - ${cat.name}: ${cat.categoryOptions.joinToString(", ")}")
+                    if (ENABLE_VERBOSE_LOGS) Log.d(TAG, "    - ${cat.name}: ${cat.categoryOptions.joinToString(", ")}")
                 }
                 if (inferredCatCombo.isConditional) {
-                    Log.d(TAG, "    Conditional rules: ${inferredCatCombo.conditionalRules.joinToString("; ")}")
+                    if (ENABLE_VERBOSE_LOGS) Log.d(TAG, "    Conditional rules: ${inferredCatCombo.conditionalRules.joinToString("; ")}")
                 }
-                Log.d(TAG, "    Completeness: ${inferredCatCombo.actualCombinations}/${inferredCatCombo.totalExpectedCombinations} (${(inferredCatCombo.completenessRatio * 100).toInt()}%)")
+                if (ENABLE_VERBOSE_LOGS) Log.d(TAG, "    Completeness: ${inferredCatCombo.actualCombinations}/${inferredCatCombo.totalExpectedCombinations} (${(inferredCatCombo.completenessRatio * 100).toInt()}%)")
             }
 
             GroupingStrategy(
@@ -451,7 +452,7 @@ class DataElementGroupingAnalyzer {
 
                 val groupTitle = extractCommonConcept(fields.map { it.dataElementName })
 
-                Log.d(TAG, "Option set group: '$groupTitle' (${fields.size} fields, exclusivity: ${(exclusivityScore * 100).toInt()}%, type: $groupType)")
+                if (ENABLE_VERBOSE_LOGS) Log.d(TAG, "Option set group: '$groupTitle' (${fields.size} fields, exclusivity: ${(exclusivityScore * 100).toInt()}%, type: $groupType)")
 
                 strategies.add(
                     GroupingStrategy(
@@ -469,7 +470,7 @@ class DataElementGroupingAnalyzer {
                 // Non-YES/NO option sets - treat as semantic cluster if similar names
                 val commonConcept = extractCommonConcept(fields.map { it.dataElementName })
                 if (commonConcept.length >= 5) {
-                    Log.d(TAG, "Option set cluster: '$commonConcept' (${fields.size} fields with shared option set)")
+                    if (ENABLE_VERBOSE_LOGS) Log.d(TAG, "Option set cluster: '$commonConcept' (${fields.size} fields with shared option set)")
 
                     strategies.add(
                         GroupingStrategy(
@@ -505,7 +506,7 @@ class DataElementGroupingAnalyzer {
         val grouped = mutableSetOf<DataValue>()
 
         // PASS 1: DELIMITER-BASED EXTRACTION
-        Log.d(TAG, "=== PASS 1: Delimiter-based extraction ===")
+        if (ENABLE_VERBOSE_LOGS) Log.d(TAG, "=== PASS 1: Delimiter-based extraction ===")
         val pass1Groups = extractByDelimiter(candidates)
         pass1Groups.forEach { (subject, fields) ->
             if (fields.size >= 2) {
@@ -513,7 +514,7 @@ class DataElementGroupingAnalyzer {
                 if (group != null) {
                     strategies.add(group)
                     grouped.addAll(fields)
-                    Log.d(TAG, "PASS 1 ✓: '$subject' -> ${fields.size} fields")
+                    if (ENABLE_VERBOSE_LOGS) Log.d(TAG, "PASS 1 ✓: '$subject' -> ${fields.size} fields")
                 }
             }
         }
@@ -521,7 +522,7 @@ class DataElementGroupingAnalyzer {
         // PASS 2: COMMON WORD-SEQUENCE EXTRACTION
         val remainingAfterPass1 = candidates.filter { it !in grouped }
         if (remainingAfterPass1.size >= 2) {
-            Log.d(TAG, "=== PASS 2: Word-sequence (${remainingAfterPass1.size} remaining) ===")
+            if (ENABLE_VERBOSE_LOGS) Log.d(TAG, "=== PASS 2: Word-sequence (${remainingAfterPass1.size} remaining) ===")
             val pass2Groups = extractByCommonWordSequence(remainingAfterPass1)
             pass2Groups.forEach { (subject, fields) ->
                 if (fields.size >= 2) {
@@ -529,7 +530,7 @@ class DataElementGroupingAnalyzer {
                     if (group != null) {
                         strategies.add(group)
                         grouped.addAll(fields)
-                        Log.d(TAG, "PASS 2 ✓: '$subject' -> ${fields.size} fields")
+                        if (ENABLE_VERBOSE_LOGS) Log.d(TAG, "PASS 2 ✓: '$subject' -> ${fields.size} fields")
                     }
                 }
             }
@@ -538,7 +539,7 @@ class DataElementGroupingAnalyzer {
         // PASS 3: SINGLE-WORD SUBJECT EXTRACTION
         val remainingAfterPass2 = candidates.filter { it !in grouped }
         if (remainingAfterPass2.size >= 2) {
-            Log.d(TAG, "=== PASS 3: Single-word (${remainingAfterPass2.size} remaining) ===")
+            if (ENABLE_VERBOSE_LOGS) Log.d(TAG, "=== PASS 3: Single-word (${remainingAfterPass2.size} remaining) ===")
             val pass3Groups = extractBySingleWordSubject(remainingAfterPass2)
             pass3Groups.forEach { (subject, fields) ->
                 if (fields.size >= 2) {
@@ -546,7 +547,7 @@ class DataElementGroupingAnalyzer {
                     if (group != null) {
                         strategies.add(group)
                         grouped.addAll(fields)
-                        Log.d(TAG, "PASS 3 ✓: '$subject' -> ${fields.size} fields")
+                        if (ENABLE_VERBOSE_LOGS) Log.d(TAG, "PASS 3 ✓: '$subject' -> ${fields.size} fields")
                     }
                 }
             }
@@ -599,7 +600,7 @@ class DataElementGroupingAnalyzer {
                     val subject = parentheticalMatch.groupValues[1].trim()
                     if (subject.length >= 3) {
                         bySubject.getOrPut(subject) { mutableListOf() }.add(field)
-                        Log.d(TAG, "  Parenthetical pattern: '$subject' ← '${field.dataElementName}'")
+                        if (ENABLE_VERBOSE_LOGS) Log.d(TAG, "  Parenthetical pattern: '$subject' ← '${field.dataElementName}'")
                     }
                 }
             }
@@ -693,7 +694,7 @@ class DataElementGroupingAnalyzer {
         }
 
         if (matchesTaxonomy) {
-            Log.d(TAG, "  Validation: Single-word group '$subject' matches taxonomy ✓")
+            if (ENABLE_VERBOSE_LOGS) Log.d(TAG, "  Validation: Single-word group '$subject' matches taxonomy ✓")
             return true
         }
 
@@ -705,7 +706,7 @@ class DataElementGroupingAnalyzer {
         val maxWordCount = options.maxOfOrNull { it.split(Regex("\\s+")).size } ?: 0
 
         if (allShort && allDistinct && maxWordCount <= 3) {
-            Log.d(TAG, "  Validation: Single-word group '$subject' has short distinct options ✓")
+            if (ENABLE_VERBOSE_LOGS) Log.d(TAG, "  Validation: Single-word group '$subject' has short distinct options ✓")
             return true
         }
 
@@ -716,19 +717,19 @@ class DataElementGroupingAnalyzer {
         )
 
         if (subject.lowercase() in genericWords) {
-            Log.d(TAG, "  Validation: Single-word group '$subject' is too generic - REJECTED ✗")
+            if (ENABLE_VERBOSE_LOGS) Log.d(TAG, "  Validation: Single-word group '$subject' is too generic - REJECTED ✗")
             return false
         }
 
         // VALIDATION 4: Check if numeric/letter enumeration patterns exist
         val hasEnumeration = detectNumericEnumeration(options) || detectLetterEnumeration(options)
         if (hasEnumeration) {
-            Log.d(TAG, "  Validation: Single-word group '$subject' has enumeration pattern ✓")
+            if (ENABLE_VERBOSE_LOGS) Log.d(TAG, "  Validation: Single-word group '$subject' has enumeration pattern ✓")
             return true
         }
 
         // Default: REJECT - single-word grouping is too weak without validation signals
-        Log.d(TAG, "  Validation: Single-word group '$subject' failed all validations - REJECTED ✗")
+        if (ENABLE_VERBOSE_LOGS) Log.d(TAG, "  Validation: Single-word group '$subject' failed all validations - REJECTED ✗")
         return false
     }
 
@@ -750,7 +751,7 @@ class DataElementGroupingAnalyzer {
         val avgOptionLength = options.sumOf { it.length } / options.size.toFloat()
 
         if (longestOptionWordCount > 5 || avgOptionLength > 30) {
-            Log.d(TAG, "REJECTED: '$subject' - options too long")
+            if (ENABLE_VERBOSE_LOGS) Log.d(TAG, "REJECTED: '$subject' - options too long")
             return null
         }
 
@@ -776,10 +777,10 @@ class DataElementGroupingAnalyzer {
 
         // CLASSIFY TYPE
         val groupType = if (exclusivityScore > 75f) {
-            Log.d(TAG, "→ RADIO_GROUP: combined=${exclusivityScore.toInt()}%, empirical=${empiricalScore.toInt()}%, name=${nameBasedScore.toInt()}%, ${trueCount}/${fields.size} selected")
+            if (ENABLE_VERBOSE_LOGS) Log.d(TAG, "→ RADIO_GROUP: combined=${exclusivityScore.toInt()}%, empirical=${empiricalScore.toInt()}%, name=${nameBasedScore.toInt()}%, ${trueCount}/${fields.size} selected")
             GroupType.RADIO_GROUP
         } else {
-            Log.d(TAG, "→ CHECKBOX_GROUP: combined=${exclusivityScore.toInt()}%, empirical=${empiricalScore.toInt()}%, name=${nameBasedScore.toInt()}%, ${trueCount}/${fields.size} selected")
+            if (ENABLE_VERBOSE_LOGS) Log.d(TAG, "→ CHECKBOX_GROUP: combined=${exclusivityScore.toInt()}%, empirical=${empiricalScore.toInt()}%, name=${nameBasedScore.toInt()}%, ${trueCount}/${fields.size} selected")
             GroupType.CHECKBOX_GROUP
         }
 
@@ -805,7 +806,7 @@ class DataElementGroupingAnalyzer {
             distinctnessScore * 0.1f
         ).coerceIn(0f, 1f)
 
-        Log.d(TAG, "  Confidence breakdown: exclusivity=${(exclusivityScore/100f*0.4f*100).toInt()}%, suffix=${(suffixQuality*0.3f*100).toInt()}%, size=${(groupSizeScore*0.2f*100).toInt()}%, distinct=${(distinctnessScore*0.1f*100).toInt()}% → ${(numericConfidence*100).toInt()}%")
+        if (ENABLE_VERBOSE_LOGS) Log.d(TAG, "  Confidence breakdown: exclusivity=${(exclusivityScore/100f*0.4f*100).toInt()}%, suffix=${(suffixQuality*0.3f*100).toInt()}%, size=${(groupSizeScore*0.2f*100).toInt()}%, distinct=${(distinctnessScore*0.1f*100).toInt()}% → ${(numericConfidence*100).toInt()}%")
 
         return GroupingStrategy(
             confidence = ConfidenceLevel.MEDIUM,
@@ -847,7 +848,7 @@ class DataElementGroupingAnalyzer {
 
         // Need enough data to make determination
         if (totalWithValues < fields.size / 2) {
-            Log.d(TAG, "  Insufficient data for empirical analysis (${totalWithValues}/${fields.size} fields with values)")
+            if (ENABLE_VERBOSE_LOGS) Log.d(TAG, "  Insufficient data for empirical analysis (${totalWithValues}/${fields.size} fields with values)")
             return 0f // Not enough data
         }
 
@@ -867,7 +868,7 @@ class DataElementGroupingAnalyzer {
 
         val totalScore = oneYesScore + distributionScore
 
-        Log.d(TAG, "  Empirical analysis: ${yesFields.size} YES, ${noFields.size} NO, ${totalWithValues} total, score=${totalScore.toInt()}")
+        if (ENABLE_VERBOSE_LOGS) Log.d(TAG, "  Empirical analysis: ${yesFields.size} YES, ${noFields.size} NO, ${totalWithValues} total, score=${totalScore.toInt()}")
 
         return totalScore.coerceIn(0f, 100f)
     }
@@ -924,7 +925,7 @@ class DataElementGroupingAnalyzer {
                               lowerSuffixes.any { !it.contains("not ") && !it.startsWith("no ") }
         if (hasNegationPair) {
             suffixScore += 0.4f
-            Log.d(TAG, "  Pattern: Negation pair detected (+0.4)")
+            if (ENABLE_VERBOSE_LOGS) Log.d(TAG, "  Pattern: Negation pair detected (+0.4)")
         }
 
         // Pattern 2: Proper noun / Category names (capitalized, no verbs) - Strong exclusivity (0.3)
@@ -938,7 +939,7 @@ class DataElementGroupingAnalyzer {
         }
         if (properNounPattern.size >= suffixes.size * 0.7) {
             suffixScore += 0.3f
-            Log.d(TAG, "  Pattern: Proper nouns (${properNounPattern.size}/${suffixes.size}) (+0.3)")
+            if (ENABLE_VERBOSE_LOGS) Log.d(TAG, "  Pattern: Proper nouns (${properNounPattern.size}/${suffixes.size}) (+0.3)")
         }
 
         // Pattern 3: Verb/adjective attributes (suggests checkboxes) - Reduces score (-0.3)
@@ -948,7 +949,7 @@ class DataElementGroupingAnalyzer {
         }
         if (hasAttributePattern) {
             suffixScore -= 0.3f
-            Log.d(TAG, "  Pattern: Attribute verbs detected (-0.3)")
+            if (ENABLE_VERBOSE_LOGS) Log.d(TAG, "  Pattern: Attribute verbs detected (-0.3)")
         }
 
         // Pattern 4: Enumerated/Listed items - Strong exclusivity (0.2)
@@ -956,7 +957,7 @@ class DataElementGroupingAnalyzer {
         val allSingleWords = suffixes.all { it.split(Regex("\\s+")).size <= 2 }
         if (allSingleWords && suffixes.size >= 3) {
             suffixScore += 0.2f
-            Log.d(TAG, "  Pattern: Short enumerated list (+0.2)")
+            if (ENABLE_VERBOSE_LOGS) Log.d(TAG, "  Pattern: Short enumerated list (+0.2)")
         }
 
         // Pattern 5: Hierarchical or taxonomic terms - Strong exclusivity (0.3)
@@ -973,7 +974,7 @@ class DataElementGroupingAnalyzer {
         }
         if (matchesTaxonomy) {
             suffixScore += 0.3f
-            Log.d(TAG, "  Pattern: Taxonomic pair detected (+0.3)")
+            if (ENABLE_VERBOSE_LOGS) Log.d(TAG, "  Pattern: Taxonomic pair detected (+0.3)")
         }
 
         // Pattern 6: NEW - Numeric enumeration detection - Very strong exclusivity (0.4)
@@ -981,7 +982,7 @@ class DataElementGroupingAnalyzer {
         val numericEnumPattern = detectNumericEnumeration(suffixes)
         if (numericEnumPattern) {
             suffixScore += 0.4f
-            Log.d(TAG, "  Pattern: Numeric enumeration detected (+0.4) ✓")
+            if (ENABLE_VERBOSE_LOGS) Log.d(TAG, "  Pattern: Numeric enumeration detected (+0.4) ✓")
         }
 
         // Pattern 7: NEW - Compound/multi-part options - Reduces score (suggests checkboxes) (-0.2)
@@ -991,7 +992,7 @@ class DataElementGroupingAnalyzer {
         }
         if (hasCompoundPattern) {
             suffixScore -= 0.2f
-            Log.d(TAG, "  Pattern: Compound options detected (-0.2)")
+            if (ENABLE_VERBOSE_LOGS) Log.d(TAG, "  Pattern: Compound options detected (-0.2)")
         }
 
         // Pattern 8: NEW - Letter enumeration detection - Strong exclusivity (0.3)
@@ -999,7 +1000,7 @@ class DataElementGroupingAnalyzer {
         val letterEnumPattern = detectLetterEnumeration(suffixes)
         if (letterEnumPattern) {
             suffixScore += 0.3f
-            Log.d(TAG, "  Pattern: Letter enumeration detected (+0.3) ✓")
+            if (ENABLE_VERBOSE_LOGS) Log.d(TAG, "  Pattern: Letter enumeration detected (+0.3) ✓")
         }
 
         return suffixScore.coerceIn(0f, 1f)
@@ -1086,7 +1087,7 @@ class DataElementGroupingAnalyzer {
                 computeNameSimilarity(dv.dataElementName, commonConcept)
             }.average().toFloat()
 
-            Log.d(TAG, "Semantic cluster: '$commonConcept' (${cluster.size} fields, similarity: ${(similarity * 100).toInt()}%)")
+            if (ENABLE_VERBOSE_LOGS) Log.d(TAG, "Semantic cluster: '$commonConcept' (${cluster.size} fields, similarity: ${(similarity * 100).toInt()}%)")
 
             GroupingStrategy(
                 confidence = ConfidenceLevel.LOW,
@@ -1180,13 +1181,13 @@ class DataElementGroupingAnalyzer {
             val operator = rule.operator()?.name ?: ""
             val ruleName = rule.name() ?: ""
 
-            Log.d(TAG, "Analyzing rule: $ruleName")
-            Log.d(TAG, "  Left: $leftExpr | Operator: $operator | Right: $rightExpr")
+            if (ENABLE_VERBOSE_LOGS) Log.d(TAG, "Analyzing rule: $ruleName")
+            if (ENABLE_VERBOSE_LOGS) Log.d(TAG, "  Left: $leftExpr | Operator: $operator | Right: $rightExpr")
 
             // Pattern 1: Mutually Exclusive (A + B + C = 1 or A + B + C == 1)
             if (isMutuallyExclusiveRule(leftExpr, rightExpr, operator)) {
                 val fieldsInRule = extractDataElementIds(leftExpr + " " + rightExpr)
-                Log.d(TAG, "  → MUTUALLY EXCLUSIVE pattern detected: ${fieldsInRule.size} data elements")
+                if (ENABLE_VERBOSE_LOGS) Log.d(TAG, "  → MUTUALLY EXCLUSIVE pattern detected: ${fieldsInRule.size} data elements")
 
                 val members = dataElements.filter {
                     it.dataElement in fieldsInRule &&
@@ -1196,7 +1197,7 @@ class DataElementGroupingAnalyzer {
 
                 if (members.size >= 2) {
                     val groupTitle = extractGroupTitle(ruleName)
-                    Log.d(TAG, "  ✓ Created RADIO_GROUP: '$groupTitle' with ${members.size} members (HIGHEST confidence)")
+                    if (ENABLE_VERBOSE_LOGS) Log.d(TAG, "  ✓ Created RADIO_GROUP: '$groupTitle' with ${members.size} members (HIGHEST confidence)")
 
                     // PHASE 6: Validation rules get HIGHEST confidence (not just HIGH)
                     // This ensures they always take precedence over dimensional patterns or option sets
@@ -1219,7 +1220,7 @@ class DataElementGroupingAnalyzer {
             // Pattern 2: Summation (A + B + C = Total or A + B = C)
             else if (isSummationRule(leftExpr, rightExpr, operator)) {
                 val fieldsInRule = extractDataElementIds(leftExpr + " " + rightExpr)
-                Log.d(TAG, "  → SUMMATION pattern detected: ${fieldsInRule.size} data elements")
+                if (ENABLE_VERBOSE_LOGS) Log.d(TAG, "  → SUMMATION pattern detected: ${fieldsInRule.size} data elements")
 
                 val members = dataElements.filter {
                     it.dataElement in fieldsInRule &&
@@ -1228,7 +1229,7 @@ class DataElementGroupingAnalyzer {
 
                 if (members.size >= 2) {
                     val groupTitle = extractGroupTitle(ruleName)
-                    Log.d(TAG, "  ✓ Created SEMANTIC_CLUSTER: '$groupTitle' with ${members.size} members")
+                    if (ENABLE_VERBOSE_LOGS) Log.d(TAG, "  ✓ Created SEMANTIC_CLUSTER: '$groupTitle' with ${members.size} members")
 
                     strategies.add(
                         GroupingStrategy(
@@ -1248,7 +1249,7 @@ class DataElementGroupingAnalyzer {
             // Pattern 3: Checkbox Group (A + B + C <= N)
             else if (isCheckboxRule(leftExpr, rightExpr, operator)) {
                 val fieldsInRule = extractDataElementIds(leftExpr)
-                Log.d(TAG, "  → CHECKBOX pattern detected: ${fieldsInRule.size} data elements")
+                if (ENABLE_VERBOSE_LOGS) Log.d(TAG, "  → CHECKBOX pattern detected: ${fieldsInRule.size} data elements")
 
                 val members = dataElements.filter {
                     it.dataElement in fieldsInRule &&
@@ -1258,7 +1259,7 @@ class DataElementGroupingAnalyzer {
 
                 if (members.size >= 2) {
                     val groupTitle = extractGroupTitle(ruleName)
-                    Log.d(TAG, "  ✓ Created CHECKBOX_GROUP: '$groupTitle' with ${members.size} members")
+                    if (ENABLE_VERBOSE_LOGS) Log.d(TAG, "  ✓ Created CHECKBOX_GROUP: '$groupTitle' with ${members.size} members")
 
                     strategies.add(
                         GroupingStrategy(
@@ -1280,17 +1281,23 @@ class DataElementGroupingAnalyzer {
     }
 
     /**
-     * Detect mutually exclusive rule pattern: A + B + C = 1 or A + B + C == 1
+     * Detect mutually exclusive rule pattern:
+     * - A + B + C = 1 or A + B + C == 1 (exactly one)
+     * - A + B + C <= 1 (at most one - also mutually exclusive!)
      */
     private fun isMutuallyExclusiveRule(leftExpr: String, rightExpr: String, operator: String): Boolean {
-        // Check if right side is exactly "1" and operator is equality
-        val isEqualityOperator = operator.uppercase() in listOf("EQUAL", "EQUAL_TO", "EQ", "==")
         val rightSideIsOne = rightExpr.trim() == "1" || rightExpr.trim() == "1.0"
-
-        // Check if left side is a sum of data elements
         val hasAddition = leftExpr.contains("+")
 
-        return isEqualityOperator && rightSideIsOne && hasAddition
+        if (!hasAddition || !rightSideIsOne) return false
+
+        // Pattern 1: A + B + C = 1 (exactly one selected)
+        val isEqualityOperator = operator.uppercase() in listOf("EQUAL", "EQUAL_TO", "EQ", "==")
+
+        // Pattern 2: A + B + C <= 1 (at most one selected - also mutually exclusive!)
+        val isLessOrEqualOne = operator.uppercase() in listOf("LESS_THAN_OR_EQUAL_TO", "LE", "<=")
+
+        return (isEqualityOperator || isLessOrEqualOne) && rightSideIsOne && hasAddition
     }
 
     /**
@@ -1306,13 +1313,19 @@ class DataElementGroupingAnalyzer {
 
     /**
      * Detect checkbox rule pattern: A + B + C <= N or A + B + C < N
+     * NOTE: Excludes <= 1 pattern which is handled by isMutuallyExclusiveRule() as RADIO_GROUP
      */
     private fun isCheckboxRule(leftExpr: String, rightExpr: String, operator: String): Boolean {
         val isLessThanOperator = operator.uppercase() in listOf("LESS_THAN", "LESS_THAN_OR_EQUAL_TO", "LT", "LE", "<=", "<")
         val hasAddition = leftExpr.contains("+")
-        val rightSideIsNumber = rightExpr.trim().toIntOrNull() != null
+        val rightSideNumber = rightExpr.trim().toIntOrNull()
+        val rightSideIsNumber = rightSideNumber != null
 
-        return isLessThanOperator && hasAddition && rightSideIsNumber
+        // CRITICAL FIX: Exclude <= 1 pattern - that's mutually exclusive (RADIO_GROUP), not checkbox!
+        // Only match <= N where N > 1 (e.g., <= 3 means "select up to 3" = checkbox behavior)
+        val rightSideIsGreaterThanOne = rightSideNumber != null && rightSideNumber > 1
+
+        return isLessThanOperator && hasAddition && rightSideIsNumber && rightSideIsGreaterThanOne
     }
 
     /**

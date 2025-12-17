@@ -1,6 +1,7 @@
 package com.ash.simpledataentry.data.cache
 
 import android.util.Log
+import com.ash.simpledataentry.data.DatabaseProvider
 import com.ash.simpledataentry.data.SessionManager
 import com.ash.simpledataentry.data.local.*
 import com.ash.simpledataentry.domain.model.GroupingStrategy
@@ -13,16 +14,21 @@ import javax.inject.Singleton
 /**
  * Service for caching and optimizing metadata access across feature stacks.
  * Leverages data already loaded during login to reduce API calls in EditEntryScreen.
+ *
+ * CRITICAL: Uses DatabaseProvider for dynamic DAO access to ensure we always use
+ * the correct account-specific database, not stale DAOs from app startup.
  */
 @Singleton
 class MetadataCacheService @Inject constructor(
     private val sessionManager: SessionManager,
-    private val dataElementDao: DataElementDao,
-    private val categoryComboDao: CategoryComboDao,
-    private val categoryOptionComboDao: CategoryOptionComboDao,
-    private val organisationUnitDao: OrganisationUnitDao,
-    private val dataValueDao: DataValueDao
+    private val databaseProvider: DatabaseProvider
 ) {
+    // Dynamic DAO accessors - always get from current database
+    private val dataElementDao: DataElementDao get() = databaseProvider.getCurrentDatabase().dataElementDao()
+    private val categoryComboDao: CategoryComboDao get() = databaseProvider.getCurrentDatabase().categoryComboDao()
+    private val categoryOptionComboDao: CategoryOptionComboDao get() = databaseProvider.getCurrentDatabase().categoryOptionComboDao()
+    private val organisationUnitDao: OrganisationUnitDao get() = databaseProvider.getCurrentDatabase().organisationUnitDao()
+    private val dataValueDao: DataValueDao get() = databaseProvider.getCurrentDatabase().dataValueDao()
 
     private val d2 get() = sessionManager.getD2()!!
 
@@ -67,8 +73,22 @@ class MetadataCacheService @Inject constructor(
         val sections = getSectionsForDataset(datasetId)
         val allDataElementUids = sections.flatMap { it.dataElementUids }.distinct()
 
+        // DEBUG: Log what UIDs we're looking for
+        Log.d("MetadataCacheService", "Looking for ${allDataElementUids.size} data element UIDs from ${sections.size} sections")
+        if (allDataElementUids.isNotEmpty()) {
+            Log.d("MetadataCacheService", "First 5 UIDs requested: ${allDataElementUids.take(5)}")
+        }
+
         // 2. Get data elements from Room (already hydrated during login)
         val dataElements = dataElementDao.getByIds(allDataElementUids).associateBy { it.id }
+
+        // DEBUG: Log what we found
+        Log.d("MetadataCacheService", "Found ${dataElements.size} data elements in Room")
+        if (dataElements.isEmpty() && allDataElementUids.isNotEmpty()) {
+            // Check total data elements in Room
+            val totalInRoom = dataElementDao.getAll().size
+            Log.w("MetadataCacheService", "WARNING: Room has $totalInRoom total data elements but none match the requested UIDs!")
+        }
 
         // 3. Get category combos from Room (already hydrated during login)
         val categoryCombos = categoryComboDao.getAll().associateBy { it.id }
@@ -145,6 +165,8 @@ class MetadataCacheService @Inject constructor(
     
     /**
      * Get category combo structure with caching
+     * Categories and options are returned in the order provided by the SDK
+     * (SDK maintains metadata-defined order internally)
      */
     suspend fun getCategoryComboStructure(categoryComboUid: String): List<Pair<String, List<Pair<String, String>>>> {
         return categoryComboStructureCache.getOrPut(categoryComboUid) {
@@ -155,7 +177,7 @@ class MetadataCacheService @Inject constructor(
                     .blockingGet() ?: return@getOrPut emptyList()
 
                 val actualCategoryComboUid = categoryOptionCombo.categoryCombo()
-                
+
                 // Get the category combo with its categories
                 val categoryCombo = d2.categoryModule().categoryCombos()
                     .withCategories()
@@ -165,17 +187,22 @@ class MetadataCacheService @Inject constructor(
                 val categories = categoryCombo.categories() ?: emptyList()
                 if (categories.isEmpty()) return@getOrPut emptyList()
 
-                categories.mapNotNull { catRef ->
-                    // Get category with its options
+                // Process categories in the order returned by SDK (maintains metadata order)
+                // Use mapIndexed to preserve original order while processing
+                categories.mapIndexedNotNull { catIndex, catRef ->
                     val category = d2.categoryModule().categories()
                         .withCategoryOptions()
                         .uid(catRef.uid())
-                        .blockingGet() ?: return@mapNotNull null
+                        .blockingGet() ?: return@mapIndexedNotNull null
 
                     val options = category.categoryOptions() ?: emptyList()
+
+                    // Options from SDK should already be in sorted order
                     val optionPairs = options.map { optRef ->
                         optRef.uid() to (optRef.displayName() ?: optRef.uid())
                     }
+
+                    Log.d("MetadataCacheService", "Category $catIndex: ${category.displayName()} with ${optionPairs.size} options")
 
                     (category.displayName() ?: category.uid()) to optionPairs
                 }

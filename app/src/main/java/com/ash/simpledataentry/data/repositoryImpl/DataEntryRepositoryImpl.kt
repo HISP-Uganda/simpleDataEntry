@@ -8,6 +8,7 @@ import com.ash.simpledataentry.domain.repository.DataEntryRepository
 import dagger.hilt.android.scopes.ViewModelScoped
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.flow
+import com.ash.simpledataentry.data.DatabaseProvider
 import com.ash.simpledataentry.data.SessionManager
 import org.hisp.dhis.android.core.D2
 import com.ash.simpledataentry.data.local.DataValueDraftDao
@@ -31,20 +32,27 @@ import org.hisp.dhis.android.core.dataelement.DataElement
 import org.hisp.dhis.android.core.common.ValueType
 import android.content.Context
 
+/**
+ * CRITICAL: Uses DatabaseProvider for dynamic DAO access to ensure we always use
+ * the correct account-specific database, not stale DAOs from app startup.
+ */
 @ViewModelScoped
 class DataEntryRepositoryImpl @Inject constructor(
     private val sessionManager: SessionManager,
-    private val draftDao: DataValueDraftDao,
-    private val dataElementDao: DataElementDao,
-    private val categoryComboDao: CategoryComboDao,
-    private val categoryOptionComboDao: CategoryOptionComboDao,
-    private val organisationUnitDao: OrganisationUnitDao,
+    private val databaseProvider: DatabaseProvider,
     private val context: android.content.Context,
-    private val dataValueDao: DataValueDao,
     private val metadataCacheService: MetadataCacheService,
     private val networkStateManager: NetworkStateManager,
     private val syncQueueManager: SyncQueueManager
 ) : DataEntryRepository {
+
+    // Dynamic DAO accessors - always get from current database
+    private val draftDao: DataValueDraftDao get() = databaseProvider.getCurrentDatabase().dataValueDraftDao()
+    private val dataElementDao: DataElementDao get() = databaseProvider.getCurrentDatabase().dataElementDao()
+    private val categoryComboDao: CategoryComboDao get() = databaseProvider.getCurrentDatabase().categoryComboDao()
+    private val categoryOptionComboDao: CategoryOptionComboDao get() = databaseProvider.getCurrentDatabase().categoryOptionComboDao()
+    private val organisationUnitDao: OrganisationUnitDao get() = databaseProvider.getCurrentDatabase().organisationUnitDao()
+    private val dataValueDao: DataValueDao get() = databaseProvider.getCurrentDatabase().dataValueDao()
 
     private val d2 get() = sessionManager.getD2()!!
 
@@ -197,7 +205,24 @@ class DataEntryRepositoryImpl @Inject constructor(
         val optimizedData = metadataCacheService.getOptimizedDataForEntry(datasetId, period, orgUnit, attributeOptionCombo)
 
         Log.d("DataEntryRepositoryImpl", "Fresh SDK data loaded: ${optimizedData.sdkDataValues.size} values")
-        
+
+        // DIAGNOSTIC: Log categoryOptionCombos state
+        Log.d("DataEntryRepositoryImpl", "=== CATEGORY COMBO DIAGNOSTIC ===")
+        Log.d("DataEntryRepositoryImpl", "Total categoryOptionCombos in Room: ${optimizedData.categoryOptionCombos.size}")
+        Log.d("DataEntryRepositoryImpl", "Total dataElements in Room: ${optimizedData.dataElements.size}")
+        if (optimizedData.categoryOptionCombos.isNotEmpty()) {
+            val sampleCocs = optimizedData.categoryOptionCombos.values.take(3)
+            sampleCocs.forEach { coc ->
+                Log.d("DataEntryRepositoryImpl", "  Sample COC: id=${coc.id}, name=${coc.name}, categoryComboId=${coc.categoryComboId}")
+            }
+        }
+        if (optimizedData.dataElements.isNotEmpty()) {
+            val sampleDes = optimizedData.dataElements.values.take(3)
+            sampleDes.forEach { de ->
+                Log.d("DataEntryRepositoryImpl", "  Sample DE: id=${de.id}, name=${de.name}, categoryComboId=${de.categoryComboId}")
+            }
+        }
+
         // Build DataValue objects using cached metadata and data, prioritizing drafts
         val mappedDataValues = optimizedData.sections.flatMap { section ->
             val sectionResults = section.dataElementUids.flatMap { deUid ->

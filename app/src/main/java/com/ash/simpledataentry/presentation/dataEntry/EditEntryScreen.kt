@@ -2,21 +2,13 @@
 
 package com.ash.simpledataentry.presentation.dataEntry
 
-import android.annotation.SuppressLint
-import android.util.Log
 import androidx.compose.animation.AnimatedVisibility
-import androidx.compose.animation.core.*
-import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
-import androidx.compose.foundation.interaction.MutableInteractionSource
-import androidx.compose.foundation.interaction.collectIsPressedAsState
 import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.lazy.LazyColumn
-import androidx.compose.foundation.lazy.items
-import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.filled.Clear
 import androidx.compose.material.icons.filled.KeyboardArrowDown
 import androidx.compose.material.icons.filled.Save
 import androidx.compose.material3.*
@@ -25,15 +17,12 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.rotate
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.text.font.FontWeight
-import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.input.TextFieldValue
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.hilt.navigation.compose.hiltViewModel
-import androidx.lifecycle.viewmodel.compose.viewModel
 import androidx.navigation.NavController
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
@@ -53,9 +42,6 @@ import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.lazy.rememberLazyListState
-import androidx.compose.foundation.rememberScrollState
-import androidx.compose.foundation.verticalScroll
-import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.ArrowBack
 import androidx.compose.material.icons.filled.Sync
 import androidx.compose.material.icons.filled.Check
@@ -64,21 +50,557 @@ import androidx.compose.ui.platform.LocalContext
 import com.ash.simpledataentry.presentation.core.DetailedSyncOverlay
 import com.ash.simpledataentry.presentation.core.CompletionProgressOverlay
 import com.ash.simpledataentry.presentation.core.CompletionAction
-import kotlin.Pair
-import androidx.compose.runtime.Composable
-import com.google.common.collect.Lists.cartesianProduct
 import androidx.compose.foundation.relocation.BringIntoViewRequester
 import androidx.compose.foundation.relocation.bringIntoViewRequester
-import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalFocusManager
-import com.ash.simpledataentry.presentation.dataEntry.components.FrozenHeaderGrid
 import com.ash.simpledataentry.presentation.dataEntry.components.SectionNavigator
 import com.ash.simpledataentry.presentation.core.FullScreenLoader
-import com.ash.simpledataentry.presentation.core.CompactLoader
-import com.ash.simpledataentry.presentation.core.OverlayLoader
 
 data class Quadruple<A, B, C, D>(val first: A, val second: B, val third: C, val fourth: D)
 
+
+@Composable
+fun SectionContent(
+    sectionName: String,
+    values: List<DataValue>,
+    categoryComboStructures: Map<String, List<Pair<String, List<Pair<String, String>>>>>,
+    optionUidsToComboUidByCombo: Map<String, Map<Set<String>, String>>,
+    onValueChange: (String, DataValue) -> Unit,
+    viewModel: DataEntryViewModel,
+    expandedAccordions: Map<List<String>, String?>,
+    onToggle: (List<String>, String) -> Unit
+) {
+    // Get distinct data elements in order
+    val dataElements = values.map { it.dataElement to it.dataElementName }.distinct()
+
+    // Render each data element as an accordion (first level)
+    dataElements.forEach { (dataElement, dataElementName) ->
+        val dataElementValues = values.filter { it.dataElement == dataElement }
+        val firstValue = dataElementValues.firstOrNull() ?: return@forEach
+        val structure = categoryComboStructures[firstValue.categoryOptionCombo] ?: emptyList()
+        val optionMap = optionUidsToComboUidByCombo[firstValue.categoryOptionCombo] ?: emptyMap()
+
+        val elementKey = "element_$dataElement"
+        val isExpanded = expandedAccordions[emptyList()] == elementKey
+        val hasData = dataElementValues.any { !it.value.isNullOrBlank() }
+
+        // Data Element Accordion Wrapper (FIRST level) - White card with left accent
+        DataElementAccordion(
+            header = dataElementName,
+            hasData = hasData,
+            expanded = isExpanded,
+            onToggleExpand = { onToggle(emptyList(), elementKey) }
+        ) {
+            if (structure.isEmpty()) {
+                // No category combo - render field directly
+                DataValueField(
+                    dataValue = firstValue,
+                    onValueChange = { value -> onValueChange(value, firstValue) },
+                    viewModel = viewModel
+                )
+            } else {
+                // Has category combo - render nested category accordions
+                CategoryAccordionRecursive(
+                    categories = structure,
+                    values = dataElementValues,
+                    onValueChange = onValueChange,
+                    optionUidsToComboUid = optionMap,
+                    viewModel = viewModel,
+                    parentPath = listOf(elementKey),
+                    expandedAccordions = expandedAccordions,
+                    onToggle = onToggle
+                )
+            }
+        }
+    }
+}
+
+@Composable
+fun DataElementRow(
+    dataElementName: String,
+    fields: List<DataValue?>,
+    onValueChange: (String, DataValue) -> Unit,
+    viewModel: DataEntryViewModel
+) {
+    Column(modifier = Modifier
+        .fillMaxWidth()
+        .padding(vertical = 4.dp)) {
+        Text(text = dataElementName, style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.Bold)
+        fields.filterNotNull().forEach { dataValue ->
+            DataValueField(
+                dataValue = dataValue,
+                onValueChange = { value -> onValueChange(value, dataValue) },
+                viewModel = viewModel
+            )
+        }
+    }
+}
+
+@Composable
+
+fun DataValueField(
+    dataValue: DataValue,
+    onValueChange: (String) -> Unit,
+    viewModel: DataEntryViewModel,
+    enabled: Boolean = true
+) {
+    val key = remember(dataValue.dataElement, dataValue.categoryOptionCombo) {
+        "${dataValue.dataElement}|${dataValue.categoryOptionCombo}"
+    }
+    LaunchedEffect(key) {
+        viewModel.initializeFieldState(dataValue)
+    }
+    val state by viewModel.state.collectAsState()
+    val fieldState = viewModel.fieldStates[key] ?: TextFieldValue(dataValue.value ?: "")
+    val optionSet = state.optionSets[dataValue.dataElement]
+    val renderType = state.renderTypes[dataValue.dataElement] ?: optionSet?.computeRenderType()
+    val isHidden = state.hiddenFields.contains(dataValue.dataElement)
+    val isDisabledByRule = state.disabledFields.contains(dataValue.dataElement)
+    val isMandatoryByRule = state.mandatoryFields.contains(dataValue.dataElement)
+    val warning = state.fieldWarnings[dataValue.dataElement]
+    val error = state.fieldErrors[dataValue.dataElement]
+    val calculatedValue = state.calculatedValues[dataValue.dataElement]
+
+    if (isHidden) return
+
+    val effectiveEnabled = enabled && !isDisabledByRule
+
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(horizontal = 16.dp, vertical = 4.dp)
+            .let { base ->
+                if (!effectiveEnabled) {
+                    base.background(
+                        MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f),
+                        MaterialTheme.shapes.small
+                    )
+                } else base
+            }
+    ) {
+        when {
+            optionSet != null && renderType != null -> {
+                when (renderType) {
+                    RenderType.DROPDOWN -> {
+                        com.ash.simpledataentry.presentation.dataEntry.components.OptionSetDropdown(
+                            optionSet = optionSet,
+                            selectedCode = calculatedValue ?: dataValue.value,
+                            title = dataValue.dataElementName + if (isMandatoryByRule) " *" else "",
+                            isRequired = isMandatoryByRule,
+                            enabled = effectiveEnabled,
+                            onOptionSelected = { selectedCode ->
+                                if (selectedCode != null) {
+                                    onValueChange(selectedCode)
+                                }
+                            },
+                            modifier = Modifier.fillMaxWidth()
+                        )
+                    }
+                    RenderType.RADIO_BUTTONS -> {
+                        com.ash.simpledataentry.presentation.dataEntry.components.OptionSetRadioGroup(
+                            optionSet = optionSet,
+                            selectedCode = calculatedValue ?: dataValue.value,
+                            title = dataValue.dataElementName + if (isMandatoryByRule) " *" else "",
+                            isRequired = isMandatoryByRule,
+                            enabled = effectiveEnabled,
+                            onOptionSelected = { selectedCode ->
+                                if (selectedCode != null) {
+                                    onValueChange(selectedCode)
+                                }
+                            },
+                            modifier = Modifier.fillMaxWidth()
+                        )
+                    }
+                    RenderType.YES_NO_BUTTONS -> {
+                        com.ash.simpledataentry.presentation.dataEntry.components.YesNoCheckbox(
+                            selectedValue = calculatedValue ?: dataValue.value,
+                            title = dataValue.dataElementName + if (isMandatoryByRule) " *" else "",
+                            isRequired = isMandatoryByRule,
+                            enabled = effectiveEnabled,
+                            onValueChanged = { newValue ->
+                                if (newValue != null) {
+                                    onValueChange(newValue)
+                                }
+                            },
+                            modifier = Modifier.fillMaxWidth()
+                        )
+                    }
+                    else -> {
+                        com.ash.simpledataentry.presentation.dataEntry.components.OptionSetDropdown(
+                            optionSet = optionSet,
+                            selectedCode = calculatedValue ?: dataValue.value,
+                            title = dataValue.dataElementName + if (isMandatoryByRule) " *" else "",
+                            isRequired = isMandatoryByRule,
+                            enabled = effectiveEnabled,
+                            onOptionSelected = { selectedCode ->
+                                if (selectedCode != null) {
+                                    onValueChange(selectedCode)
+                                }
+                            },
+                            modifier = Modifier.fillMaxWidth()
+                        )
+                    }
+                }
+            }
+            dataValue.dataEntryType == DataEntryType.YES_NO -> {
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(4.dp)
+                ) {
+                    Button(
+                        text = "Yes",
+                        style = if (dataValue.value == "true") ButtonStyle.FILLED else ButtonStyle.OUTLINED,
+                        colorStyle = ColorStyle.DEFAULT,
+                        modifier = Modifier.weight(1f),
+                        enabled = effectiveEnabled,
+                        onClick = { if (effectiveEnabled) onValueChange("true") }
+                    )
+                    Button(
+                        text = "No",
+                        style = if (dataValue.value == "false") ButtonStyle.FILLED else ButtonStyle.OUTLINED,
+                        colorStyle = ColorStyle.DEFAULT,
+                        modifier = Modifier.weight(1f),
+                        enabled = effectiveEnabled,
+                        onClick = { if (effectiveEnabled) onValueChange("false") }
+                    )
+                }
+            }
+            dataValue.dataEntryType == DataEntryType.NUMBER ||
+                    dataValue.dataEntryType == DataEntryType.INTEGER ||
+                    dataValue.dataEntryType == DataEntryType.POSITIVE_INTEGER ||
+                    dataValue.dataEntryType == DataEntryType.NEGATIVE_INTEGER -> {
+                InputNumber(
+                    title = dataValue.dataElementName + if (isMandatoryByRule) " *" else "",
+                    state = when {
+                        !effectiveEnabled -> InputShellState.DISABLED
+                        dataValue.validationState == ValidationState.ERROR || error != null -> InputShellState.ERROR
+                        dataValue.validationState == ValidationState.WARNING || warning != null -> InputShellState.WARNING
+                        else -> InputShellState.UNFOCUSED
+                    },
+                    inputTextFieldValue = fieldState,
+                    onValueChanged = { newValue ->
+                        if (newValue != null && effectiveEnabled) viewModel.onFieldValueChange(newValue, dataValue)
+                    },
+                    modifier = Modifier.fillMaxWidth()
+                )
+            }
+            dataValue.dataEntryType == DataEntryType.PERCENTAGE -> {
+                InputText(
+                    title = dataValue.dataElementName + if (isMandatoryByRule) " *" else "",
+                    state = when {
+                        !effectiveEnabled -> InputShellState.DISABLED
+                        dataValue.validationState == ValidationState.ERROR || error != null -> InputShellState.ERROR
+                        dataValue.validationState == ValidationState.WARNING || warning != null -> InputShellState.WARNING
+                        else -> InputShellState.UNFOCUSED
+                    },
+                    inputTextFieldValue = fieldState,
+                    onValueChanged = { newValue ->
+                        if (newValue != null && effectiveEnabled) viewModel.onFieldValueChange(newValue, dataValue)
+                    },
+                    modifier = Modifier.fillMaxWidth()
+                )
+            }
+            else -> {
+                InputText(
+                    title = dataValue.dataElementName + if (isMandatoryByRule) " *" else "",
+                    state = when {
+                        !effectiveEnabled -> InputShellState.DISABLED
+                        dataValue.validationState == ValidationState.ERROR || error != null -> InputShellState.ERROR
+                        dataValue.validationState == ValidationState.WARNING || warning != null -> InputShellState.WARNING
+                        else -> InputShellState.UNFOCUSED
+                    },
+                    inputTextFieldValue = fieldState,
+                    onValueChanged = { newValue ->
+                        if (newValue != null && effectiveEnabled) viewModel.onFieldValueChange(newValue, dataValue)
+                    },
+                    modifier = Modifier.fillMaxWidth()
+                )
+            }
+        }
+    }
+}
+
+/**
+ * Data Element Accordion - First level accordion with white card styling and left accent border
+ * Shows "Has data" / "No data" indicator
+ */
+@OptIn(ExperimentalFoundationApi::class)
+@Composable
+fun DataElementAccordion(
+    header: String,
+    hasData: Boolean,
+    expanded: Boolean,
+    onToggleExpand: () -> Unit,
+    content: @Composable () -> Unit
+) {
+    val bringIntoViewRequester = remember { BringIntoViewRequester() }
+    val coroutineScope = rememberCoroutineScope()
+
+    Surface(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(vertical = 4.dp),
+        color = MaterialTheme.colorScheme.surface,
+        shape = MaterialTheme.shapes.medium,
+        shadowElevation = 1.dp
+    ) {
+        Row(modifier = Modifier.fillMaxWidth()) {
+            // Left accent border
+            Box(
+                modifier = Modifier
+                    .width(4.dp)
+                    .heightIn(min = 64.dp)
+                    .background(
+                        if (hasData) MaterialTheme.colorScheme.primary
+                        else MaterialTheme.colorScheme.outline.copy(alpha = 0.5f),
+                        shape = RoundedCornerShape(topStart = 12.dp, bottomStart = 12.dp)
+                    )
+            )
+
+            Column(modifier = Modifier.weight(1f)) {
+                // Header row
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .clickable {
+                            onToggleExpand()
+                            if (!expanded) {
+                                coroutineScope.launch {
+                                    bringIntoViewRequester.bringIntoView()
+                                }
+                            }
+                        }
+                        .padding(horizontal = 12.dp, vertical = 12.dp),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Column(modifier = Modifier.weight(1f)) {
+                        Text(
+                            text = header,
+                            style = MaterialTheme.typography.titleSmall,
+                            fontWeight = FontWeight.SemiBold,
+                            maxLines = 2,
+                            overflow = TextOverflow.Ellipsis
+                        )
+                        Text(
+                            text = if (hasData) "Has data" else "No data",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = if (hasData) MaterialTheme.colorScheme.primary
+                                   else MaterialTheme.colorScheme.onSurface.copy(alpha = 0.6f)
+                        )
+                    }
+                    Icon(
+                        imageVector = Icons.Default.KeyboardArrowDown,
+                        contentDescription = "Expand/Collapse",
+                        modifier = Modifier
+                            .rotate(if (expanded) 180f else 0f)
+                            .size(24.dp)
+                    )
+                }
+
+                // Content
+                AnimatedVisibility(visible = expanded) {
+                    Column(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(start = 8.dp, end = 8.dp, bottom = 12.dp)
+                            .bringIntoViewRequester(bringIntoViewRequester)
+                    ) {
+                        content()
+                    }
+                }
+            }
+        }
+    }
+}
+
+/**
+ * Category Option Accordion - Nested level accordion with lavender/purple background
+ */
+@OptIn(ExperimentalFoundationApi::class)
+@Composable
+fun CategoryAccordion(
+    header: String,
+    expanded: Boolean,
+    onToggleExpand: () -> Unit,
+    content: @Composable () -> Unit
+) {
+    val bringIntoViewRequester = remember { BringIntoViewRequester() }
+    val coroutineScope = rememberCoroutineScope()
+    Column(modifier = Modifier.fillMaxWidth()) {
+        Surface(
+            modifier = Modifier
+                .fillMaxWidth()
+                .heightIn(min = 48.dp)
+                .clickable {
+                    onToggleExpand()
+                    if (!expanded) {
+                        coroutineScope.launch {
+                            bringIntoViewRequester.bringIntoView()
+                        }
+                    }
+                },
+            color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.7f),
+            shape = MaterialTheme.shapes.small
+        ) {
+            Row(
+                modifier = Modifier
+                    .padding(horizontal = 16.dp, vertical = 12.dp)
+                    .fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Text(
+                    text = header,
+                    style = MaterialTheme.typography.bodyLarge,
+                    fontWeight = FontWeight.Medium,
+                    maxLines = 2,
+                    overflow = TextOverflow.Ellipsis,
+                    modifier = Modifier.weight(1f)
+                )
+                Icon(
+                    imageVector = Icons.Default.KeyboardArrowDown,
+                    contentDescription = "Expand/Collapse Category",
+                    modifier = Modifier
+                        .rotate(if (expanded) 180f else 0f)
+                        .size(20.dp)
+                )
+            }
+        }
+        AnimatedVisibility(visible = expanded) {
+            Column(modifier = Modifier
+                .fillMaxWidth()
+                .padding(start = 8.dp, top = 8.dp)
+                .bringIntoViewRequester(bringIntoViewRequester)) {
+                content()
+            }
+        }
+    }
+}
+
+/**
+ * Recursively renders nested accordions for N categories, except:
+ * - If only one category with exactly two options (especially sex/gender), render side by side.
+ * - If no categories, render flat list.
+ * - Always collapse single-option categories.
+ * - Never render sex/gender as an accordion header.
+ */
+@Composable
+fun CategoryAccordionRecursive(
+    categories: List<Pair<String, List<Pair<String, String>>>>,
+    values: List<DataValue>,
+    onValueChange: (String, DataValue) -> Unit,
+    optionUidsToComboUid: Map<Set<String>, String>,
+    viewModel: DataEntryViewModel,
+    parentPath: List<String> = emptyList(),
+    expandedAccordions: Map<List<String>, String?>,
+    onToggle: (List<String>, String) -> Unit,
+) {
+    if (categories.isEmpty()) {
+        values.forEach { dataValue ->
+            DataElementRow(
+                dataElementName = dataValue.dataElementName,
+                fields = listOf(dataValue),
+                onValueChange = onValueChange,
+                viewModel = viewModel
+            )
+        }
+        return
+    }
+    val currentCategory = categories.first()
+    val restCategories = categories.drop(1)
+    // Helper to extract only option UIDs from path (filter out element_ prefix keys)
+    fun optionOnlyPath(path: List<String>): Set<String> {
+        return path.filter { !it.startsWith("element_") }.toSet()
+    }
+
+    if (restCategories.isEmpty()) {
+        // LAST CATEGORY: If <= 3 options, render as a row; if > 3, render each as a nested accordion
+        if (currentCategory.second.size <= 3) {
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(vertical = 8.dp),
+                horizontalArrangement = Arrangement.spacedBy(12.dp)
+            ) {
+                currentCategory.second.forEach { (optionUid, optionName) ->
+                    val fullPath = parentPath + optionUid
+                    // Use only option UIDs for combo lookup (exclude element_ prefix)
+                    val comboUid = optionUidsToComboUid[optionOnlyPath(fullPath)]
+                    val filteredValues = values.filter { it.categoryOptionCombo == comboUid }
+                    Column(modifier = Modifier.weight(1f)) {
+                        Text(
+                            text = optionName,
+                            style = MaterialTheme.typography.labelLarge,
+                            fontWeight = FontWeight.SemiBold,
+                            modifier = Modifier.padding(bottom = 4.dp)
+                        )
+                        // Render DataValueField directly (element name already shown as first accordion)
+                        filteredValues.forEach { dataValue ->
+                            DataValueField(
+                                dataValue = dataValue,
+                                onValueChange = { value -> onValueChange(value, dataValue) },
+                                viewModel = viewModel
+                            )
+                        }
+                    }
+                }
+            }
+        } else {
+            // More than 3 options: render each as a nested accordion
+            currentCategory.second.forEach { (optionUid, optionName) ->
+                val expanded = expandedAccordions[parentPath] == optionUid
+                Box(modifier = Modifier.padding(bottom = 8.dp)) {
+                    CategoryAccordion(
+                        header = optionName,
+                        expanded = expanded,
+                        onToggleExpand = { onToggle(parentPath, optionUid) }
+                    ) {
+                        val fullPath = parentPath + optionUid
+                        // Use only option UIDs for combo lookup (exclude element_ prefix)
+                        val comboUid = optionUidsToComboUid[optionOnlyPath(fullPath)]
+                        val filteredValues = values.filter { it.categoryOptionCombo == comboUid }
+                        // Render DataValueField directly (element name already shown as first accordion)
+                        filteredValues.forEach { dataValue ->
+                            DataValueField(
+                                dataValue = dataValue,
+                                onValueChange = { value -> onValueChange(value, dataValue) },
+                                viewModel = viewModel
+                            )
+                        }
+                    }
+                }
+            }
+        }
+        return
+    }
+    // For all other categories, render as accordions, filtering by current path
+    currentCategory.second.forEach { (optionUid, optionName) ->
+        val expanded = expandedAccordions[parentPath] == optionUid
+        Box(modifier = Modifier.padding(bottom = 8.dp)) {
+            CategoryAccordion(
+                header = optionName,
+                expanded = expanded,
+                onToggleExpand = { onToggle(parentPath, optionUid) }
+            ) {
+                val newPath = parentPath + optionUid
+                // Use only option UIDs for combo lookup (exclude element_ prefix)
+                val comboUid = optionUidsToComboUid[optionOnlyPath(newPath)]
+                val filteredValues = if (comboUid != null) values.filter { it.categoryOptionCombo == comboUid } else values
+                CategoryAccordionRecursive(
+                    categories = restCategories,
+                    values = filteredValues,
+                    onValueChange = onValueChange,
+                    optionUidsToComboUid = optionUidsToComboUid,
+                    viewModel = viewModel,
+                    parentPath = newPath,
+                    expandedAccordions = expandedAccordions,
+                    onToggle = onToggle
+                )
+            }
+        }
+    }
+}
 @OptIn(ExperimentalFoundationApi::class)
 @Composable
 fun EditEntryScreen(
@@ -346,15 +868,6 @@ fun EditEntryScreen(
         }
     }
 
-    LaunchedEffect(state.currentSectionIndex, state.dataValues) {
-        if (state.dataValues.isNotEmpty() && state.totalSections > 0 && state.currentSectionIndex != -1) { // Check for != -1
-            coroutineScope.launch {
-                listState.animateScrollToItem(index = state.currentSectionIndex)
-            }
-        }
-    }
-
-
     // Resolve attribute option combo display name for the title
     val attrComboName = state.attributeOptionCombos.find { it.first == attributeOptionCombo }?.second ?: attributeOptionCombo
     BaseScreen(
@@ -439,49 +952,36 @@ fun EditEntryScreen(
             onCancel = { viewModel.dismissSyncOverlay() },
             modifier = Modifier.fillMaxSize()
         ) {
-            // Completion progress overlay
             CompletionProgressOverlay(
                 progress = state.completionProgress,
-                onCancel = { viewModel.dismissSyncOverlay() }, // Use existing method for now
+                onCancel = { viewModel.dismissSyncOverlay() },
                 modifier = Modifier.fillMaxSize()
             ) {
-            if (state.isLoading || !isUIReady) {
-                // Use FullScreenLoader for navigation loading
-                FullScreenLoader(
-                    message = "Loading form...",
-                    isVisible = true
-                )
-            } else {
-                Box(modifier = Modifier.fillMaxSize()) {
-                    Column(
-                        modifier = Modifier
-                            .fillMaxSize()
-                            .background(MaterialTheme.colorScheme.background)
-                    ) {
-
-                        if (state.dataValues.isEmpty()) {
-                            Text(
-                                text = "No data elements found for this dataset/period/org unit.",
-                                color = MaterialTheme.colorScheme.error,
-                                modifier = Modifier.align(Alignment.CenterHorizontally)
-                            )
-                        } else {
-                        val bringIntoViewRequester = remember { BringIntoViewRequester() }
-                        val coroutineScope = rememberCoroutineScope()
-                        val listState = rememberLazyListState()
-
-                        LaunchedEffect(state.currentSectionIndex) {
-                            if (state.currentSectionIndex != -1) {
-                                listState.animateScrollToItem(state.currentSectionIndex)
-                            }
-                        }
-
-                        // Data Element First Rendering (Default)
-                        LazyColumn(
-                            state = listState,
-                            verticalArrangement = Arrangement.spacedBy(8.dp),
-                            modifier = Modifier.weight(1f)
+                if (state.isLoading || !isUIReady) {
+                    FullScreenLoader(
+                        message = "Loading form...",
+                        isVisible = true
+                    )
+                } else {
+                    Box(modifier = Modifier.fillMaxSize()) {
+                        Column(
+                            modifier = Modifier
+                                .fillMaxSize()
+                                .background(MaterialTheme.colorScheme.background)
+                                .padding(bottom = 96.dp)
                         ) {
+                            if (state.dataValues.isEmpty()) {
+                                Text(
+                                    text = "No data elements found for this dataset/period/org unit.",
+                                    color = MaterialTheme.colorScheme.error,
+                                    modifier = Modifier.align(Alignment.CenterHorizontally)
+                                )
+                            } else {
+                                LazyColumn(
+                                    state = listState,
+                                    verticalArrangement = Arrangement.spacedBy(8.dp),
+                                    modifier = Modifier.weight(1f)
+                                ) {
                             // Render sections as top-level accordions with proper scrolling integration
                             itemsIndexed(
                                 items = state.dataElementGroupedSections.entries.toList(),
@@ -501,11 +1001,10 @@ fun EditEntryScreen(
                                 
                                 // Check if ALL data elements in this section have default category combinations
                                 val allElementsHaveDefaultCategories = elementGroups.values.all { dataValues ->
-                                    val firstDataValue = dataValues.firstOrNull()
-                                    val structure = firstDataValue?.let { 
-                                        state.categoryComboStructures[it.categoryOptionCombo] 
-                                    } ?: emptyList()
-                                    structure.isEmpty() || (structure.size == 1 && structure[0].first.lowercase().contains("default"))
+                                    dataValues.all { dataValue ->
+                                        val structure = state.categoryComboStructures[dataValue.categoryOptionCombo] ?: emptyList()
+                                        structure.isEmpty() || (structure.size == 1 && structure[0].first.lowercase().contains("default"))
+                                    }
                                 }
                                 
                                 // Section Header Accordion
@@ -645,122 +1144,17 @@ fun EditEntryScreen(
                                                 }
                                             }
                                         } else {
-                                            // Mixed or non-default categories - render data element accordions
-                                            Column(
-                                                modifier = Modifier
-                                                    .fillMaxWidth()
-                                                    .padding(horizontal = 8.dp),
-                                                verticalArrangement = Arrangement.spacedBy(8.dp)
-                                            ) {
-                                                // Memoize sorted data elements to prevent recomputation
-                                                val sortedElements = remember(sectionContent, dataElementOrder) {
-                                                    sectionContent.entries
-                                                        .sortedBy { dataElementOrder[it.key] ?: Int.MAX_VALUE }
-                                                        .toList()
-                                                }
-
-                                                sortedElements.forEach { (dataElement, dataValues) ->
-                                                    key("de_accordion_${dataElement}") {
-                                                        val hasAnyData = dataValues.any { !it.value.isNullOrBlank() }
-                                                        val elementKey = "de_$sectionName$dataElement"
-                                                        val isElementExpanded = expandedAccordions.value[listOf(elementKey)] != null
-                                                        
-                                                        // Check if this data element has default category
-                                                        val firstDataValue = dataValues.firstOrNull()
-                                                        val structure = firstDataValue?.let { 
-                                                            state.categoryComboStructures[it.categoryOptionCombo] 
-                                                        } ?: emptyList()
-                                                        val isDefaultCategoryCombo = structure.isEmpty() || 
-                                                            (structure.size == 1 && structure[0].first.lowercase().contains("default"))
-                                                        
-                                                        if (isDefaultCategoryCombo) {
-                                                            // Default category - render field directly without accordion
-                                                            dataValues.forEach { dataValue ->
-                                                                key("default_field_${dataValue.dataElement}_${dataValue.categoryOptionCombo}") {
-                                                                    DataValueField(
-                                                                        dataValue = dataValue,
-                                                                        onValueChange = { value -> onValueChange(value, dataValue) },
-                                                                        viewModel = viewModel
-                                                                    )
-                                                                }
-                                                            }
-                                                        } else {
-                                                            // Non-default category - render as data element accordion
-                                                            Surface(
-                                                                modifier = Modifier
-                                                                    .fillMaxWidth()
-                                                                    .clickable {
-                                                                        onAccordionToggle(listOf(elementKey), "toggle")
-                                                                    },
-                                                                color = MaterialTheme.colorScheme.surface,
-                                                                shape = MaterialTheme.shapes.medium,
-                                                                tonalElevation = 2.dp
-                                                            ) {
-                                                                Column {
-                                                                    // Data Element Header
-                                                                    Row(
-                                                                        modifier = Modifier
-                                                                            .fillMaxWidth()
-                                                                            .heightIn(min = 64.dp, max = 64.dp) // Fixed height for uniformity
-                                                                            .padding(16.dp),
-                                                                        horizontalArrangement = Arrangement.SpaceBetween,
-                                                                        verticalAlignment = Alignment.CenterVertically
-                                                                    ) {
-                                                                        Column(modifier = Modifier.weight(1f)) {
-                                                                            Text(
-                                                                                text = dataValues.firstOrNull()?.dataElementName ?: dataElement,
-                                                                                style = MaterialTheme.typography.titleSmall,
-                                                                                fontWeight = FontWeight.Medium,
-                                                                                maxLines = 2,
-                                                                                overflow = TextOverflow.Ellipsis
-                                                                            )
-                                                                            Text(
-                                                                                text = if (hasAnyData) "Has data" else "No data",
-                                                                                style = MaterialTheme.typography.bodySmall,
-                                                                                color = if (hasAnyData) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurface.copy(alpha = 0.7f),
-                                                                                maxLines = 1
-                                                                            )
-                                                                        }
-                                                                        Icon(
-                                                                            imageVector = Icons.Default.KeyboardArrowDown,
-                                                                            contentDescription = "Expand/Collapse Data Element",
-                                                                            modifier = Modifier
-                                                                                .rotate(if (isElementExpanded) 180f else 0f)
-                                                                                .size(20.dp)
-                                                                        )
-                                                                    }
-                                                                    
-                                                                    // Data Element Content - Category Structure or Direct Fields
-                                                                    AnimatedVisibility(visible = isElementExpanded) {
-                                                                        Column(
-                                                                            modifier = Modifier
-                                                                                .fillMaxWidth()
-                                                                                .padding(horizontal = 16.dp)
-                                                                                .padding(bottom = 16.dp),
-                                                                            verticalArrangement = Arrangement.spacedBy(8.dp)
-                                                                        ) {
-                                                                            val sortedCategories = sortCategoriesByOptionCount(structure)
-                                                                            val categoryOptionComboUid = firstDataValue?.categoryOptionCombo
-                                                                            val optionUidsToComboUidForGroup = state.optionUidsToComboUid[categoryOptionComboUid] ?: emptyMap()
-                                                                            
-                                                                            CategoryAccordionRecursiveWithFields(
-                                                                                categories = sortedCategories,
-                                                                                values = dataValues.filter { it.dataElement == dataElement },
-                                                                                onValueChange = onValueChange,
-                                                                                optionUidsToComboUid = optionUidsToComboUidForGroup,
-                                                                                viewModel = viewModel,
-                                                                                parentPath = listOf(elementKey),
-                                                                                expandedAccordions = expandedAccordions.value,
-                                                                                onToggle = onAccordionToggle
-                                                                            )
-                                                                        }
-                                                                    }
-                                                                }
-                                                            }
-                                                        }
-                                                    } // Close key block from line 670
-                                                }
-                                            }
+                                            val sectionValues = sectionContent.values.flatten()
+                                            SectionContent(
+                                                sectionName = sectionName,
+                                                values = sectionValues,
+                                                categoryComboStructures = state.categoryComboStructures,
+                                                optionUidsToComboUidByCombo = state.optionUidsToComboUid,
+                                                onValueChange = onValueChange,
+                                                viewModel = viewModel,
+                                                expandedAccordions = expandedAccordions.value,
+                                                onToggle = onAccordionToggle
+                                            )
                                         }
                                     }
                                 }
@@ -793,13 +1187,12 @@ fun EditEntryScreen(
                         )
                     }
                 }
-                // Section Navigator at the bottom
+
                 Box(
                     modifier = Modifier
-                        .fillMaxWidth()
                         .align(Alignment.BottomCenter)
                         .background(MaterialTheme.colorScheme.surface)
-                        .padding(vertical = 8.dp)
+                        .padding(vertical = 8.dp, horizontal = 16.dp)
                 ) {
                     SectionNavigator(
                         onPreviousClick = { viewModel.goToPreviousSection() },
@@ -808,1493 +1201,26 @@ fun EditEntryScreen(
                         totalSections = state.totalSections
                     )
                 }
-                // Snackbar
-                Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.BottomCenter) {
-                    SnackbarHost(
-                        hostState = snackbarHostState,
-                        snackbar = { data ->
-                            Snackbar(
-                                containerColor = MaterialTheme.colorScheme.surface,
-                                contentColor = Color.White
-                            ) {
-                                Text(
-                                    data.visuals.message,
-                                    style = MaterialTheme.typography.bodyLarge
-                                )
-                            }
-                        }
-                    )
-                }
-                }
-            }
-        }
-            }
-        }
-    // Show Snackbar on sync error
-    LaunchedEffect(state.error) {
-        state.error?.let {
-            snackbarHostState.showSnackbar(it)
-        }
-    }
-}
 
-@Composable
-private fun SectionContent(
-    sectionName: String,
-    structure: List<Pair<String, List<Pair<String, String>>>>?,
-    values: List<DataValue>,
-    expandedCategoryGroup: String?,
-    onToggleCategoryGroup: (String, String) -> Unit,
-    onValueChange: (String, DataValue) -> Unit,
-    optionUidsToComboUid: Map<Set<String>, String>,
-    viewModel: DataEntryViewModel,
-    renderedKeys: MutableSet<String>? = null,
-    expandedAccordions: Map<List<String>, String?>,
-    onToggle: (List<String>, String) -> Unit
-) {
-    val state by viewModel.state.collectAsState()
-    val categoryComboStructures = state.categoryComboStructures
-    val dataElements = values.map { it.dataElement to it.dataElementName }.distinct()
-
-    // --- New grouping logic per RENDERING_RULES.md ---
-    val structureKeyFor = { dataValue: DataValue ->
-        val structure = categoryComboStructures[dataValue.categoryOptionCombo]
-        structure?.joinToString("|") { cat ->
-            cat.first + ":" + cat.second.joinToString(",") { it.first }
-        } ?: "__DEFAULT__"
-    }
-    val groups = values.groupBy(structureKeyFor)
-    val allSameStructure = groups.size == 1
-    val isAllDefault = groups.keys.singleOrNull() == "__DEFAULT__"
-
-    if (allSameStructure) {
-        val groupValues = values
-        val structure = groupValues.firstOrNull()?.let { categoryComboStructures[it.categoryOptionCombo] } ?: emptyList()
-        if (structure.isEmpty()) {
-            // Flat list for default (zero category)
-            Column(modifier = Modifier.fillMaxWidth()) {
-                dataElements.forEach { (dataElement, dataElementName) ->
-                    val dataValue = groupValues.find { it.dataElement == dataElement }
-                    val key = dataValue?.dataElement + "_" + dataValue?.categoryOptionCombo
-                    renderedKeys?.add(key)
-                    DataElementRow(
-                        dataElementName = dataElementName,
-                        fields = listOf(dataValue),
-                        onValueChange = onValueChange
-                    )
-                }
-            }
-        } else {
-            // Use the new recursive accordion logic for all non-empty category structures
-            CategoryAccordionRecursive(
-                categories = structure,
-                values = groupValues,
-                onValueChange = onValueChange,
-                optionUidsToComboUid = optionUidsToComboUid,
-                viewModel = viewModel,
-                parentPath = emptyList(),
-                expandedAccordions = expandedAccordions,
-                onToggle = onToggle
-            )
-        }
-    }
-    // If mixed category combos, handle per rule 5
-    // 1. Render all default (zero category) elements as a flat list
-    val defaultValues = groups["__DEFAULT__"] ?: emptyList()
-    if (defaultValues.isNotEmpty()) {
-        Column(modifier = Modifier.fillMaxWidth()) {
-            dataElements.forEach { (dataElement, dataElementName) ->
-                val dataValue = defaultValues.find { it.dataElement == dataElement }
-                val key = dataValue?.dataElement + "_" + dataValue?.categoryOptionCombo
-                renderedKeys?.add(key)
-                DataElementRow(
-                    dataElementName = dataElementName,
-                    fields = listOf(dataValue),
-                    onValueChange = onValueChange
-                )
-            }
-        }
-        Divider(modifier = Modifier.padding(vertical = 8.dp))
-    }
-    // 2. For each non-default group, render using the correct rule
-    groups.filterKeys { it != "__DEFAULT__" }.forEach { (groupKey, groupValues) ->
-        val structure = groupValues.firstOrNull()?.let { categoryComboStructures[it.categoryOptionCombo] } ?: emptyList()
-        val categoryOptionComboUid = groupValues.firstOrNull()?.categoryOptionCombo
-        val optionUidsToComboUidForGroup = state.optionUidsToComboUid[categoryOptionComboUid] ?: emptyMap()
-        CategoryAccordionRecursive(
-            categories = structure,
-            values = groupValues,
-            onValueChange = onValueChange,
-            optionUidsToComboUid = optionUidsToComboUidForGroup,
-            viewModel = viewModel,
-            parentPath = emptyList(),
-            expandedAccordions = expandedAccordions,
-            onToggle = onToggle
-        )
-        Divider(modifier = Modifier.padding(vertical = 8.dp))
-    }
-}
-
-@Composable
-private fun DataElementRow(
-    dataElementName: String,
-    fields: List<DataValue?>,
-    onValueChange: (String, DataValue) -> Unit
-) {
-    Column(modifier = Modifier
-        .fillMaxWidth()
-        .padding(vertical = 4.dp)) {
-        Text(text = dataElementName, style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.Bold)
-        fields.filterNotNull().forEach { dataValue ->
-            DataValueField(
-                dataValue = dataValue,
-                onValueChange = { value -> onValueChange(value, dataValue) },
-                viewModel = viewModel()
-            )
-        }
-    }
-}
-
-@OptIn(ExperimentalFoundationApi::class)
-@Composable
-private fun CategoryAccordion(
-    header: String,
-    expanded: Boolean,
-    onToggleExpand: () -> Unit,
-    content: @Composable () -> Unit
-) {
-    val bringIntoViewRequester = remember { BringIntoViewRequester() }
-    val coroutineScope = rememberCoroutineScope()
-    Column(modifier = Modifier.fillMaxWidth()) {
-        Surface(
-            modifier = Modifier
-                .fillMaxWidth()
-                .heightIn(min = 56.dp, max = 56.dp) // Fixed height for uniformity
-                .clickable {
-                    onToggleExpand()
-                    if (!expanded) {
-                        coroutineScope.launch {
-                            bringIntoViewRequester.bringIntoView()
-                        }
-                    }
-                },
-            color = MaterialTheme.colorScheme.secondaryContainer,
-            shape = MaterialTheme.shapes.small
-        ) {
-            Row(
-                modifier = Modifier
-                    .padding(12.dp)
-                    .fillMaxHeight(),
-                horizontalArrangement = Arrangement.SpaceBetween,
-                verticalAlignment = Alignment.CenterVertically
-            ) {
-                Text(
-                    text = header,
-                    style = MaterialTheme.typography.titleSmall,
-                    fontWeight = FontWeight.Medium,
-                    maxLines = 2,
-                    overflow = TextOverflow.Ellipsis,
-                    modifier = Modifier.weight(1f)
-                )
-                Icon(
-                    imageVector = Icons.Default.KeyboardArrowDown,
-                    contentDescription = "Expand/Collapse Category",
+                SnackbarHost(
+                    hostState = snackbarHostState,
                     modifier = Modifier
-                        .rotate(if (expanded) 180f else 0f)
-                        .size(20.dp)
-                )
-            }
-        }
-        AnimatedVisibility(visible = expanded) {
-            Column(modifier = Modifier
-                .fillMaxWidth()
-                .padding(start = 16.dp, top = 8.dp)
-                .bringIntoViewRequester(bringIntoViewRequester)) {
-                content()
-            }
-        }
-    }
-}
-
-@Composable
-private fun DataElementGridRow(
-    dataElementName: String,
-    colCategory: Pair<String, List<Pair<String, String>>>,
-    rowCategory: Pair<String, List<Pair<String, String>>>,
-    dataValues: List<DataValue>,
-    comboMap: Map<Set<String>, String>,
-    onValueChange: (String, DataValue) -> Unit
-) {
-    Column(modifier = Modifier
-        .fillMaxWidth()
-        .padding(vertical = 4.dp)) {
-        Text(text = dataElementName, style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.Bold)
-        Row(modifier = Modifier.fillMaxWidth()) {
-            Spacer(modifier = Modifier.width(100.dp)) // For row header
-            colCategory.second.forEach { colOpt ->
-                Text(
-                    text = colOpt.second,
-                    modifier = Modifier.width(100.dp),
-                    style = MaterialTheme.typography.bodyMedium,
-                    fontWeight = FontWeight.Medium
-                )
-            }
-        }
-        rowCategory.second.forEach { rowOpt ->
-            Row(modifier = Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
-                Text(
-                    text = rowOpt.second,
-                    modifier = Modifier.width(100.dp),
-                    style = MaterialTheme.typography.bodyMedium
-                )
-                colCategory.second.forEach { colOpt ->
-                    val cocUid = comboMap.entries.find { it.key == setOf(rowOpt.first, colOpt.first) || it.key == setOf(colOpt.first, rowOpt.first) }?.value
-                    val dataValue = dataValues.find { it.categoryOptionCombo == cocUid }
-                    Box(modifier = Modifier
-                        .width(100.dp)
-                        .padding(4.dp)) {
-                        if (dataValue != null) {
-                            DataValueField(
-                                dataValue = dataValue,
-                                onValueChange = { value -> onValueChange(value, dataValue) },
-                                viewModel = viewModel()
-                            )
-                        }
-                    }
-                }
-            }
-        }
-    }
-}
-
-@Composable
-fun DataElementSection(
-    sectionName: String,
-    categoryGroups: Map<String, List<DataValue>>,
-    isExpandedSections: Map<String, Boolean>,
-    onToggleCategoryGroup: (String, String) -> Unit,
-    onValueChange: (String, DataValue) -> Unit
-) {
-    var selectedCategory by remember { mutableStateOf("") }
-    var expandedFilter by remember { mutableStateOf(false) }
-    Column(
-        modifier = Modifier
-            .fillMaxWidth()
-            .padding(start = 8.dp, top = 8.dp, end = 8.dp, bottom = 16.dp)
-    ) {
-        if (categoryGroups.size > 1) {
-            CategoryFilter(
-                categoryGroups = categoryGroups,
-                selectedCategory = selectedCategory,
-                onCategorySelected = { selectedCategory = it },
-                expanded = expandedFilter,
-                onExpandedChange = { expandedFilter = it }
-            )
-            Spacer(modifier = Modifier.height(8.dp))
-        }
-        CategoryContent(
-            categoryGroups = categoryGroups,
-            selectedCategory = selectedCategory,
-            sectionName = sectionName,
-            isExpandedSections = isExpandedSections,
-            onToggleCategoryGroup = onToggleCategoryGroup,
-            onValueChange = onValueChange
-        )
-    }
-}
-
-@OptIn(ExperimentalMaterial3Api::class)
-@Composable
-private fun CategoryFilter(
-    categoryGroups: Map<String, List<DataValue>>,
-    selectedCategory: String,
-    onCategorySelected: (String) -> Unit,
-    expanded: Boolean,
-    onExpandedChange: (Boolean) -> Unit
-) {
-    ExposedDropdownMenuBox(
-        expanded = expanded,
-        onExpandedChange = onExpandedChange
-    ) {
-        OutlinedTextField(
-            value = if (selectedCategory.isEmpty()) "All Categories" else (categoryGroups[selectedCategory]?.firstOrNull()?.categoryOptionComboName ?: selectedCategory),
-            onValueChange = {},
-            readOnly = true,
-            label = { Text("Filter by Category") },
-            trailingIcon = { 
-                if (selectedCategory.isNotEmpty()) {
-                    IconButton(
-                        onClick = { 
-                            onCategorySelected("")
-                            onExpandedChange(false)
-                        }
-                    ) {
-                        Icon(
-                            imageVector = Icons.Default.Clear,
-                            contentDescription = "Clear Filter"
-                        )
-                    }
-                } else {
-                    ExposedDropdownMenuDefaults.TrailingIcon(expanded = expanded)
-                }
-            },
-            modifier = Modifier
-                .fillMaxWidth()
-                .menuAnchor()
-        )
-        ExposedDropdownMenu(
-            expanded = expanded,
-            onDismissRequest = { onExpandedChange(false) }
-        ) {
-            DropdownMenuItem(
-                text = { Text("All Categories") },
-                onClick = {
-                    onCategorySelected("")
-                    onExpandedChange(false)
-                }
-            )
-            categoryGroups.keys.forEach { categoryUid ->
-                val categoryName = categoryGroups[categoryUid]?.firstOrNull()?.categoryOptionComboName ?: categoryUid
-                DropdownMenuItem(
-                    text = { Text(categoryName) },
-                    onClick = {
-                        onCategorySelected(categoryUid)
-                        onExpandedChange(false)
-                    }
-                )
-            }
-        }
-    }
-}
-
-@Composable
-private fun CategoryContent(
-    categoryGroups: Map<String, List<DataValue>>,
-    selectedCategory: String,
-    sectionName: String,
-    isExpandedSections: Map<String, Boolean>,
-    onToggleCategoryGroup: (String, String) -> Unit,
-    onValueChange: (String, DataValue) -> Unit
-) {
-    if (selectedCategory.isEmpty()) {
-        categoryGroups.forEach { (categoryGroup, values) ->
-            key("${sectionName}_$categoryGroup") {
-                if (categoryGroup == "default" || categoryGroup.isBlank()) {
-                    values.forEach { dataValue ->
-                        key("${dataValue.dataElement}_${dataValue.categoryOptionCombo}") {
-                            DataValueField(
-                                dataValue = dataValue,
-                                onValueChange = { value -> onValueChange(value, dataValue) },
-                                viewModel = viewModel()
-                            )
-                        }
-                    }
-                } else {
-                    CategoryGroup(
-                        categoryGroup = values.firstOrNull()?.categoryOptionComboName ?: categoryGroup,
-                        values = values,
-                        isExpanded = isExpandedSections["$sectionName:$categoryGroup"] == true,
-                        onToggleExpand = { onToggleCategoryGroup(sectionName, categoryGroup) },
-                        onValueChange = onValueChange
-                    )
-                    Spacer(modifier = Modifier.height(8.dp))
-                }
-            }
-        }
-    } else {
-        categoryGroups[selectedCategory]?.let { values ->
-            val categoryGroup = selectedCategory
-            key("${sectionName}_$categoryGroup") {
-                if (categoryGroup == "default" || categoryGroup.isBlank()) {
-                    values.forEach { dataValue ->
-                        key("${dataValue.dataElement}_${dataValue.categoryOptionCombo}") {
-                            DataValueField(
-                                dataValue = dataValue,
-                                onValueChange = { value -> onValueChange(value, dataValue) },
-                                viewModel = viewModel()
-                            )
-                        }
-                    }
-                } else {
-                    CategoryGroup(
-                        categoryGroup = values.firstOrNull()?.categoryOptionComboName ?: selectedCategory,
-                        values = values,
-                        isExpanded = isExpandedSections["$sectionName:$categoryGroup"] == true,
-                        onToggleExpand = { onToggleCategoryGroup(sectionName, categoryGroup) },
-                        onValueChange = onValueChange
-                    )
-                }
-            }
-        }
-    }
-}
-
-@Composable
-fun CategoryGroup(
-    categoryGroup: String,
-    values: List<DataValue>,
-    isExpanded: Boolean,
-    onToggleExpand: () -> Unit,
-    onValueChange: (String, DataValue) -> Unit
-) {
-    if (categoryGroup == "default" || categoryGroup.isBlank()) {
-        Column(
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(bottom = 8.dp)
-        ) {
-            values.forEach { dataValue ->
-                key("${dataValue.dataElement}_${dataValue.categoryOptionCombo}") {
-                    DataValueField(
-                        dataValue = dataValue,
-                        onValueChange = { value -> onValueChange(value, dataValue) },
-                        viewModel = viewModel()
-                    )
-                }
-            }
-        }
-        return
-    }
-    val categoryRotationState by animateFloatAsState(
-        targetValue = if (isExpanded) 180f else 0f
-    )
-    Column(
-        modifier = Modifier
-            .fillMaxWidth()
-            .padding(bottom = 8.dp)
-    ) {
-        Surface(
-            modifier = Modifier
-                .fillMaxWidth()
-                .heightIn(min = 56.dp, max = 56.dp) // Fixed height for uniformity
-                .clickable(
-                    interactionSource = remember { MutableInteractionSource() },
-                    indication = ripple(
-                        bounded = true,
-                        color = MaterialTheme.colorScheme.primary
-                    ),
-                    onClick = onToggleExpand
-                ),
-            color = MaterialTheme.colorScheme.secondaryContainer,
-            shape = MaterialTheme.shapes.small
-        ) {
-            Row(
-                modifier = Modifier
-                    .padding(12.dp)
-                    .fillMaxHeight(),
-                horizontalArrangement = Arrangement.SpaceBetween,
-                verticalAlignment = Alignment.CenterVertically
-            ) {
-                Text(
-                    text = categoryGroup,
-                    style = MaterialTheme.typography.titleSmall,
-                    fontWeight = FontWeight.Medium,
-                    maxLines = 2,
-                    overflow = TextOverflow.Ellipsis,
-                    modifier = Modifier.weight(1f)
-                )
-                Icon(
-                    imageVector = Icons.Default.KeyboardArrowDown,
-                    contentDescription = "Expand/Collapse Category",
-                    modifier = Modifier
-                        .rotate(categoryRotationState)
-                        .size(20.dp)
-                )
-            }
-        }
-        AnimatedVisibility(visible = isExpanded) {
-            Column(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(start = 16.dp, top = 8.dp)
-            ) {
-                values.forEach { dataValue ->
-                    key("${dataValue.dataElement}_${dataValue.categoryOptionCombo}") {
-                        DataValueField(
-                            dataValue = dataValue,
-                            onValueChange = { value -> onValueChange(value, dataValue) },
-                            viewModel = viewModel()
-                        )
-                    }
-                }
-            }
-        }
-    }
-}
-
-@Composable
-fun DataValueField(
-    dataValue: DataValue,
-    onValueChange: (String) -> Unit,
-    viewModel: DataEntryViewModel,
-    enabled: Boolean = true
-) {
-    Log.d(
-        "DataValueField",
-        "Rendering field for dataElement='${dataValue.dataElement}', categoryOptionCombo='${dataValue.categoryOptionCombo}', value='${dataValue.value}'"
-    )
-    val key = remember(dataValue.dataElement, dataValue.categoryOptionCombo) {
-        "${dataValue.dataElement}|${dataValue.categoryOptionCombo}"
-    }
-    // Initialize field state if not present
-    LaunchedEffect(key) {
-        viewModel.initializeFieldState(dataValue)
-    }
-    val fieldState = viewModel.fieldStates[key] ?: androidx.compose.ui.text.input.TextFieldValue(dataValue.value ?: "")
-
-    // Get option set and render type from state
-    val state by viewModel.state.collectAsState()
-    val optionSet = state.optionSets[dataValue.dataElement]
-    val renderType = state.renderTypes[dataValue.dataElement] ?: optionSet?.computeRenderType()
-
-    // Check program rule effects
-    val isHidden = state.hiddenFields.contains(dataValue.dataElement)
-    val isDisabledByRule = state.disabledFields.contains(dataValue.dataElement)
-    val isMandatoryByRule = state.mandatoryFields.contains(dataValue.dataElement)
-    val warning = state.fieldWarnings[dataValue.dataElement]
-    val error = state.fieldErrors[dataValue.dataElement]
-    val calculatedValue = state.calculatedValues[dataValue.dataElement]
-
-    // If field is hidden by program rules, don't render it
-    if (isHidden) {
-        return
-    }
-
-    // Check if this field belongs to a radio button group
-    val groupEntry = state.radioButtonGroups.entries.firstOrNull { entry ->
-        entry.value.contains(dataValue.dataElement)
-    }
-
-    // Determine if this is the FIRST field in its group (based on original data values order)
-    val isFirstInGroup = if (groupEntry != null) {
-        val groupFieldIds = groupEntry.value
-        // Get all fields in the group maintaining their original order
-        val groupFieldsInOrder = state.dataValues.filter { it.dataElement in groupFieldIds }
-        // This field is first if it's the first occurrence in the ordered list
-        groupFieldsInOrder.firstOrNull()?.dataElement == dataValue.dataElement
-    } else {
-        false
-    }
-
-    // If field is part of a group but NOT the first field, skip rendering
-    if (groupEntry != null && !isFirstInGroup) {
-        return
-    }
-
-    // Effective enabled state (disabled if field is disabled OR disabled by rule)
-    val effectiveEnabled = enabled && !isDisabledByRule
-
-    Column(
-        modifier = Modifier
-            .fillMaxWidth()
-            .padding(horizontal = 16.dp, vertical = 4.dp)
-            .let { base ->
-                if (!effectiveEnabled) {
-                    base.background(
-                        MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f),
-                        MaterialTheme.shapes.small
-                    )
-                } else base
-            }
-    ) {
-        // Check if this field is the first in a radio button group
-        when {
-            groupEntry != null && renderType == com.ash.simpledataentry.domain.model.RenderType.YES_NO_BUTTONS && isFirstInGroup -> {
-                // Get all fields in the group maintaining their original order
-                val groupFieldIds = groupEntry.value
-                val groupFields = state.dataValues.filter { it.dataElement in groupFieldIds }
-
-                // Determine which field is selected (has value "true" or "1")
-                val selectedFieldId = groupFields.firstOrNull { field ->
-                    val value = calculatedValue ?: field.value
-                    value?.lowercase() in listOf("true", "1", "yes")
-                }?.dataElement
-
-                com.ash.simpledataentry.presentation.dataEntry.components.GroupedRadioButtons(
-                    groupTitle = groupEntry.key,
-                    fields = groupFields,
-                    selectedFieldId = selectedFieldId,
-                    optionSet = optionSet ?: com.ash.simpledataentry.domain.model.OptionSet(
-                        id = "yes_no",
-                        name = "Yes/No",
-                        displayName = "Yes/No",
-                        options = listOf(
-                            com.ash.simpledataentry.domain.model.Option(
-                                code = "1",
-                                name = "Yes",
-                                displayName = "Yes",
-                                sortOrder = 1
-                            ),
-                            com.ash.simpledataentry.domain.model.Option(
-                                code = "0",
-                                name = "No",
-                                displayName = "No",
-                                sortOrder = 2
-                            )
-                        ),
-                        valueType = com.ash.simpledataentry.domain.model.ValueType.TEXT
-                    ),
-                    isRequired = isMandatoryByRule,
-                    enabled = effectiveEnabled,
-                    onFieldSelected = { selectedId ->
-                        // Update all fields in the group using viewModel
-                        viewModel.updateGroupedRadioFields(
-                            groupFields = groupFields,
-                            selectedFieldId = selectedId
-                        )
-                    },
-                    modifier = Modifier.fillMaxWidth()
-                )
-            }
-            optionSet != null && renderType != null -> {
-                when (renderType) {
-                    com.ash.simpledataentry.domain.model.RenderType.DROPDOWN -> {
-                        com.ash.simpledataentry.presentation.dataEntry.components.OptionSetDropdown(
-                            optionSet = optionSet,
-                            selectedCode = calculatedValue ?: dataValue.value,
-                            title = dataValue.dataElementName + if (isMandatoryByRule) " *" else "",
-                            isRequired = isMandatoryByRule,
-                            enabled = effectiveEnabled,
-                            onOptionSelected = { selectedCode ->
-                                if (selectedCode != null) {
-                                    onValueChange(selectedCode)
-                                }
-                            },
-                            modifier = Modifier.fillMaxWidth()
-                        )
-                    }
-                    com.ash.simpledataentry.domain.model.RenderType.RADIO_BUTTONS -> {
-                        com.ash.simpledataentry.presentation.dataEntry.components.OptionSetRadioGroup(
-                            optionSet = optionSet,
-                            selectedCode = calculatedValue ?: dataValue.value,
-                            title = dataValue.dataElementName + if (isMandatoryByRule) " *" else "",
-                            isRequired = isMandatoryByRule,
-                            enabled = effectiveEnabled,
-                            onOptionSelected = { selectedCode ->
-                                if (selectedCode != null) {
-                                    onValueChange(selectedCode)
-                                }
-                            },
-                            modifier = Modifier.fillMaxWidth()
-                        )
-                    }
-                    com.ash.simpledataentry.domain.model.RenderType.YES_NO_BUTTONS -> {
-                        com.ash.simpledataentry.presentation.dataEntry.components.YesNoCheckbox(
-                            selectedValue = calculatedValue ?: dataValue.value,
-                            title = dataValue.dataElementName + if (isMandatoryByRule) " *" else "",
-                            isRequired = isMandatoryByRule,
-                            enabled = effectiveEnabled,
-                            onValueChanged = { newValue ->
-                                if (newValue != null) {
-                                    onValueChange(newValue)
-                                }
-                            },
-                            modifier = Modifier.fillMaxWidth()
-                        )
-                    }
-                    else -> {
-                        // Default to dropdown for other render types
-                        com.ash.simpledataentry.presentation.dataEntry.components.OptionSetDropdown(
-                            optionSet = optionSet,
-                            selectedCode = calculatedValue ?: dataValue.value,
-                            title = dataValue.dataElementName + if (isMandatoryByRule) " *" else "",
-                            isRequired = isMandatoryByRule,
-                            enabled = effectiveEnabled,
-                            onOptionSelected = { selectedCode ->
-                                if (selectedCode != null) {
-                                    onValueChange(selectedCode)
-                                }
-                            },
-                            modifier = Modifier.fillMaxWidth()
-                        )
-                    }
-                }
-            }
-            // No option set - use standard input types based on dataEntryType
-            dataValue.dataEntryType == DataEntryType.YES_NO -> {
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.spacedBy(4.dp)
-                ) {
-                    Button(
-                        text = "Yes",
-                        style = if (dataValue.value == "true") ButtonStyle.FILLED else ButtonStyle.OUTLINED,
-                        colorStyle = ColorStyle.DEFAULT,
-                        modifier = Modifier.weight(1f),
-                        enabled = effectiveEnabled,
-                        onClick = { if (effectiveEnabled) onValueChange("true") }
-                    )
-                    Button(
-                        text = "No",
-                        style = if (dataValue.value == "false") ButtonStyle.FILLED else ButtonStyle.OUTLINED,
-                        colorStyle = ColorStyle.DEFAULT,
-                        modifier = Modifier.weight(1f),
-                        enabled = effectiveEnabled,
-                        onClick = { if (effectiveEnabled) onValueChange("false") }
-                    )
-                }
-            }
-            dataValue.dataEntryType == DataEntryType.NUMBER ||
-            dataValue.dataEntryType == DataEntryType.INTEGER ||
-            dataValue.dataEntryType == DataEntryType.POSITIVE_INTEGER ||
-            dataValue.dataEntryType == DataEntryType.NEGATIVE_INTEGER -> {
-                InputNumber(
-                    title = dataValue.dataElementName + if (isMandatoryByRule) " *" else "",
-                    state = when {
-                        !effectiveEnabled -> InputShellState.DISABLED
-                        dataValue.validationState == ValidationState.ERROR || error != null -> InputShellState.ERROR
-                        dataValue.validationState == ValidationState.WARNING || warning != null -> InputShellState.WARNING
-                        else -> InputShellState.UNFOCUSED
-                    },
-                    inputTextFieldValue = fieldState,
-                    onValueChanged = { newValue ->
-                        if (newValue != null && effectiveEnabled) viewModel.onFieldValueChange(newValue, dataValue)
-                    },
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .padding(horizontal = 0.dp)
-                )
-            }
-            dataValue.dataEntryType == DataEntryType.PERCENTAGE -> {
-                InputText(
-                    title = dataValue.dataElementName + if (isMandatoryByRule) " *" else "",
-                    state = when {
-                        !effectiveEnabled -> InputShellState.DISABLED
-                        dataValue.validationState == ValidationState.ERROR || error != null -> InputShellState.ERROR
-                        dataValue.validationState == ValidationState.WARNING || warning != null -> InputShellState.WARNING
-                        else -> InputShellState.UNFOCUSED
-                    },
-                    inputTextFieldValue = fieldState,
-                    onValueChanged = { newValue ->
-                        if (newValue != null && effectiveEnabled) viewModel.onFieldValueChange(newValue, dataValue)
-                    },
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .padding(horizontal = 0.dp)
-                )
-            }
-            else -> {
-                InputText(
-                    title = dataValue.dataElementName + if (isMandatoryByRule) " *" else "",
-                    state = when {
-                        !effectiveEnabled -> InputShellState.DISABLED
-                        dataValue.validationState == ValidationState.ERROR || error != null -> InputShellState.ERROR
-                        dataValue.validationState == ValidationState.WARNING || warning != null -> InputShellState.WARNING
-                        else -> InputShellState.UNFOCUSED
-                    },
-                    inputTextFieldValue = fieldState,
-                    onValueChanged = { newValue ->
-                        if (newValue != null && effectiveEnabled) viewModel.onFieldValueChange(newValue, dataValue)
-                    },
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .padding(horizontal = 0.dp)
-                )
-            }
-        }
-    }
-}
-
-@Composable
-fun DataElementGridSection(
-    sectionName: String,
-    rowCategory: Pair<String, List<Pair<String, String>>>,
-    colCategory: Pair<String, List<Pair<String, String>>>,
-    dataValues: List<DataValue>,
-    onValueChange: (String, DataValue) -> Unit,
-    optionUidsToComboUid: Map<Set<String>, String>,
-    viewModel: DataEntryViewModel
-) {
-    // Helper to detect gender categories
-    fun isGenderCategory(category: Pair<String, List<Pair<String, String>>>): Boolean {
-        val genderKeywords = listOf("gender", "sex", "male", "female")
-        val name = category.first.lowercase()
-        val options = category.second.map { it.second.lowercase() }
-        return genderKeywords.any { k ->
-            name.contains(k) || options.any { it.contains(k) }
-        }
-    }
-
-    // Force gender category to be the columns (smallerCat)
-    val (smallerCat, largerCat) = when {
-        isGenderCategory(rowCategory) -> rowCategory to colCategory
-        isGenderCategory(colCategory) -> colCategory to rowCategory
-        rowCategory.second.size <= colCategory.second.size -> rowCategory to colCategory
-        else -> colCategory to rowCategory
-    }
-
-    var selectedFilter by remember { mutableStateOf<String?>(null) }
-    var expandedFilter by remember { mutableStateOf(false) }
-
-    Column(
-        modifier = Modifier.fillMaxWidth()
-    ) {
-        // Filter dropdown
-        ExposedDropdownMenuBox(
-            expanded = expandedFilter,
-            onExpandedChange = { expandedFilter = !expandedFilter }
-        ) {
-            OutlinedTextField(
-                value = selectedFilter ?: "All",
-                onValueChange = {},
-                readOnly = true,
-                label = { Text("Filter") },
-                trailingIcon = { 
-                    if (selectedFilter != null) {
-                        IconButton(
-                            onClick = { 
-                                selectedFilter = null
-                                expandedFilter = false
-                            }
-                        ) {
-                            Icon(
-                                imageVector = Icons.Default.Clear,
-                                contentDescription = "Clear Filter"
-                            )
-                        }
-                    } else {
-                        ExposedDropdownMenuDefaults.TrailingIcon(expanded = expandedFilter)
-                    }
-                },
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .menuAnchor()
-                    .padding(bottom = 8.dp)
-            )
-            ExposedDropdownMenu(
-                expanded = expandedFilter,
-                onDismissRequest = { expandedFilter = false }
-            ) {
-                DropdownMenuItem(
-                    text = { Text("All") },
-                    onClick = {
-                        selectedFilter = null
-                        expandedFilter = false
-                    }
-                )
-                (smallerCat.second + largerCat.second).map { it.second }.distinct().forEach { option ->
-                    DropdownMenuItem(
-                        text = { Text(option) },
-                        onClick = {
-                            selectedFilter = option
-                            expandedFilter = false
-                        }
-                    )
-                }
-            }
-        }
-
-        val columnHeaders = listOf(largerCat.first) + smallerCat.second.map { it.second }
-
-        val rows = largerCat.second.filter { largeOpt ->
-            selectedFilter == null || largeOpt.second == selectedFilter
-        }.map { largeOpt ->
-            val rowCells = mutableListOf<@Composable () -> Unit>()
-            // First cell in row is the row header
-            rowCells.add {
-                Text(
-                    text = largeOpt.second,
-                    style = MaterialTheme.typography.bodyMedium,
-                    fontWeight = FontWeight.Medium,
-                    modifier = Modifier.padding(end = 8.dp)
-                )
-            }
-            // Add data value fields for each column
-            smallerCat.second.filter { smallOpt ->
-                selectedFilter == null || smallOpt.second == selectedFilter
-            }.forEach { smallOpt ->
-                rowCells.add {
-                    val optionUids = setOf(largeOpt.first, smallOpt.first)
-                    val comboUid = optionUidsToComboUid[optionUids]
-                    val cellDataValues = dataValues.filter { it.categoryOptionCombo == comboUid }
-                    Column {
-                        cellDataValues.forEach { dataValue ->
-                            key("${dataValue.dataElement}_${dataValue.categoryOptionCombo}") {
-                                DataValueField(
-                                    dataValue = dataValue,
-                                    onValueChange = { value -> onValueChange(value, dataValue) },
-                                    viewModel = viewModel
-                                )
-                            }
-                        }
-                    }
-                }
-            }
-            rowCells.toList()
-        }
-
-        FrozenHeaderGrid(
-            columnHeaders = columnHeaders,
-            rows = rows,
-            modifier = Modifier.fillMaxWidth()
-        )
-    }
-}
-
-private fun validateDataValue(dataValue: DataValue): ValidationState {
-    // Check validation rules
-    for (rule in dataValue.validationRules) {
-        when (rule.rule) {
-            "number" -> {
-                if (dataValue.value != null && dataValue.value.isNotBlank()) {
-                    if (!dataValue.value.matches(Regex("^-?\\d*\\.?\\d+$"))) {
-                        return ValidationState.ERROR
-                    }
-                }
-            }
-            "coordinates" -> {
-                if (dataValue.value != null && dataValue.value.isNotBlank()) {
-                    if (!dataValue.value.matches(Regex("^-?\\d+\\.\\d+,-?\\d+\\.\\d+$"))) {
-                        return ValidationState.ERROR
-                    }
-                }
-            }
-        }
-    }
-    return ValidationState.VALID
-}
-
-// --- Helper composable to render a group of data elements by category combo ---
-@Composable
-private fun renderCategoryComboGroup(
-    sectionName: String,
-    structure: List<Pair<String, List<Pair<String, String>>>>,
-    values: List<DataValue>,
-    expandedCategoryGroup: String?,
-    onToggleCategoryGroup: (String, String) -> Unit,
-    onValueChange: (String, DataValue) -> Unit,
-    optionUidsToComboUid: Map<Set<String>, String>,
-    viewModel: DataEntryViewModel
-) {
-    when (structure.size) {
-        0 -> {
-            // Flat list (should not happen here, handled above)
-            values.forEach { dataValue ->
-                DataElementRow(
-                    dataElementName = dataValue.dataElementName,
-                    fields = listOf(dataValue),
-                    onValueChange = onValueChange
-                )
-            }
-        }
-        1 -> {
-            val options = structure[0].second
-            if (options.size == 2) {
-                // Side-by-side fields (Rule 2)
-                Row(modifier = Modifier.fillMaxWidth()) {
-                    options.forEach { (optUid, optName) ->
-                        val cocUid = optionUidsToComboUid.entries.find { it.key == setOf(optUid) }?.value
-                        val fields = values.filter { it.categoryOptionCombo == cocUid }
-                        Column(modifier = Modifier.weight(1f)) {
-                            Text(optName, fontWeight = FontWeight.Medium)
-                            fields.forEach { dataValue ->
-                                DataValueField(
-                                    dataValue = dataValue,
-                                    onValueChange = { value -> onValueChange(value, dataValue) },
-                                    viewModel = viewModel
-                                )
-                            }
-                        }
-                    }
-                }
-            } else {
-                // Accordion with list inside (Rule 2)
-                CategoryAccordion(
-                    header = structure[0].first,
-                    expanded = expandedCategoryGroup == "$sectionName:${structure[0].first}",
-                    onToggleExpand = {
-                        if (expandedCategoryGroup == "$sectionName:${structure[0].first}")
-                            onToggleCategoryGroup(sectionName, "")
-                        else
-                            onToggleCategoryGroup(sectionName, structure[0].first)
-                    }
-                ) {
-                    values.forEach { dataValue ->
-                        DataElementRow(
-                            dataElementName = dataValue.dataElementName,
-                            fields = listOf(dataValue),
-                            onValueChange = onValueChange
-                        )
-                    }
-                }
-            }
-        }
-        2 -> {
-            val catA = structure[0]
-            val catB = structure[1]
-            val aOptions = catA.second
-            val bOptions = catB.second
-            // --- Begin new logic for two categories (see RENDERING_RULES.md) ---
-            // Always make sex/gender category the columns in grid
-            val (rowCat, colCat) = when {
-                isSexCategory(catA) -> catB to catA
-                isSexCategory(catB) -> catA to catB
-                else -> catA to catB
-            }
-            if (rowCat.second.size == 2 && colCat.second.size == 2) {
-                // Both have 2 options: render as grid
-                Column(modifier = Modifier.padding(start = 32.dp, bottom = 2.dp)) {
-                    // Header row
-                    Row {
-                        Spacer(modifier = Modifier.width(100.dp)) // For row header
-                        colCat.second.forEach { (_, colName) ->
-                            Text(
-                                text = colName,
-                                modifier = Modifier.width(100.dp),
-                                style = MaterialTheme.typography.bodyMedium,
-                                fontWeight = FontWeight.Bold
-                            )
-                        }
-                    }
-                    // Data rows
-                    rowCat.second.forEach { (rowUid, rowName) ->
-                        Row(verticalAlignment = Alignment.CenterVertically) {
-                            Text(
-                                text = rowName,
-                                modifier = Modifier.width(100.dp),
-                                style = MaterialTheme.typography.bodyMedium
-                            )
-                            colCat.second.forEach { (colUid, _) ->
-                                val dataValuesForCell = values.filter { dv ->
-                                    val comboStructure = viewModel.state.value.categoryComboStructures[dv.categoryOptionCombo]
-                                    comboStructure?.any { cat ->
-                                        cat.first == rowCat.first && cat.second.any { it.first == rowUid }
-                                    } == true &&
-                                    comboStructure.any { cat ->
-                                        cat.first == colCat.first && cat.second.any { it.first == colUid }
-                                    }
-                                }
-                                Column(modifier = Modifier
-                                    .width(100.dp)
-                                    .padding(4.dp)) {
-                                    dataValuesForCell.forEach { dataValue ->
-                                        Text(
-                                            text = dataValue.dataElementName,
-                                            style = MaterialTheme.typography.bodyMedium,
-                                            modifier = Modifier.padding(start = 8.dp, bottom = 2.dp)
-                                        )
-                                    }
-                                }
-                            }
-                        }
-                    }
-                }
-            } else if (colCat.second.size == 2) {
-                // For each option in the header category, render an accordion header
-                rowCat.second.forEach { (headerUid, headerName) ->
-                    Surface(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .padding(start = 24.dp, end = 8.dp, bottom = 4.dp),
-                        color = MaterialTheme.colorScheme.secondaryContainer,
-                        shape = MaterialTheme.shapes.small
-                    ) {
-                        Row(
-                            modifier = Modifier.padding(12.dp),
-                            horizontalArrangement = Arrangement.SpaceBetween,
-                            verticalAlignment = Alignment.CenterVertically
+                        .align(Alignment.BottomCenter)
+                        .padding(bottom = 8.dp),
+                    snackbar = { data ->
+                        Snackbar(
+                            containerColor = MaterialTheme.colorScheme.surface,
+                            contentColor = Color.White
                         ) {
                             Text(
-                                text = headerName,
-                                style = MaterialTheme.typography.titleSmall,
-                                fontWeight = FontWeight.Medium
+                                data.visuals.message,
+                                style = MaterialTheme.typography.bodyLarge
                             )
                         }
                     }
-                    // Side by side columns for contentCat options, only render elements matching both header and column
-                    Row(modifier = Modifier.padding(start = 40.dp, bottom = 2.dp)) {
-                        colCat.second.forEach { (optUid, optName) ->
-                            Column(modifier = Modifier.weight(1f)) {
-                                Text(
-                                    text = optName,
-                                    style = MaterialTheme.typography.bodyMedium,
-                                    fontWeight = FontWeight.Bold,
-                                    modifier = Modifier.padding(bottom = 2.dp)
-                                )
-                                values.filter { dv ->
-                                    val comboStructure = viewModel.state.value.categoryComboStructures[dv.categoryOptionCombo]
-                                    comboStructure?.any { cat ->
-                                        cat.first == rowCat.first && cat.second.any { it.first == headerUid }
-                                    } == true &&
-                                    comboStructure.any { cat ->
-                                        cat.first == colCat.first && cat.second.any { it.first == optUid }
-                                    }
-                                }.forEach { dataValue ->
-                                    Text(
-                                        text = dataValue.dataElementName,
-                                        style = MaterialTheme.typography.bodyMedium,
-                                        modifier = Modifier.padding(start = 8.dp, bottom = 2.dp)
-                                    )
-                                }
-                            }
-                        }
-                    }
-                }
-            } else {
-                // Fallback: vertical list
-                values.forEach { dataValue ->
-                    Text(
-                        text = dataValue.dataElementName,
-                        style = MaterialTheme.typography.bodyMedium,
-                        modifier = Modifier.padding(start = 32.dp, bottom = 2.dp)
-                    )
-                }
-            }
-            // --- End new logic for two categories ---
-            Spacer(modifier = Modifier.height(12.dp))
-        }
-        else -> {
-            // Fallback: render each element by its own combo (Rule 5)
-            values.forEach { dataValue ->
-                val elementStructure = viewModel.state.value.categoryComboStructures[dataValue.categoryOptionCombo] ?: emptyList()
-                if (elementStructure.isEmpty()) {
-                    DataElementRow(
-                        dataElementName = dataValue.dataElementName,
-                        fields = listOf(dataValue),
-                        onValueChange = onValueChange
-                    )
-                } else if (elementStructure.size == 1 && elementStructure[0].second.size == 2) {
-                    Row(modifier = Modifier.fillMaxWidth()) {
-                        elementStructure[0].second.forEach { (optUid, optName) ->
-                            val cocUid = optionUidsToComboUid.entries.find { it.key == setOf(optUid) }?.value
-                            val fields = listOf(dataValue).filter { it.categoryOptionCombo == cocUid }
-                            Column(modifier = Modifier.weight(1f)) {
-                                Text(optName, fontWeight = FontWeight.Medium)
-                                fields.forEach { dv ->
-                                    DataValueField(
-                                        dataValue = dv,
-                                        onValueChange = { value -> onValueChange(value, dv) },
-                                        viewModel = viewModel
-                                    )
-                                }
-                            }
-                        }
-                    }
-                } else {
-                    CategoryAccordion(
-                        header = elementStructure[0].first,
-                        expanded = expandedCategoryGroup == "$sectionName:${elementStructure[0].first}",
-                        onToggleExpand = {
-                            if (expandedCategoryGroup == "$sectionName:${elementStructure[0].first}")
-                                onToggleCategoryGroup(sectionName, "")
-                            else
-                                onToggleCategoryGroup(sectionName, elementStructure[0].first)
-                        }
-                    ) {
-                        DataElementRow(
-                            dataElementName = dataValue.dataElementName,
-                            fields = listOf(dataValue),
-                            onValueChange = onValueChange
-                        )
-                    }
-                }
-            }
-        }
-    }
-}
-
-// Helper to detect sex/gender category
-fun isSexCategory(cat: Pair<String, List<Pair<String, String>>>): Boolean {
-    val name = cat.first.lowercase()
-    val options = cat.second.map { it.second.lowercase() }
-    return name.contains("sex") || name.contains("gender") ||
-        options.any { it == "male" || it == "female" }
-}
-
-/**
- * Recursively renders nested accordions for N categories, except:
- * - If only one category with exactly two options (especially sex/gender), render side by side.
- * - If no categories, render flat list.
- * - Always collapse single-option categories.
- * - Never render sex/gender as an accordion header.
- */
-@Composable
-fun CategoryAccordionRecursive(
-    categories: List<Pair<String, List<Pair<String, String>>>>,
-    values: List<DataValue>,
-    onValueChange: (String, DataValue) -> Unit,
-    optionUidsToComboUid: Map<Set<String>, String>,
-    viewModel: DataEntryViewModel,
-    parentPath: List<String> = emptyList(),
-    expandedAccordions: Map<List<String>, String?>,
-    onToggle: (List<String>, String) -> Unit,
-) {
-    if (categories.isEmpty()) {
-        values.forEach { dataValue ->
-            DataElementRow(
-                dataElementName = dataValue.dataElementName,
-                fields = listOf(dataValue),
-                onValueChange = onValueChange
-            )
-        }
-        return
-    }
-    val currentCategory = categories.first()
-    val restCategories = categories.drop(1)
-    if (restCategories.isEmpty()) {
-        // LAST CATEGORY: If <= 3 options, render as a row; if > 3, render each as a nested accordion
-        if (currentCategory.second.size <= 3) {
-            Row(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(vertical = 8.dp),
-                horizontalArrangement = Arrangement.spacedBy(12.dp)
-            ) {
-                currentCategory.second.forEach { (optionUid, optionName) ->
-                    val fullPath = parentPath + optionUid
-                    val comboUid = optionUidsToComboUid[fullPath.toSet()]
-                    val filteredValues = values.filter { it.categoryOptionCombo == comboUid }
-                    Column(modifier = Modifier.weight(1f)) {
-                        Text(
-                            text = optionName,
-                            style = MaterialTheme.typography.labelLarge,
-                            fontWeight = FontWeight.SemiBold,
-                            modifier = Modifier.padding(bottom = 4.dp)
-                        )
-                        filteredValues.forEach { dataValue ->
-                            DataElementRow(
-                                dataElementName = dataValue.dataElementName,
-                                fields = listOf(dataValue),
-                                onValueChange = onValueChange
-                            )
-                        }
-                    }
-                }
-            }
-        } else {
-            // More than 3 options: render each as a nested accordion
-            currentCategory.second.forEach { (optionUid, optionName) ->
-                val expanded = expandedAccordions[parentPath] == optionUid
-                Box(modifier = Modifier.padding(bottom = 8.dp)) {
-                    CategoryAccordion(
-                        header = optionName,
-                        expanded = expanded,
-                        onToggleExpand = { onToggle(parentPath, optionUid) }
-                    ) {
-                        val fullPath = parentPath + optionUid
-                        val comboUid = optionUidsToComboUid[fullPath.toSet()]
-                        val filteredValues = values.filter { it.categoryOptionCombo == comboUid }
-                        filteredValues.forEach { dataValue ->
-                            DataElementRow(
-                                dataElementName = dataValue.dataElementName,
-                                fields = listOf(dataValue),
-                                onValueChange = onValueChange
-                            )
-                        }
-                    }
-                }
-            }
-        }
-        return
-    }
-    // For all other categories, render as accordions, filtering by current path
-    currentCategory.second.forEach { (optionUid, optionName) ->
-        val expanded = expandedAccordions[parentPath] == optionUid
-        Box(modifier = Modifier.padding(bottom = 8.dp)) {
-            CategoryAccordion(
-                header = optionName,
-                expanded = expanded,
-                onToggleExpand = { onToggle(parentPath, optionUid) }
-            ) {
-                val newPath = parentPath + optionUid
-                val comboUid = optionUidsToComboUid[newPath.toSet()]
-                val filteredValues = if (comboUid != null) values.filter { it.categoryOptionCombo == comboUid } else values
-                CategoryAccordionRecursive(
-                    categories = restCategories,
-                    values = filteredValues,
-                    onValueChange = onValueChange,
-                    optionUidsToComboUid = optionUidsToComboUid,
-                    viewModel = viewModel,
-                    parentPath = newPath,
-                    expandedAccordions = expandedAccordions,
-                    onToggle = onToggle
                 )
             }
-        }
-    }
-}
+        }}}}}
 
-
-/**
- * Enhanced recursive accordion component that renders actual data value fields at the final category level.
- * This ensures entry fields are displayed when category accordions are opened.
- */
-@Composable
-fun CategoryAccordionRecursiveWithFields(
-    categories: List<Pair<String, List<Pair<String, String>>>>,
-    values: List<DataValue>,
-    onValueChange: (String, DataValue) -> Unit,
-    optionUidsToComboUid: Map<Set<String>, String>,
-    viewModel: DataEntryViewModel,
-    parentPath: List<String> = emptyList(),
-    expandedAccordions: Map<List<String>, String?>,
-    onToggle: (List<String>, String) -> Unit,
-    selectedOptions: Set<String> = emptySet()
-) {
-    if (categories.isEmpty()) {
-        // Base case: no more categories, render data value fields directly
-        Column(
-            modifier = Modifier.fillMaxWidth(),
-            verticalArrangement = Arrangement.spacedBy(4.dp)
-        ) {
-            values.forEach { dataValue ->
-                DataValueField(
-                    dataValue = dataValue,
-                    onValueChange = { value -> onValueChange(value, dataValue) },
-                    viewModel = viewModel
-                )
-            }
-        }
-        return
-    }
-    
-    val currentCategory = categories.first()
-    val restCategories = categories.drop(1)
-    
-    if (restCategories.isEmpty()) {
-        // FINAL CATEGORY LEVEL: Render data value fields for each option
-        if (currentCategory.second.size <= 3) {
-            // Few options: render side by side with fields
-            Row(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(vertical = 8.dp),
-                horizontalArrangement = Arrangement.spacedBy(12.dp)
-            ) {
-                currentCategory.second.forEach { (optionUid, optionName) ->
-                    Column(modifier = Modifier.weight(1f)) {
-                        // Find matching data values for EXACT option combination
-                        val currentSelectionWithThisOption = selectedOptions + optionUid
-                        val expectedComboUid = optionUidsToComboUid[currentSelectionWithThisOption]
-                        val matchingValues = values.filter { dataValue ->
-                            // Use the exact combo mapping to find values for this specific combination
-                            dataValue.categoryOptionCombo == expectedComboUid
-                        }
-
-                        Text(
-                            text = optionName,
-                            style = MaterialTheme.typography.labelLarge,
-                            fontWeight = FontWeight.SemiBold,
-                            modifier = Modifier.padding(bottom = 4.dp)
-                        )
-                        
-                        Column(
-                            modifier = Modifier.fillMaxWidth(),
-                            verticalArrangement = Arrangement.spacedBy(4.dp)
-                        ) {
-                            matchingValues.forEach { dataValue ->
-                                DataValueField(
-                                    dataValue = dataValue,
-                                    onValueChange = { value -> onValueChange(value, dataValue) },
-                                    viewModel = viewModel
-                                )
-                            }
-                        }
-                    }
-                }
-            }
-        } else {
-            // Many options: render as accordion with fields inside
-            Column(
-                modifier = Modifier.fillMaxWidth(),
-                verticalArrangement = Arrangement.spacedBy(8.dp)
-            ) {
-                currentCategory.second.forEach { (optionUid, optionName) ->
-                    val currentPath = parentPath + listOf("cat_${currentCategory.first}_$optionUid")
-                    val expanded = expandedAccordions[currentPath] != null
-                    
-                    // Find matching data values for EXACT option combination
-                    val currentSelectionWithThisOption = selectedOptions + optionUid
-                    val expectedComboUid = optionUidsToComboUid[currentSelectionWithThisOption]
-                    val matchingValues = values.filter { dataValue ->
-                        // Use the exact combo mapping to find values for this specific combination
-                        dataValue.categoryOptionCombo == expectedComboUid
-                    }
-
-                    CategoryAccordion(
-                        header = optionName,
-                        expanded = expanded,
-                        onToggleExpand = { onToggle(currentPath, "expanded") }
-                    ) {
-                        Column(
-                            modifier = Modifier.fillMaxWidth(),
-                            verticalArrangement = Arrangement.spacedBy(4.dp)
-                        ) {
-                            matchingValues.forEach { dataValue ->
-                                DataValueField(
-                                    dataValue = dataValue,
-                                    onValueChange = { value -> onValueChange(value, dataValue) },
-                                    viewModel = viewModel
-                                )
-                            }
-                        }
-                    }
-                }
-            }
-        }
-    } else {
-        // INTERMEDIATE CATEGORY LEVELS: Continue recursion with nested accordions
-        Column(
-            modifier = Modifier.fillMaxWidth(),
-            verticalArrangement = Arrangement.spacedBy(8.dp)
-        ) {
-            currentCategory.second.forEach { (optionUid, optionName) ->
-                val currentPath = parentPath + listOf("cat_${currentCategory.first}_$optionUid")
-                val expanded = expandedAccordions[currentPath] != null
-                
-                // Filter values using consistent logic for N-category robustness
-                val currentSelectionWithThisOption = selectedOptions + optionUid
-                val filteredValues = values.filter { dataValue ->
-                    // Use the same exact matching approach as final level for consistency
-                    // This ensures the filtering is mathematically correct for any number of categories
-                    val comboStructure = viewModel.state.value.categoryComboStructures[dataValue.categoryOptionCombo]
-                    val comboOptions = comboStructure?.flatMap { it.second.map { option -> option.first } }?.toSet() ?: emptySet()
-                    
-                    // For intermediate levels: keep combinations that contain ALL our selected options
-                    // This will progressively filter down until final level has exact matches
-                    currentSelectionWithThisOption.all { it in comboOptions }
-                }
-
-                // Remove count as requested - just show option name
-                val headerText = optionName
-
-                CategoryAccordion(
-                    header = headerText,
-                    expanded = expanded,
-                    onToggleExpand = { onToggle(currentPath, "expanded") }
-                ) {
-                    Column(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .padding(vertical = 8.dp),
-                        verticalArrangement = Arrangement.spacedBy(8.dp)
-                    ) {
-                        CategoryAccordionRecursiveWithFields(
-                            categories = restCategories,
-                            values = filteredValues,
-                            onValueChange = onValueChange,
-                            optionUidsToComboUid = optionUidsToComboUid,
-                            viewModel = viewModel,
-                            parentPath = currentPath,
-                            expandedAccordions = expandedAccordions,
-                            onToggle = onToggle,
-                            selectedOptions = currentSelectionWithThisOption
-                        )
-                    }
-                }
-            }
-        }
-    }
-}
-
-/**
- * Sorts categories by option count (descending) to determine precedence.
- * Categories with more options take precedence over position in combination definition.
- */
-private fun sortCategoriesByOptionCount(
-    categories: List<Pair<String, List<Pair<String, String>>>>
-): List<Pair<String, List<Pair<String, String>>>> {
-    return categories.sortedByDescending { it.second.size }
-}
 
 

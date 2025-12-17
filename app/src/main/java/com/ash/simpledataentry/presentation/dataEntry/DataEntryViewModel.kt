@@ -81,6 +81,9 @@ data class DataEntryState(
     // Radio button groups: Map<groupTitle, List<dataElementIds>>
     val radioButtonGroups: Map<String, List<String>> = emptyMap(),
 
+    // Checkbox groups: Map<groupTitle, List<dataElementIds>>
+    val checkboxGroups: Map<String, List<String>> = emptyMap(),
+
     // Generic grouping strategies per section
     val sectionGroupingStrategies: Map<String, List<GroupingStrategy>> = emptyMap(),
 
@@ -227,11 +230,24 @@ class DataEntryViewModel @Inject constructor(
                     val categoryComboStructures = mutableMapOf<String, List<Pair<String, List<Pair<String, String>>>>>()
                     val optionUidsToComboUid = mutableMapOf<String, Map<Set<String>, String>>()
 
+                    Log.d("DataEntryViewModel", "=== CATEGORY COMBO STRUCTURE LOADING ===")
+                    Log.d("DataEntryViewModel", "Found ${uniqueCategoryCombos.size} unique category option combos")
+
                     uniqueCategoryCombos.map { comboUid ->
                         async {
                             if (!categoryComboStructures.containsKey(comboUid)) {
                                 val structure = repository.getCategoryComboStructure(comboUid)
                                 categoryComboStructures[comboUid] = structure
+
+                                // DEBUG: Log the structure for each combo
+                                if (structure.isEmpty()) {
+                                    Log.d("DataEntryViewModel", "  ComboUID $comboUid -> EMPTY structure (default)")
+                                } else {
+                                    Log.d("DataEntryViewModel", "  ComboUID $comboUid -> ${structure.size} categories:")
+                                    structure.forEach { (catName, options) ->
+                                        Log.d("DataEntryViewModel", "    - $catName: ${options.size} options")
+                                    }
+                                }
 
                                 val combos = repository.getCategoryOptionCombos(comboUid)
                                 val map = combos.associate { coc ->
@@ -242,6 +258,11 @@ class DataEntryViewModel @Inject constructor(
                             }
                         }
                     }.awaitAll()
+
+                    Log.d("DataEntryViewModel", "=== CATEGORY COMBO STRUCTURE SUMMARY ===")
+                    Log.d("DataEntryViewModel", "Total structures loaded: ${categoryComboStructures.size}")
+                    val nonDefaultCount = categoryComboStructures.values.count { it.isNotEmpty() }
+                    Log.d("DataEntryViewModel", "Non-default structures: $nonDefaultCount")
 
                     val attributeOptionCombos = attributeOptionComboDeferred.await()
                     val attributeOptionComboName = attributeOptionCombos.find { it.first == attributeOptionCombo }?.second ?: attributeOptionCombo
@@ -332,10 +353,21 @@ class DataEntryViewModel @Inject constructor(
                         computed
                     }
 
-                    // Preserve legacy radio button groups for backward compatibility
-                    val radioButtonGroups = sectionGroupingStrategies.values
+                    // Preserve legacy radio button groups for backward compatibility and merge heuristics
+                    val analyzerRadioGroups = sectionGroupingStrategies.values
                         .flatten()
                         .filter { it.groupType == GroupType.RADIO_GROUP }
+                        .associate { it.groupTitle to it.members.map { dv -> dv.dataElement } }
+
+                    val heuristicRadioGroups = detectRadioButtonGroupsByName(mergedValues, optionSets)
+                    val radioButtonGroups = analyzerRadioGroups.toMutableMap()
+                    heuristicRadioGroups.forEach { (title, ids) ->
+                        radioButtonGroups.putIfAbsent(title, ids)
+                    }
+
+                    val checkboxGroups = sectionGroupingStrategies.values
+                        .flatten()
+                        .filter { it.groupType == GroupType.CHECKBOX_GROUP }
                         .associate { it.groupTitle to it.members.map { dv -> dv.dataElement } }
 
                     // Step 4: Finalizing (85-100%)
@@ -403,6 +435,7 @@ class DataEntryViewModel @Inject constructor(
                             optionSets = optionSets,
                             renderTypes = renderTypes,
                             radioButtonGroups = radioButtonGroups,
+                            checkboxGroups = checkboxGroups,
                             sectionGroupingStrategies = sectionGroupingStrategies,
                             dataElementOrdering = dataElementOrdering, // Pre-computed ordering for performance
                             navigationProgress = null // Clear progress when done
@@ -427,16 +460,12 @@ class DataEntryViewModel @Inject constructor(
     }
 
     fun updateCurrentValue(value: String, dataElementUid: String, categoryOptionComboUid: String) {
-        Log.d("DataEntryViewModel", "updateCurrentValue called: dataElement=$dataElementUid, combo=$categoryOptionComboUid, value='$value'")
-
         val key = dataElementUid to categoryOptionComboUid
         val dataValueToUpdate = _state.value.dataValues.find {
             it.dataElement == dataElementUid && it.categoryOptionCombo == categoryOptionComboUid
         }
 
         if (dataValueToUpdate != null) {
-            Log.d("DataEntryViewModel", "Found dataValue to update: ${dataValueToUpdate.dataElementName} (current value='${dataValueToUpdate.value}')")
-
             val updatedValueObject = dataValueToUpdate.copy(value = value)
             dirtyDataValues[key] = updatedValueObject
 
@@ -462,8 +491,6 @@ class DataEntryViewModel @Inject constructor(
                     .mapValues { (_, sectionValues) ->
                         sectionValues.groupBy { it.dataElement }
                     }
-
-                Log.d("DataEntryViewModel", "State updated: $updateCount values modified, rebuilt grouped sections")
 
                 currentState.copy(
                     dataValues = updatedValues,
