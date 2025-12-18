@@ -23,10 +23,13 @@ import androidx.compose.ui.text.TextRange
 import androidx.compose.ui.unit.dp
 import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.navigation.NavController
+import com.ash.simpledataentry.presentation.core.AdaptiveLoadingOverlay
 import com.ash.simpledataentry.presentation.core.BaseScreen
 import com.ash.simpledataentry.presentation.core.DatePickerDialog
-import com.ash.simpledataentry.presentation.core.DetailedSyncOverlay
-import com.ash.simpledataentry.presentation.core.OverlayLoader
+import com.ash.simpledataentry.presentation.core.ShimmerFormSection
+import com.ash.simpledataentry.presentation.core.SimpleProgressOverlay
+import com.ash.simpledataentry.presentation.core.LoadingOperation
+import com.ash.simpledataentry.presentation.core.UiState
 import com.ash.simpledataentry.domain.model.TrackedEntityAttributeValue
 import org.hisp.dhis.mobile.ui.designsystem.component.*
 import org.hisp.dhis.mobile.ui.designsystem.theme.DHIS2Theme
@@ -81,31 +84,51 @@ fun TrackerEnrollmentScreen(
         }
     }
 
-    Scaffold(
-        topBar = {
-            TopAppBar(
-                title = { Text(if (state.isEditMode) "Edit Enrollment" else "New Enrollment") },
-                navigationIcon = {
-                    IconButton(onClick = { navController.popBackStack() }) {
-                        Icon(
-                            imageVector = Icons.Default.ArrowBack,
-                            contentDescription = "Back"
-                        )
-                    }
-                },
-                actions = {
-                    // Sync button (reuse DataEntry pattern)
-                    IconButton(
-                        onClick = { viewModel.syncEnrollment() },
-                        enabled = !state.isSyncing
-                    ) {
-                        Icon(
-                            imageVector = Icons.Default.Sync,
-                            contentDescription = "Sync"
-                        )
-                    }
-                }
+    val title = if (state.isEditMode) "Edit Enrollment" else "New Enrollment"
+    val progressValue = state.detailedSyncProgress?.overallPercentage?.let { it / 100f }
+        ?: state.navigationProgress?.overallPercentage?.let { it / 100f }
+
+    val syncProgress = state.detailedSyncProgress
+    val overlayUiState: UiState<TrackerEnrollmentState> =
+        if (syncProgress != null) {
+            UiState.Loading(
+                operation = LoadingOperation.Syncing(syncProgress)
             )
+        } else {
+            UiState.Success(state)
+        }
+
+    BaseScreen(
+        title = title,
+        navController = navController,
+        navigationIcon = {
+            IconButton(onClick = { navController.popBackStack() }) {
+                Icon(
+                    imageVector = Icons.Default.ArrowBack,
+                    contentDescription = "Back"
+                )
+            }
+        },
+        syncStatusController = viewModel.syncController,
+        showProgress = state.isLoading || state.isSyncing,
+        progress = progressValue,
+        actions = {
+            IconButton(
+                onClick = { viewModel.syncEnrollment() },
+                enabled = !state.isSyncing
+            ) {
+                if (state.isSyncing) {
+                    CircularProgressIndicator(
+                        modifier = Modifier.size(20.dp),
+                        strokeWidth = 2.dp
+                    )
+                } else {
+                    Icon(
+                        imageVector = Icons.Default.Sync,
+                        contentDescription = "Sync"
+                    )
+                }
+            }
         },
         floatingActionButton = {
             FloatingActionButton(
@@ -126,60 +149,64 @@ fun TrackerEnrollmentScreen(
                     tint = if (state.canSave) MaterialTheme.colorScheme.onPrimary else MaterialTheme.colorScheme.onSurfaceVariant
                 )
             }
-        },
-        snackbarHost = { SnackbarHost(snackbarHostState) }
-    ) { paddingValues ->
-        Box(modifier = Modifier.fillMaxSize().padding(paddingValues)) {
-            when {
-                state.isLoading -> {
-                    OverlayLoader(
-                        message = "Loading enrollment...",
-                        progress = state.navigationProgress?.overallPercentage,
-                        progressStep = state.navigationProgress?.phaseDetail
-                    ) {
-                        // Empty content for loading state
+        }
+    ) {
+        AdaptiveLoadingOverlay(
+            uiState = overlayUiState,
+            modifier = Modifier.fillMaxSize()
+        ) {
+            Box(modifier = Modifier.fillMaxSize()) {
+                when {
+                    state.isLoading -> {
+                        TrackerEnrollmentFormSkeleton(
+                            modifier = Modifier.fillMaxSize()
+                        )
                     }
-                }
-                state.error != null -> {
-                    ErrorContent(
-                        error = state.error!!,
-                        onRetry = {
-                            if (enrollmentId != null) {
-                                viewModel.loadEnrollment(enrollmentId)
-                            } else {
-                                viewModel.initializeNewEnrollment(programId)
+                    state.error != null -> {
+                        ErrorContent(
+                            error = state.error!!,
+                            onRetry = {
+                                if (enrollmentId != null) {
+                                    viewModel.loadEnrollment(enrollmentId)
+                                } else {
+                                    viewModel.initializeNewEnrollment(programId)
+                                }
+                            }
+                        )
+                    }
+                    else -> {
+                        val formContent: @Composable () -> Unit = {
+                            Box(
+                                modifier = Modifier.fillMaxSize()
+                            ) {
+                                EnrollmentFormContent(
+                                    state = state,
+                                    onEnrollmentDateChanged = viewModel::updateEnrollmentDate,
+                                    onIncidentDateChanged = viewModel::updateIncidentDate,
+                                    onAttributeValueChanged = viewModel::updateAttributeValue,
+                                    onOrganisationUnitChanged = viewModel::updateOrganisationUnit
+                                )
                             }
                         }
-                    )
+                        if (state.saveInProgress) {
+                            SimpleProgressOverlay(
+                                message = if (state.isEditMode) "Updating enrollment..." else "Creating enrollment...",
+                                modifier = Modifier.fillMaxSize()
+                            ) {
+                                formContent()
+                            }
+                        } else {
+                            formContent()
+                        }
+                    }
                 }
-                else -> {
-                    EnrollmentFormContent(
-                        state = state,
-                        onEnrollmentDateChanged = viewModel::updateEnrollmentDate,
-                        onIncidentDateChanged = viewModel::updateIncidentDate,
-                        onAttributeValueChanged = viewModel::updateAttributeValue,
-                        onOrganisationUnitChanged = viewModel::updateOrganisationUnit
-                    )
-                }
-            }
 
-            // Enhanced sync overlay (reuse DataEntry pattern)
-            DetailedSyncOverlay(
-                progress = state.detailedSyncProgress,
-                onNavigateBack = { navController.popBackStack() },
-                onRetry = { viewModel.syncEnrollment() },
-                onCancel = { viewModel.clearMessages() }
-            ) {
-                // Background content during sync
-            }
-
-            // Save progress overlay
-            if (state.saveInProgress) {
-                OverlayLoader(
-                    message = if (state.isEditMode) "Updating enrollment..." else "Creating enrollment..."
-                ) {
-                    // Background content during save
-                }
+                SnackbarHost(
+                    hostState = snackbarHostState,
+                    modifier = Modifier
+                        .align(Alignment.BottomCenter)
+                        .padding(16.dp)
+                )
             }
         }
     }
@@ -214,6 +241,19 @@ fun TrackerEnrollmentScreen(
                 }
             }
         )
+    }
+}
+
+@Composable
+private fun TrackerEnrollmentFormSkeleton(modifier: Modifier = Modifier) {
+    Column(
+        modifier = modifier
+            .padding(16.dp),
+        verticalArrangement = Arrangement.spacedBy(16.dp)
+    ) {
+        repeat(3) {
+            ShimmerFormSection()
+        }
     }
 }
 

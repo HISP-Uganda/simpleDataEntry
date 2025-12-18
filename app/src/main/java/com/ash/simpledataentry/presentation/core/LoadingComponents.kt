@@ -423,7 +423,7 @@ private fun ActionButtons(
  * Error banner for error states with stale data
  */
 @Composable
-private fun ErrorBanner(
+fun ErrorBanner(
     error: UiError,
     modifier: Modifier = Modifier
 ) {

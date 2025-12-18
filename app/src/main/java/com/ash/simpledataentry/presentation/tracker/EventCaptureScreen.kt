@@ -29,6 +29,7 @@ import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.navigation.NavController
 import com.ash.simpledataentry.presentation.core.DetailedSyncOverlay
 import com.ash.simpledataentry.presentation.core.FullScreenLoader
+import com.ash.simpledataentry.presentation.core.ShimmerFormSection
 import com.ash.simpledataentry.presentation.core.DatePickerDialog
 import com.ash.simpledataentry.domain.model.DataValue
 import com.ash.simpledataentry.domain.model.DataEntryType
@@ -290,10 +291,20 @@ fun EventCaptureScreen(
         ) {
             when {
                 state.isLoading -> {
-                    FullScreenLoader(
-                        message = "Loading event...",
-                        isVisible = true
-                    )
+                    Column(
+                        modifier = Modifier
+                            .fillMaxSize()
+                            .padding(paddingValues)
+                            .padding(vertical = 16.dp)
+                    ) {
+                        repeat(3) {
+                            ShimmerFormSection(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .padding(horizontal = 16.dp, vertical = 8.dp)
+                            )
+                        }
+                    }
                 }
                 state.saveInProgress -> {
                     FullScreenLoader(
@@ -882,4 +893,3 @@ private fun EventDataValueField(
         }
     }
 }
-

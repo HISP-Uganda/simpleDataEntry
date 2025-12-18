@@ -3,39 +3,73 @@ package com.ash.simpledataentry.presentation.tracker
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.horizontalScroll
-import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.PaddingValues
+import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
+import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Add
-import androidx.compose.material.icons.filled.ArrowBack
-import androidx.compose.material.icons.filled.ArrowDownward
-import androidx.compose.material.icons.filled.ArrowUpward
 import androidx.compose.material.icons.filled.Clear
 import androidx.compose.material.icons.filled.KeyboardArrowDown
 import androidx.compose.material.icons.filled.KeyboardArrowUp
 import androidx.compose.material.icons.filled.Search
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material.icons.filled.Sync
-import androidx.compose.material3.*
-import androidx.compose.runtime.*
+import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.Button
+import androidx.compose.material3.Checkbox
+import androidx.compose.material3.CheckboxDefaults
+import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.Divider
+import androidx.compose.material3.FloatingActionButton
+import androidx.compose.material3.HorizontalDivider
+import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
+import androidx.compose.material3.OutlinedButton
+import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.SnackbarHost
+import androidx.compose.material3.SnackbarHostState
+import androidx.compose.material3.SnackbarDuration
+import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
+import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.collectAsState
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.navigation.NavController
-import com.ash.simpledataentry.presentation.core.DetailedSyncOverlay
+import com.ash.simpledataentry.domain.model.ProgramInstance
+import com.ash.simpledataentry.presentation.core.AdaptiveLoadingOverlay
+import com.ash.simpledataentry.presentation.core.BaseScreen
+import com.ash.simpledataentry.presentation.core.ErrorBanner
+import com.ash.simpledataentry.presentation.core.LoadingOperation
+import com.ash.simpledataentry.presentation.core.ShimmerLoadingTable
+import com.ash.simpledataentry.presentation.core.UiState
 import java.net.URLEncoder
 
-/**
- * Table-based view for tracker program enrollments
- * Replaces DatasetInstancesScreen for TRACKER program types
- */
-@OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun TrackerEnrollmentTableScreen(
     navController: NavController,
@@ -43,16 +77,14 @@ fun TrackerEnrollmentTableScreen(
     programName: String,
     viewModel: TrackerEnrollmentTableViewModel = hiltViewModel()
 ) {
-    val state by viewModel.state.collectAsState()
+    val uiState by viewModel.uiState.collectAsState()
     val snackbarHostState = remember { SnackbarHostState() }
     var showSearchBar by remember { mutableStateOf(false) }
 
-    // Initialize
     LaunchedEffect(programId) {
         viewModel.initialize(programId, programName)
     }
 
-    // Refresh when returning to screen
     LaunchedEffect(navController.currentBackStackEntry) {
         val currentRoute = navController.currentBackStackEntry?.destination?.route
         if (currentRoute?.contains("TrackerEnrollments") == true) {
@@ -60,74 +92,56 @@ fun TrackerEnrollmentTableScreen(
         }
     }
 
-    // Show error messages
-    LaunchedEffect(state.error) {
-        state.error?.let {
-            snackbarHostState.showSnackbar(
-                message = it,
-                duration = SnackbarDuration.Short
-            )
-            viewModel.clearError()
-        }
+    val currentUiState = uiState
+    val successData = when (currentUiState) {
+        is UiState.Success -> currentUiState.data
+        is UiState.Error -> currentUiState.previousData
+        else -> null
     }
 
-    // Show success messages
-    LaunchedEffect(state.successMessage) {
-        state.successMessage?.let {
-            snackbarHostState.showSnackbar(
-                message = it,
-                duration = SnackbarDuration.Short
-            )
+    val successMessage = successData?.successMessage
+    LaunchedEffect(successMessage) {
+        if (!successMessage.isNullOrBlank()) {
+            snackbarHostState.showSnackbar(successMessage, duration = SnackbarDuration.Short)
             viewModel.clearSuccessMessage()
         }
     }
 
-    Scaffold(
-        topBar = {
-            TopAppBar(
-                title = { Text(programName) },
-                navigationIcon = {
-                    IconButton(onClick = { navController.popBackStack() }) {
-                        Icon(Icons.Default.ArrowBack, contentDescription = "Back")
-                    }
-                },
-                actions = {
-            // Column configuration button
+    val isSyncing = currentUiState is UiState.Loading && currentUiState.operation !is LoadingOperation.Initial
+    val showInitialShimmer =
+        currentUiState is UiState.Loading && currentUiState.operation is LoadingOperation.Initial && successData == null
+
+    BaseScreen(
+        title = successData?.programName?.takeIf { it.isNotBlank() } ?: programName,
+        navController = navController,
+        syncStatusController = viewModel.syncController,
+        actions = {
             IconButton(
-                onClick = { viewModel.showColumnDialog() }
+                onClick = { viewModel.showColumnDialog() },
+                enabled = successData != null
             ) {
                 Icon(Icons.Default.Settings, contentDescription = "Configure Columns")
             }
-
-            // Search icon
             IconButton(
-                onClick = { showSearchBar = !showSearchBar }
+                onClick = { showSearchBar = !showSearchBar },
+                enabled = successData != null
             ) {
                 Icon(Icons.Default.Search, contentDescription = "Search")
             }
-
-            // Sync button
             IconButton(
-                onClick = {
-                    if (!state.isSyncing) {
-                        viewModel.syncEnrollments()
-                    }
-                },
-                enabled = !state.isLoading && !state.isSyncing
+                onClick = { viewModel.syncEnrollments() },
+                enabled = successData != null && !isSyncing
             ) {
-                if (state.isSyncing) {
+                if (isSyncing) {
                     CircularProgressIndicator(
-                        modifier = Modifier.size(24.dp),
+                        modifier = Modifier.size(20.dp),
                         strokeWidth = 2.dp
                     )
                 } else {
                     Icon(Icons.Default.Sync, contentDescription = "Sync")
                 }
             }
-                }
-            )
         },
-        snackbarHost = { SnackbarHost(snackbarHostState) },
         floatingActionButton = {
             FloatingActionButton(
                 onClick = {
@@ -139,59 +153,23 @@ fun TrackerEnrollmentTableScreen(
                 Icon(Icons.Default.Add, contentDescription = "New Enrollment")
             }
         }
-    ) { paddingValues ->
-        Box(modifier = Modifier.fillMaxSize().padding(paddingValues)) {
+    ) {
+        Box(modifier = Modifier.fillMaxSize()) {
             when {
-                state.isLoading -> {
-                    Box(
-                        modifier = Modifier.fillMaxSize(),
-                        contentAlignment = Alignment.Center
-                    ) {
-                        Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                            CircularProgressIndicator()
-                            Spacer(modifier = Modifier.height(16.dp))
-                            Text("Loading enrollments...")
-                        }
-                    }
+                showInitialShimmer -> {
+                    ShimmerLoadingTable(
+                        columnCount = 4,
+                        rowCount = 8,
+                        modifier = Modifier.fillMaxSize()
+                    )
                 }
-                state.enrollments.isEmpty() -> {
-                    Box(
-                        modifier = Modifier.fillMaxSize(),
-                        contentAlignment = Alignment.Center
-                    ) {
-                        Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                            Text(
-                                text = "No enrollments found",
-                                style = MaterialTheme.typography.titleMedium,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant
-                            )
-                            Spacer(modifier = Modifier.height(8.dp))
-                            Text(
-                                text = "Tap + to create a new enrollment",
-                                style = MaterialTheme.typography.bodyMedium,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant
-                            )
-                        }
-                    }
-                }
-                else -> {
-                    Column(modifier = Modifier.fillMaxSize()) {
-                        // Search bar
-                        if (showSearchBar) {
-                            SearchBar(
-                                query = state.searchQuery,
-                                onQueryChange = { viewModel.updateSearchQuery(it) },
-                                onClearSearch = {
-                                    viewModel.updateSearchQuery("")
-                                    showSearchBar = false
-                                }
-                            )
-                        }
-
-                        // Table
-                        EnrollmentTable(
-                            state = state,
-                            onSortColumn = { columnId -> viewModel.sortByColumn(columnId) },
+                successData != null -> {
+                    val content: @Composable () -> Unit = {
+                        TrackerEnrollmentTableContent(
+                            data = successData,
+                            showSearchBar = showSearchBar,
+                            onSearchQueryChange = viewModel::updateSearchQuery,
+                            onSortColumn = viewModel::sortByColumn,
                             onRowClick = { enrollment ->
                                 val encodedProgramId = URLEncoder.encode(programId, "UTF-8")
                                 val encodedProgramName = URLEncoder.encode(programName, "UTF-8")
@@ -201,24 +179,110 @@ fun TrackerEnrollmentTableScreen(
                             }
                         )
                     }
+
+                    if (isSyncing && currentUiState is UiState.Loading) {
+                        AdaptiveLoadingOverlay(
+                            uiState = currentUiState,
+                            modifier = Modifier.fillMaxSize()
+                        ) {
+                            content()
+                        }
+                    } else {
+                        content()
+                    }
+
+                    if (successData.showColumnDialog) {
+                        ColumnSelectionDialog(
+                            availableColumns = successData.availableColumns,
+                            selectedColumnIds = successData.selectedColumnIds,
+                            onToggleColumn = viewModel::toggleColumnSelection,
+                            onMoveColumn = viewModel::moveColumn,
+                            onSelectAll = viewModel::selectAllColumns,
+                            onDeselectAll = viewModel::deselectAllColumns,
+                            onApply = viewModel::applyColumnSelection,
+                            onDismiss = viewModel::hideColumnDialog
+                        )
+                    }
+                }
+                else -> {
+                    EmptyStateMessage(
+                        modifier = Modifier.align(Alignment.Center),
+                        message = "No enrollments available."
+                    )
                 }
             }
 
-            // Column selection dialog
-            if (state.showColumnDialog) {
-                ColumnSelectionDialog(
-                    availableColumns = state.availableColumns,
-                    selectedColumnIds = state.selectedColumnIds,
-                    fixedColumnIds = emptySet(), // No fixed columns - all are flexible
-                    onToggleColumn = { columnId -> viewModel.toggleColumnSelection(columnId) },
-                    onMoveColumn = { columnId, moveUp -> viewModel.moveColumn(columnId, moveUp) },
-                    onSelectAll = { viewModel.selectAllColumns() },
-                    onDeselectAll = { viewModel.deselectAllColumns() },
-                    onApply = { viewModel.applyColumnSelection() },
-                    onDismiss = { viewModel.hideColumnDialog() }
+            if (currentUiState is UiState.Error) {
+                ErrorBanner(
+                    error = currentUiState.error,
+                    modifier = Modifier
+                        .align(Alignment.TopCenter)
+                        .padding(16.dp)
                 )
             }
+
+            SnackbarHost(
+                hostState = snackbarHostState,
+                modifier = Modifier
+                    .align(Alignment.BottomCenter)
+                    .padding(16.dp)
+            )
         }
+    }
+}
+
+@Composable
+private fun TrackerEnrollmentTableContent(
+    data: TrackerEnrollmentTableData,
+    showSearchBar: Boolean,
+    onSearchQueryChange: (String) -> Unit,
+    onSortColumn: (String) -> Unit,
+    onRowClick: (ProgramInstance.TrackerEnrollment) -> Unit
+) {
+    Column(modifier = Modifier.fillMaxSize()) {
+        if (showSearchBar) {
+            SearchBar(
+                query = data.searchQuery,
+                onQueryChange = onSearchQueryChange,
+                onClearSearch = {
+                    onSearchQueryChange("")
+                }
+            )
+        }
+
+        if (data.enrollments.isEmpty()) {
+            EmptyStateMessage(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(32.dp),
+                message = "No enrollments found. Tap + to create a new enrollment."
+            )
+        } else {
+            EnrollmentTable(
+                data = data,
+                onSortColumn = onSortColumn,
+                onRowClick = onRowClick
+            )
+        }
+    }
+}
+
+@Composable
+private fun EmptyStateMessage(
+    modifier: Modifier = Modifier,
+    message: String
+) {
+    Column(
+        modifier = modifier,
+        horizontalAlignment = Alignment.CenterHorizontally,
+        verticalArrangement = Arrangement.Center
+    ) {
+        Text(
+            text = message,
+            style = androidx.compose.material3.MaterialTheme.typography.titleMedium,
+            color = androidx.compose.material3.MaterialTheme.colorScheme.onSurfaceVariant,
+            textAlign = TextAlign.Center
+        )
     }
 }
 
@@ -249,31 +313,29 @@ private fun SearchBar(
 
 @Composable
 private fun EnrollmentTable(
-    state: TrackerEnrollmentTableState,
+    data: TrackerEnrollmentTableData,
     onSortColumn: (String) -> Unit,
-    onRowClick: (com.ash.simpledataentry.domain.model.ProgramInstance.TrackerEnrollment) -> Unit
+    onRowClick: (ProgramInstance.TrackerEnrollment) -> Unit
 ) {
     Column(modifier = Modifier.fillMaxSize()) {
-        // Header row
         TableHeaderRow(
-            columns = state.columns,
-            sortColumnId = state.sortColumnId,
-            sortOrder = state.sortOrder,
+            columns = data.columns,
+            sortColumnId = data.sortColumnId,
+            sortOrder = data.sortOrder,
             onSortColumn = onSortColumn
         )
 
-        // Data rows
         LazyColumn(
             modifier = Modifier.fillMaxSize(),
-            contentPadding = PaddingValues(bottom = 80.dp) // Space for FAB
+            contentPadding = PaddingValues(bottom = 80.dp)
         ) {
-            items(state.tableRows) { row ->
+            items(data.tableRows) { row ->
                 TableDataRow(
                     row = row,
-                    columns = state.columns,
+                    columns = data.columns,
                     onClick = { onRowClick(row.enrollment) }
                 )
-                Divider()
+                HorizontalDivider()
             }
         }
     }
@@ -289,7 +351,7 @@ private fun TableHeaderRow(
     Row(
         modifier = Modifier
             .fillMaxWidth()
-            .background(MaterialTheme.colorScheme.surfaceVariant)
+            .background(androidx.compose.material3.MaterialTheme.colorScheme.surfaceVariant)
             .horizontalScroll(rememberScrollState())
             .padding(vertical = 12.dp)
     ) {
@@ -320,25 +382,25 @@ private fun TableHeaderCell(
     ) {
         Text(
             text = column.displayName,
-            style = MaterialTheme.typography.labelLarge,
+            style = androidx.compose.material3.MaterialTheme.typography.labelLarge,
             fontWeight = FontWeight.Bold,
-            color = MaterialTheme.colorScheme.onSurfaceVariant,
+            color = androidx.compose.material3.MaterialTheme.colorScheme.onSurfaceVariant,
             maxLines = 2,
             overflow = TextOverflow.Ellipsis,
             modifier = Modifier.weight(1f)
         )
 
-        // Sort indicator
         if (column.sortable && isSorted) {
+            val icon = when (sortOrder) {
+                SortOrder.ASCENDING -> Icons.Default.KeyboardArrowUp
+                SortOrder.DESCENDING -> Icons.Default.KeyboardArrowDown
+                SortOrder.NONE -> Icons.Default.KeyboardArrowUp
+            }
             Icon(
-                imageVector = when (sortOrder) {
-                    SortOrder.ASCENDING -> Icons.Default.ArrowUpward
-                    SortOrder.DESCENDING -> Icons.Default.ArrowDownward
-                    SortOrder.NONE -> Icons.Default.ArrowUpward
-                },
+                imageVector = icon,
                 contentDescription = null,
                 modifier = Modifier.size(16.dp),
-                tint = MaterialTheme.colorScheme.primary
+                tint = androidx.compose.material3.MaterialTheme.colorScheme.primary
             )
         }
     }
@@ -379,7 +441,7 @@ private fun TableDataCell(
     ) {
         Text(
             text = value,
-            style = MaterialTheme.typography.bodyMedium,
+            style = androidx.compose.material3.MaterialTheme.typography.bodyMedium,
             maxLines = 2,
             overflow = TextOverflow.Ellipsis,
             textAlign = if (columnId == "syncStatus" || columnId == "status") {
@@ -395,7 +457,6 @@ private fun TableDataCell(
 private fun ColumnSelectionDialog(
     availableColumns: List<TableColumn>,
     selectedColumnIds: Set<String>,
-    fixedColumnIds: Set<String>,
     onToggleColumn: (String) -> Unit,
     onMoveColumn: (String, Boolean) -> Unit,
     onSelectAll: () -> Unit,
@@ -408,7 +469,7 @@ private fun ColumnSelectionDialog(
         title = {
             Text(
                 text = "Configure Columns",
-                style = MaterialTheme.typography.titleLarge
+                style = androidx.compose.material3.MaterialTheme.typography.titleLarge
             )
         },
         text = {
@@ -417,7 +478,6 @@ private fun ColumnSelectionDialog(
                     .fillMaxWidth()
                     .heightIn(max = 400.dp)
             ) {
-                // Action buttons row
                 Row(
                     modifier = Modifier
                         .fillMaxWidth()
@@ -440,27 +500,17 @@ private fun ColumnSelectionDialog(
 
                 Divider(modifier = Modifier.padding(vertical = 8.dp))
 
-                // All columns section (no distinction between fixed and attributes)
-                Text(
-                    text = "Available Columns",
-                    style = MaterialTheme.typography.labelMedium,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    modifier = Modifier.padding(vertical = 4.dp)
-                )
-
                 LazyColumn(
                     modifier = Modifier.weight(1f, fill = false)
                 ) {
                     items(availableColumns.size) { index ->
                         val column = availableColumns[index]
-
                         Row(
                             modifier = Modifier
                                 .fillMaxWidth()
                                 .padding(vertical = 4.dp),
                             verticalAlignment = Alignment.CenterVertically
                         ) {
-                            // Reorder buttons
                             IconButton(
                                 onClick = { onMoveColumn(column.id, true) },
                                 enabled = index > 0,
@@ -483,7 +533,6 @@ private fun ColumnSelectionDialog(
                                     modifier = Modifier.size(20.dp)
                                 )
                             }
-
                             Row(
                                 modifier = Modifier
                                     .weight(1f)
@@ -492,12 +541,13 @@ private fun ColumnSelectionDialog(
                             ) {
                                 Checkbox(
                                     checked = column.id in selectedColumnIds,
-                                    onCheckedChange = { onToggleColumn(column.id) }
+                                    onCheckedChange = { onToggleColumn(column.id) },
+                                    colors = CheckboxDefaults.colors()
                                 )
                                 Spacer(modifier = Modifier.width(8.dp))
                                 Text(
                                     text = column.displayName,
-                                    style = MaterialTheme.typography.bodyMedium
+                                    style = androidx.compose.material3.MaterialTheme.typography.bodyMedium
                                 )
                             }
                         }

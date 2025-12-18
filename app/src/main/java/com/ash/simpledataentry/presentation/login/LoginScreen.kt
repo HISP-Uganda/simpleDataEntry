@@ -42,10 +42,11 @@ import androidx.compose.material.icons.filled.VisibilityOff
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.res.painterResource
 import com.ash.simpledataentry.R
-import com.ash.simpledataentry.presentation.core.FullScreenLoader
-import com.ash.simpledataentry.presentation.core.LoadingAnimationType
+import com.ash.simpledataentry.presentation.core.AdaptiveLoadingOverlay
+import com.ash.simpledataentry.presentation.core.LoginFormSkeleton
 import com.ash.simpledataentry.presentation.core.UiState
 import com.ash.simpledataentry.presentation.core.LoadingOperation
+import com.ash.simpledataentry.presentation.core.NavigationProgress
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
@@ -116,6 +117,19 @@ fun LoginScreen(
     val navigationProgress = (uiState as? UiState.Loading)?.operation?.let { op ->
         (op as? LoadingOperation.Navigation)?.progress
     }
+    val isInitialLoading = (uiState as? UiState.Loading)?.operation is LoadingOperation.Initial
+    val overlayUiState: UiState<LoginData> = if (loginData.showSplash && uiState !is UiState.Loading) {
+        val fallbackProgress = navigationProgress ?: NavigationProgress(
+            phaseTitle = "Finishing login",
+            phaseDetail = "Preparing your workspace...",
+            percentage = 90,
+            overallPercentage = 90
+        )
+        UiState.Loading(operation = LoadingOperation.Navigation(fallbackProgress))
+    } else {
+        uiState
+    }
+    val showInitialSplash = loginData.showSplash && isInitialLoading
 
     LaunchedEffect(loginData.isLoggedIn, loginData.saveAccountOffered) {
         if (loginData.isLoggedIn && !loginData.saveAccountOffered) {
@@ -134,60 +148,54 @@ fun LoginScreen(
         }
     }
 
-    // Show splash when loading OR when data says to show splash (during login flow)
-    val showSplash = isLoading || loginData.showSplash
-    if (showSplash) {
-        // Enhanced loading screen with detailed progress
-        FullScreenLoader(
-            message = navigationProgress?.phaseTitle ?: "Loading your data...",
-            isVisible = true,
-            animationType = LoadingAnimationType.DHIS2_PULSING_DOTS,
-            progress = navigationProgress?.overallPercentage,
-            progressStep = navigationProgress?.phaseDetail,
-            showBackgroundWarning = true,
-            modifier = Modifier.fillMaxSize()
-        )
+    // Show a placeholder only for the very first splash, otherwise overlay the form content
+    if (showInitialSplash) {
+        LoginFormSkeleton(modifier = Modifier.fillMaxSize())
     } else {
-        // Local state for input fields, preserved across configuration changes
-        var serverUrl by rememberSaveable { mutableStateOf("https://") }
-        var username by rememberSaveable { mutableStateOf("") }
-        var password by rememberSaveable { mutableStateOf("") }
-        var showUrlDropdown by remember { mutableStateOf(false) }
-        var showAccountDropdown by remember { mutableStateOf(false) }
-        var passwordVisible by remember { mutableStateOf(false) }
+        AdaptiveLoadingOverlay(
+            uiState = overlayUiState,
+            modifier = Modifier.fillMaxSize()
+        ) {
+            // Local state for input fields, preserved across configuration changes
+            var serverUrl by rememberSaveable { mutableStateOf("https://") }
+            var username by rememberSaveable { mutableStateOf("") }
+            var password by rememberSaveable { mutableStateOf("") }
+            var showUrlDropdown by remember { mutableStateOf(false) }
+            var showAccountDropdown by remember { mutableStateOf(false) }
+            var passwordVisible by remember { mutableStateOf(false) }
 
-        val context = LocalContext.current
+            val context = LocalContext.current
 
-        Box(modifier = Modifier.fillMaxSize()) {
-            val scrollState = rememberScrollState()
-            val usernameBringIntoViewRequester = remember { BringIntoViewRequester() }
-            val passwordBringIntoViewRequester = remember { BringIntoViewRequester() }
-            val loginButtonBringIntoViewRequester = remember { BringIntoViewRequester() }
+            Box(modifier = Modifier.fillMaxSize()) {
+                val scrollState = rememberScrollState()
+                val usernameBringIntoViewRequester = remember { BringIntoViewRequester() }
+                val passwordBringIntoViewRequester = remember { BringIntoViewRequester() }
+                val loginButtonBringIntoViewRequester = remember { BringIntoViewRequester() }
 
-            var usernameFocused by remember { mutableStateOf(false) }
-            var passwordFocused by remember { mutableStateOf(false) }
+                var usernameFocused by remember { mutableStateOf(false) }
+                var passwordFocused by remember { mutableStateOf(false) }
 
-            // Auto-scroll to bring login button into view when username field gets focus
-            LaunchedEffect(usernameFocused) {
-                if (usernameFocused) {
-                    // First ensure username field is visible
-                    usernameBringIntoViewRequester.bringIntoView()
-                    // Then bring login button into view
-                    kotlinx.coroutines.delay(300)
-                    loginButtonBringIntoViewRequester.bringIntoView()
+                // Auto-scroll to bring login button into view when username field gets focus
+                LaunchedEffect(usernameFocused) {
+                    if (usernameFocused) {
+                        // First ensure username field is visible
+                        usernameBringIntoViewRequester.bringIntoView()
+                        // Then bring login button into view
+                        kotlinx.coroutines.delay(300)
+                        loginButtonBringIntoViewRequester.bringIntoView()
+                    }
                 }
-            }
 
-            // Auto-scroll to bring login button into view when password field gets focus
-            LaunchedEffect(passwordFocused) {
-                if (passwordFocused) {
-                    // First ensure password field is visible
-                    passwordBringIntoViewRequester.bringIntoView()
-                    // Then bring login button into view
-                    kotlinx.coroutines.delay(300)
-                    loginButtonBringIntoViewRequester.bringIntoView()
+                // Auto-scroll to bring login button into view when password field gets focus
+                LaunchedEffect(passwordFocused) {
+                    if (passwordFocused) {
+                        // First ensure password field is visible
+                        passwordBringIntoViewRequester.bringIntoView()
+                        // Then bring login button into view
+                        kotlinx.coroutines.delay(300)
+                        loginButtonBringIntoViewRequester.bringIntoView()
+                    }
                 }
-            }
 
             Column(
                 modifier = Modifier
@@ -439,29 +447,29 @@ fun LoginScreen(
                 Spacer(modifier = Modifier.height(32.dp))
             }
 
-            // Show error message as a Snackbar
-            Box(
-                modifier = Modifier
-                    .fillMaxSize()
-                    .padding(16.dp),
-                contentAlignment = Alignment.BottomCenter
-            ) {
-                SnackbarHost(
-                    hostState = snackbarHostState,
-                    snackbar = { data ->
-                        Snackbar(
-                            containerColor = MaterialTheme.colorScheme.surface,
-                            contentColor = Color.White
-                        ) {
-                            Text(
-                                data.visuals.message,
-                                style = MaterialTheme.typography.bodyLarge
-                            )
+                // Show error message as a Snackbar
+                Box(
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .padding(16.dp),
+                    contentAlignment = Alignment.BottomCenter
+                ) {
+                    SnackbarHost(
+                        hostState = snackbarHostState,
+                        snackbar = { data ->
+                            Snackbar(
+                                containerColor = MaterialTheme.colorScheme.surface,
+                                contentColor = Color.White
+                            ) {
+                                Text(
+                                    data.visuals.message,
+                                    style = MaterialTheme.typography.bodyLarge
+                                )
+                            }
                         }
-                    }
-                )
+                    )
+                }
             }
-            
         }
     }
 

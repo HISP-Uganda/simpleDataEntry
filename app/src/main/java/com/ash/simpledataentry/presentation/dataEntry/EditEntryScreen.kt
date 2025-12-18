@@ -55,6 +55,7 @@ import androidx.compose.foundation.relocation.bringIntoViewRequester
 import androidx.compose.ui.platform.LocalFocusManager
 import com.ash.simpledataentry.presentation.dataEntry.components.SectionNavigator
 import com.ash.simpledataentry.presentation.core.FullScreenLoader
+import com.ash.simpledataentry.presentation.core.ShimmerFormSection
 
 data class Quadruple<A, B, C, D>(val first: A, val second: B, val third: C, val fourth: D)
 
@@ -958,10 +959,19 @@ fun EditEntryScreen(
                 modifier = Modifier.fillMaxSize()
             ) {
                 if (state.isLoading || !isUIReady) {
-                    FullScreenLoader(
-                        message = "Loading form...",
-                        isVisible = true
-                    )
+                    Column(
+                        modifier = Modifier
+                            .fillMaxSize()
+                            .padding(vertical = 16.dp)
+                    ) {
+                        repeat(3) {
+                            ShimmerFormSection(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .padding(horizontal = 16.dp, vertical = 8.dp)
+                            )
+                        }
+                    }
                 } else {
                     Box(modifier = Modifier.fillMaxSize()) {
                         Column(
@@ -1221,6 +1231,4 @@ fun EditEntryScreen(
                 )
             }
         }}}}}
-
-
 

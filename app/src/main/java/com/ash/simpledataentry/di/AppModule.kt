@@ -56,6 +56,7 @@ import com.ash.simpledataentry.data.cache.MetadataCacheService
 import com.ash.simpledataentry.data.sync.BackgroundDataPrefetcher
 import com.ash.simpledataentry.data.sync.NetworkStateManager
 import com.ash.simpledataentry.data.sync.SyncQueueManager
+import com.ash.simpledataentry.data.sync.SyncStatusController
 import com.ash.simpledataentry.data.sync.BackgroundSyncManager
 
 @Module
@@ -309,6 +310,14 @@ object AppModule {
         @ApplicationContext context: Context
     ): SyncQueueManager {
         return SyncQueueManager(networkStateManager, sessionManager, databaseProvider, context)
+    }
+
+    @Provides
+    @Singleton
+    fun provideSyncStatusController(
+        syncQueueManager: SyncQueueManager
+    ): SyncStatusController {
+        return SyncStatusController(syncQueueManager)
     }
 
     @Provides

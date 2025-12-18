@@ -3,20 +3,45 @@ package com.ash.simpledataentry.presentation.tracker
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.horizontalScroll
-import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.PaddingValues
+import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Add
-import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.ArrowDownward
 import androidx.compose.material.icons.filled.ArrowUpward
 import androidx.compose.material.icons.filled.Clear
 import androidx.compose.material.icons.filled.Search
 import androidx.compose.material.icons.filled.Sync
-import androidx.compose.material3.*
-import androidx.compose.runtime.*
+import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.FloatingActionButton
+import androidx.compose.material3.HorizontalDivider
+import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
+import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.SnackbarDuration
+import androidx.compose.material3.SnackbarHost
+import androidx.compose.material3.SnackbarHostState
+import androidx.compose.material3.Text
+import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.collectAsState
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.font.FontWeight
@@ -25,15 +50,15 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.navigation.NavController
+import com.ash.simpledataentry.domain.model.ProgramInstance
+import com.ash.simpledataentry.presentation.core.AdaptiveLoadingOverlay
+import com.ash.simpledataentry.presentation.core.BaseScreen
+import com.ash.simpledataentry.presentation.core.ErrorBanner
+import com.ash.simpledataentry.presentation.core.LoadingOperation
+import com.ash.simpledataentry.presentation.core.ShimmerLoadingTable
+import com.ash.simpledataentry.presentation.core.UiState
 import java.net.URLEncoder
-import java.text.SimpleDateFormat
-import java.util.*
 
-/**
- * Table-based view for event program instances
- * Shows events in a line list/pivot table format
- */
-@OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun EventsTableScreen(
     navController: NavController,
@@ -41,16 +66,14 @@ fun EventsTableScreen(
     programName: String,
     viewModel: EventsTableViewModel = hiltViewModel()
 ) {
-    val state by viewModel.state.collectAsState()
+    val uiState by viewModel.uiState.collectAsState()
     val snackbarHostState = remember { SnackbarHostState() }
     var showSearchBar by remember { mutableStateOf(false) }
 
-    // Initialize
     LaunchedEffect(programId) {
         viewModel.initialize(programId, programName)
     }
 
-    // Refresh when returning to screen
     LaunchedEffect(navController.currentBackStackEntry) {
         val currentRoute = navController.currentBackStackEntry?.destination?.route
         if (currentRoute?.contains("EventsTable") == true) {
@@ -58,141 +81,177 @@ fun EventsTableScreen(
         }
     }
 
-    // Show error messages
-    LaunchedEffect(state.error) {
-        state.error?.let {
-            snackbarHostState.showSnackbar(
-                message = it,
-                duration = SnackbarDuration.Short
-            )
-            viewModel.clearError()
-        }
+    val currentUiState = uiState
+    val data = when (currentUiState) {
+        is UiState.Success -> currentUiState.data
+        is UiState.Error -> currentUiState.previousData
+        else -> null
     }
 
-    // Show success messages
-    LaunchedEffect(state.successMessage) {
-        state.successMessage?.let {
-            snackbarHostState.showSnackbar(
-                message = it,
-                duration = SnackbarDuration.Short
-            )
+    val successMessage = data?.successMessage
+    LaunchedEffect(successMessage) {
+        if (!successMessage.isNullOrBlank()) {
+            snackbarHostState.showSnackbar(successMessage, duration = SnackbarDuration.Short)
             viewModel.clearSuccessMessage()
         }
     }
 
-    Scaffold(
-        topBar = {
-            TopAppBar(
-                title = { Text(programName) },
-                navigationIcon = {
-                    IconButton(onClick = { navController.popBackStack() }) {
-                        Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Back")
-                    }
-                },
-                actions = {
-                    // Search icon
-                    IconButton(
-                        onClick = { showSearchBar = !showSearchBar }
-                    ) {
-                        Icon(Icons.Default.Search, contentDescription = "Search")
-                    }
+    val isSyncing = currentUiState is UiState.Loading && currentUiState.operation !is LoadingOperation.Initial
+    val showInitialShimmer = currentUiState is UiState.Loading &&
+        currentUiState.operation is LoadingOperation.Initial &&
+        data == null
 
-                    // Sync button
-                    IconButton(
-                        onClick = {
-                            if (!state.isSyncing) {
-                                viewModel.syncEvents()
-                            }
-                        },
-                        enabled = !state.isLoading && !state.isSyncing
-                    ) {
-                        if (state.isSyncing) {
-                            CircularProgressIndicator(
-                                modifier = Modifier.size(24.dp),
-                                strokeWidth = 2.dp
-                            )
-                        } else {
-                            Icon(Icons.Default.Sync, contentDescription = "Sync")
-                        }
-                    }
+    BaseScreen(
+        title = data?.programName?.takeIf { it.isNotBlank() } ?: programName,
+        navController = navController,
+        syncStatusController = viewModel.syncController,
+        actions = {
+            IconButton(
+                onClick = { showSearchBar = !showSearchBar },
+                enabled = data != null
+            ) {
+                Icon(Icons.Default.Search, contentDescription = "Search")
+            }
+            IconButton(
+                onClick = { viewModel.syncEvents() },
+                enabled = data != null && !isSyncing
+            ) {
+                if (isSyncing) {
+                    CircularProgressIndicator(
+                        modifier = Modifier.size(20.dp),
+                        strokeWidth = 2.dp
+                    )
+                } else {
+                    Icon(Icons.Default.Sync, contentDescription = "Sync")
                 }
-            )
+            }
         },
-        snackbarHost = { SnackbarHost(snackbarHostState) },
         floatingActionButton = {
             FloatingActionButton(
                 onClick = {
-                    // Navigate to CreateEvent screen for creating new event
-                    navController.navigate("CreateEvent/$programId/$programName")
+                    val encodedProgramName = URLEncoder.encode(programName, "UTF-8")
+                    navController.navigate("CreateEvent/$programId/$encodedProgramName")
                 }
             ) {
                 Icon(Icons.Default.Add, contentDescription = "New Event")
             }
         }
-    ) { paddingValues ->
-        Box(modifier = Modifier.fillMaxSize().padding(paddingValues)) {
+    ) {
+        Box(modifier = Modifier.fillMaxSize()) {
             when {
-                state.isLoading -> {
-                    Box(
-                        modifier = Modifier.fillMaxSize(),
-                        contentAlignment = Alignment.Center
-                    ) {
-                        Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                            CircularProgressIndicator()
-                            Spacer(modifier = Modifier.height(16.dp))
-                            Text("Loading events...")
-                        }
-                    }
+                showInitialShimmer -> {
+                    ShimmerLoadingTable(
+                        columnCount = 4,
+                        rowCount = 8,
+                        modifier = Modifier.fillMaxSize()
+                    )
                 }
-                state.events.isEmpty() -> {
-                    Box(
-                        modifier = Modifier.fillMaxSize(),
-                        contentAlignment = Alignment.Center
-                    ) {
-                        Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                            Text(
-                                text = "No events found",
-                                style = MaterialTheme.typography.titleMedium,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant
-                            )
-                            Spacer(modifier = Modifier.height(8.dp))
-                            Text(
-                                text = "Tap + to create a new event",
-                                style = MaterialTheme.typography.bodyMedium,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant
-                            )
-                        }
-                    }
-                }
-                else -> {
-                    Column(modifier = Modifier.fillMaxSize()) {
-                        // Search bar
-                        if (showSearchBar) {
-                            SearchBar(
-                                query = state.searchQuery,
-                                onQueryChange = { viewModel.updateSearchQuery(it) },
-                                onClearSearch = {
-                                    viewModel.updateSearchQuery("")
-                                    showSearchBar = false
-                                }
-                            )
-                        }
-
-                        // Table
-                        EventsTable(
-                            state = state,
-                            onSortColumn = { columnId -> viewModel.sortByColumn(columnId) },
+                data != null -> {
+                    val content: @Composable () -> Unit = {
+                        EventsTableContent(
+                            data = data,
+                            showSearchBar = showSearchBar,
+                            onSearchQueryChange = viewModel::updateSearchQuery,
+                            onSortColumn = viewModel::sortByColumn,
                             onRowClick = { row ->
-                                // Navigate to EditStandaloneEvent screen for editing standalone events
+                                val encodedProgramName = URLEncoder.encode(programName, "UTF-8")
                                 navController.navigate(
-                                    "EditStandaloneEvent/$programId/$programName/${row.id}"
+                                    "EditStandaloneEvent/$programId/$encodedProgramName/${row.id}"
                                 )
                             }
                         )
                     }
+
+                    if (isSyncing && currentUiState is UiState.Loading) {
+                        AdaptiveLoadingOverlay(
+                            uiState = currentUiState,
+                            modifier = Modifier.fillMaxSize()
+                        ) {
+                            content()
+                        }
+                    } else {
+                        content()
+                    }
+                }
+                else -> {
+                    EmptyStateMessage(
+                        modifier = Modifier.align(Alignment.Center),
+                        message = "No events available. Tap + to create a new event."
+                    )
                 }
             }
+
+            if (currentUiState is UiState.Error) {
+                ErrorBanner(
+                    error = currentUiState.error,
+                    modifier = Modifier
+                        .align(Alignment.TopCenter)
+                        .padding(16.dp)
+                )
+            }
+
+            SnackbarHost(
+                hostState = snackbarHostState,
+                modifier = Modifier
+                    .align(Alignment.BottomCenter)
+                    .padding(16.dp)
+            )
         }
+    }
+}
+
+@Composable
+private fun EventsTableContent(
+    data: EventsTableData,
+    showSearchBar: Boolean,
+    onSearchQueryChange: (String) -> Unit,
+    onSortColumn: (String) -> Unit,
+    onRowClick: (EventTableRow) -> Unit
+) {
+    Column(modifier = Modifier.fillMaxSize()) {
+        if (showSearchBar) {
+            SearchBar(
+                query = data.searchQuery,
+                onQueryChange = onSearchQueryChange,
+                onClearSearch = {
+                    onSearchQueryChange("")
+                }
+            )
+        }
+
+        if (data.events.isEmpty()) {
+            EmptyStateMessage(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(32.dp),
+                message = "No events found. Tap + to create a new event."
+            )
+        } else {
+            EventsTable(
+                data = data,
+                onSortColumn = onSortColumn,
+                onRowClick = onRowClick
+            )
+        }
+    }
+}
+
+@Composable
+private fun EmptyStateMessage(
+    modifier: Modifier = Modifier,
+    message: String
+) {
+    Column(
+        modifier = modifier,
+        horizontalAlignment = Alignment.CenterHorizontally,
+        verticalArrangement = Arrangement.Center
+    ) {
+        Text(
+            text = message,
+            style = androidx.compose.material3.MaterialTheme.typography.titleMedium,
+            color = androidx.compose.material3.MaterialTheme.colorScheme.onSurfaceVariant,
+            textAlign = TextAlign.Center
+        )
     }
 }
 
@@ -223,28 +282,26 @@ private fun SearchBar(
 
 @Composable
 private fun EventsTable(
-    state: EventsTableState,
+    data: EventsTableData,
     onSortColumn: (String) -> Unit,
     onRowClick: (EventTableRow) -> Unit
 ) {
     Column(modifier = Modifier.fillMaxSize()) {
-        // Header row
         TableHeaderRow(
-            columns = state.columns,
-            sortColumnId = state.sortColumnId,
-            sortOrder = state.sortOrder,
+            columns = data.columns,
+            sortColumnId = data.sortColumnId,
+            sortOrder = data.sortOrder,
             onSortColumn = onSortColumn
         )
 
-        // Data rows
         LazyColumn(
             modifier = Modifier.fillMaxSize(),
-            contentPadding = PaddingValues(bottom = 80.dp) // Space for FAB
+            contentPadding = PaddingValues(bottom = 80.dp)
         ) {
-            items(state.tableRows) { row ->
+            items(data.tableRows) { row ->
                 TableDataRow(
                     row = row,
-                    columns = state.columns,
+                    columns = data.columns,
                     onClick = { onRowClick(row) }
                 )
                 HorizontalDivider()
@@ -263,7 +320,7 @@ private fun TableHeaderRow(
     Row(
         modifier = Modifier
             .fillMaxWidth()
-            .background(MaterialTheme.colorScheme.surfaceVariant)
+            .background(androidx.compose.material3.MaterialTheme.colorScheme.surfaceVariant)
             .horizontalScroll(rememberScrollState())
             .padding(vertical = 12.dp)
     ) {
@@ -294,25 +351,25 @@ private fun TableHeaderCell(
     ) {
         Text(
             text = column.displayName,
-            style = MaterialTheme.typography.labelLarge,
+            style = androidx.compose.material3.MaterialTheme.typography.labelLarge,
             fontWeight = FontWeight.Bold,
-            color = MaterialTheme.colorScheme.onSurfaceVariant,
+            color = androidx.compose.material3.MaterialTheme.colorScheme.onSurfaceVariant,
             maxLines = 2,
             overflow = TextOverflow.Ellipsis,
             modifier = Modifier.weight(1f)
         )
 
-        // Sort indicator
         if (column.sortable && isSorted) {
+            val icon = when (sortOrder) {
+                SortOrder.ASCENDING -> Icons.Default.ArrowUpward
+                SortOrder.DESCENDING -> Icons.Default.ArrowDownward
+                SortOrder.NONE -> Icons.Default.ArrowUpward
+            }
             Icon(
-                imageVector = when (sortOrder) {
-                    SortOrder.ASCENDING -> Icons.Default.ArrowUpward
-                    SortOrder.DESCENDING -> Icons.Default.ArrowDownward
-                    SortOrder.NONE -> Icons.Default.ArrowUpward
-                },
+                imageVector = icon,
                 contentDescription = null,
                 modifier = Modifier.size(16.dp),
-                tint = MaterialTheme.colorScheme.primary
+                tint = androidx.compose.material3.MaterialTheme.colorScheme.primary
             )
         }
     }
@@ -353,7 +410,7 @@ private fun TableDataCell(
     ) {
         Text(
             text = value,
-            style = MaterialTheme.typography.bodyMedium,
+            style = androidx.compose.material3.MaterialTheme.typography.bodyMedium,
             maxLines = 2,
             overflow = TextOverflow.Ellipsis,
             textAlign = if (columnId == "syncStatus" || columnId == "status") {

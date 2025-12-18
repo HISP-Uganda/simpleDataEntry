@@ -13,9 +13,14 @@ import androidx.compose.material3.IconButton
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.TopAppBarColors
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.collectAsState
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.navigation.NavController
+import com.ash.simpledataentry.data.sync.SyncStatusController
 import org.hisp.dhis.mobile.ui.designsystem.component.Title
 import org.hisp.dhis.mobile.ui.designsystem.component.TopBar
 import org.hisp.dhis.mobile.ui.designsystem.component.TopBarType
@@ -38,10 +43,19 @@ fun BaseScreen(
     actions: @Composable (RowScope.() -> Unit) = {},
     floatingActionButton: @Composable (() -> Unit)? = null,
     // PHASE 4: Top bar progress indicator
+    syncStatusController: SyncStatusController? = null,
     showProgress: Boolean = false,
     progress: Float? = null, // null = indeterminate, 0.0-1.0 = determinate
     content: @Composable () -> Unit
 ) {
+    val syncShowProgress by syncStatusController?.showTopBarProgress?.collectAsState()
+        ?: remember { mutableStateOf(false) }
+    val syncProgressValue by syncStatusController?.topBarProgressValue?.collectAsState()
+        ?: remember { mutableStateOf<Float?>(null) }
+
+    val effectiveShowProgress = showProgress || syncShowProgress
+    val effectiveProgress = progress ?: syncProgressValue
+
     Scaffold(
         topBar = {
             Box {
@@ -60,8 +74,8 @@ fun BaseScreen(
                 )
                 // PHASE 4: Progress indicator beneath top bar
                 TopBarProgress(
-                    isVisible = showProgress,
-                    progress = progress
+                    isVisible = effectiveShowProgress,
+                    progress = effectiveProgress
                 )
             }
         },

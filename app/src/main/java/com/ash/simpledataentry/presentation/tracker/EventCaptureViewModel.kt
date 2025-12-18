@@ -7,11 +7,16 @@ import com.ash.simpledataentry.data.SessionManager
 import com.ash.simpledataentry.data.cache.MetadataCacheService
 import com.ash.simpledataentry.data.sync.DetailedSyncProgress
 import com.ash.simpledataentry.data.sync.SyncQueueManager
+import com.ash.simpledataentry.data.sync.SyncStatusController
 import com.ash.simpledataentry.data.sync.NetworkStateManager
 import com.ash.simpledataentry.domain.grouping.ImpliedCategoryInferenceService
 import com.ash.simpledataentry.domain.model.*
 import com.ash.simpledataentry.domain.repository.DatasetInstancesRepository
 import com.ash.simpledataentry.presentation.core.NavigationProgress
+import com.ash.simpledataentry.presentation.core.LoadingOperation
+import com.ash.simpledataentry.presentation.core.LoadingProgress
+import com.ash.simpledataentry.presentation.core.UiError
+import com.ash.simpledataentry.presentation.core.UiState
 import dagger.hilt.android.lifecycle.HiltViewModel
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -94,11 +99,40 @@ class EventCaptureViewModel @Inject constructor(
     private val syncQueueManager: SyncQueueManager,
     private val networkStateManager: NetworkStateManager,
     private val impliedCategoryService: ImpliedCategoryInferenceService,
-    private val metadataCacheService: MetadataCacheService
+    private val metadataCacheService: MetadataCacheService,
+    private val syncStatusController: SyncStatusController
 ) : ViewModel() {
 
     private val _state = MutableStateFlow(EventCaptureState())
     val state: StateFlow<EventCaptureState> = _state.asStateFlow()
+    private val _uiState = MutableStateFlow<UiState<EventCaptureState>>(UiState.Loading(LoadingOperation.Initial))
+    val uiState: StateFlow<UiState<EventCaptureState>> = _uiState.asStateFlow()
+    private var lastSuccessfulState: EventCaptureState? = null
+    val syncController: SyncStatusController = syncStatusController
+
+    private fun emitSuccessState() {
+        val current = _state.value
+        lastSuccessfulState = current
+        _uiState.value = UiState.Success(current)
+    }
+
+    private fun updateState(
+        autoEmit: Boolean = true,
+        transform: (EventCaptureState) -> EventCaptureState
+    ) {
+        _state.update(transform)
+        if (autoEmit && _uiState.value is UiState.Success) {
+            emitSuccessState()
+        }
+    }
+
+    private fun setUiLoading(operation: LoadingOperation, progress: LoadingProgress? = null) {
+        _uiState.value = UiState.Loading(operation, progress)
+    }
+
+    private fun setUiError(error: UiError) {
+        _uiState.value = UiState.Error(error, previousData = lastSuccessfulState)
+    }
 
     private var d2: D2? = null
 
@@ -111,7 +145,7 @@ class EventCaptureViewModel @Inject constructor(
         // Observe sync progress (reuse DataEntry pattern)
         viewModelScope.launch {
             syncQueueManager.detailedProgress.collect { progress ->
-                _state.update { it.copy(
+                updateState { it.copy(
                     detailedSyncProgress = progress,
                     isSyncing = progress != null
                 ) }
@@ -127,7 +161,7 @@ class EventCaptureViewModel @Inject constructor(
     ) {
         viewModelScope.launch {
             try {
-                _state.update {
+                updateState {
                     it.copy(
                         isLoading = true,
                         error = null,
@@ -136,6 +170,16 @@ class EventCaptureViewModel @Inject constructor(
                         enrollmentId = enrollmentId
                     )
                 }
+                val navigationProgress = NavigationProgress(
+                    phase = com.ash.simpledataentry.presentation.core.LoadingPhase.LOADING_DATA,
+                    overallPercentage = 10,
+                    phaseTitle = "Loading event",
+                    phaseDetail = "Preparing event form..."
+                )
+                setUiLoading(
+                    operation = LoadingOperation.Navigation(navigationProgress),
+                    progress = LoadingProgress(message = navigationProgress.phaseDetail)
+                )
 
                 val d2Instance = d2 ?: throw Exception("Not authenticated")
 
@@ -314,7 +358,7 @@ class EventCaptureViewModel @Inject constructor(
                     }
                 }
 
-                _state.update {
+                updateState {
                     it.copy(
                         isLoading = false,
                         programId = programId,
@@ -335,21 +379,23 @@ class EventCaptureViewModel @Inject constructor(
 
                 // Trigger program rules evaluation after loading existing event
                 eventId?.let { evaluateProgramRules(it) }
+                emitSuccessState()
 
             } catch (e: Exception) {
-                _state.update {
+                updateState {
                     it.copy(
                         isLoading = false,
                         error = "Failed to initialize event: ${e.message}"
                     )
                 }
+                setUiError(UiError.Local(e.message ?: "Failed to initialize event"))
             }
         }
     }
 
     // Reuse exact same field update pattern from DataEntryViewModel
     fun updateDataValue(value: String, dataValue: DataValue) {
-        _state.update { currentState ->
+        updateState { currentState ->
             val updatedDataValues = currentState.dataValues.map { existingDataValue ->
                 if (existingDataValue.dataElement == dataValue.dataElement &&
                     existingDataValue.categoryOptionCombo == dataValue.categoryOptionCombo) {
@@ -376,12 +422,12 @@ class EventCaptureViewModel @Inject constructor(
     }
 
     fun updateEventDate(date: Date) {
-        _state.update { it.copy(eventDate = date) }
+        updateState { it.copy(eventDate = date) }
         updateCanSave()
     }
 
     fun updateOrganisationUnit(orgUnitId: String) {
-        _state.update { it.copy(selectedOrganisationUnitId = orgUnitId) }
+        updateState { it.copy(selectedOrganisationUnitId = orgUnitId) }
         updateCanSave()
     }
 
@@ -398,7 +444,7 @@ class EventCaptureViewModel @Inject constructor(
             validationErrors.add("Event date is required")
         }
 
-        _state.update {
+        updateState {
             it.copy(
                 validationErrors = validationErrors,
                 validationState = if (validationErrors.isEmpty()) ValidationState.VALID else ValidationState.VALID,
@@ -410,7 +456,7 @@ class EventCaptureViewModel @Inject constructor(
     fun saveEvent() {
         viewModelScope.launch {
             try {
-                _state.update { it.copy(saveInProgress = true, error = null) }
+                updateState { it.copy(saveInProgress = true, error = null) }
 
                 val d2Instance = d2 ?: throw Exception("Not authenticated")
                 val currentState = _state.value
@@ -425,7 +471,7 @@ class EventCaptureViewModel @Inject constructor(
                     createNewEvent(d2Instance, currentState)
                 }
 
-                _state.update {
+                updateState {
                     it.copy(
                         saveInProgress = false,
                         saveSuccess = true,
@@ -440,7 +486,7 @@ class EventCaptureViewModel @Inject constructor(
                 }
 
             } catch (e: Exception) {
-                _state.update {
+                updateState {
                     it.copy(
                         saveInProgress = false,
                         saveResult = Result.failure(e),
@@ -513,17 +559,17 @@ class EventCaptureViewModel @Inject constructor(
 
                 repository.syncProgramInstances(currentState.programId, ProgramType.EVENT)
                     .onSuccess {
-                        _state.update {
+                        updateState {
                             it.copy(successMessage = "Event synced successfully")
                         }
                     }
                     .onFailure { error ->
-                        _state.update {
+                        updateState {
                             it.copy(error = "Sync failed: ${error.message}")
                         }
                     }
             } catch (e: Exception) {
-                _state.update {
+                updateState {
                     it.copy(error = "Sync failed: ${e.message}")
                 }
             }
@@ -531,7 +577,7 @@ class EventCaptureViewModel @Inject constructor(
     }
 
     fun clearMessages() {
-        _state.update {
+        updateState {
             it.copy(
                 error = null,
                 successMessage = null,
@@ -708,7 +754,7 @@ class EventCaptureViewModel @Inject constructor(
      */
     @Suppress("unused")
     private fun applyRuleEffects(effect: ProgramRuleEffect) {
-        _state.update { currentState ->
+        updateState { currentState ->
             // Apply calculated values to data values
             val updatedDataValues = currentState.dataValues.map { dv ->
                 val calculatedValue = effect.calculatedValues[dv.dataElement]

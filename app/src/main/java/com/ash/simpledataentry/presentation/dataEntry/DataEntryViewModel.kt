@@ -15,10 +15,15 @@ import com.ash.simpledataentry.domain.model.*
 import com.ash.simpledataentry.domain.grouping.DataElementGroupingAnalyzer
 import com.ash.simpledataentry.data.sync.DetailedSyncProgress
 import com.ash.simpledataentry.data.sync.SyncQueueManager
+import com.ash.simpledataentry.data.sync.SyncStatusController
 import com.ash.simpledataentry.domain.repository.DataEntryRepository
 import com.ash.simpledataentry.domain.useCase.DataEntryUseCases
 import com.ash.simpledataentry.util.NetworkUtils
 import com.ash.simpledataentry.data.sync.NetworkStateManager
+import com.ash.simpledataentry.presentation.core.LoadingOperation
+import com.ash.simpledataentry.presentation.core.LoadingProgress
+import com.ash.simpledataentry.presentation.core.UiError
+import com.ash.simpledataentry.presentation.core.UiState
 import dagger.hilt.android.lifecycle.HiltViewModel
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.async
@@ -103,10 +108,39 @@ class DataEntryViewModel @Inject constructor(
     private val syncQueueManager: SyncQueueManager,
     private val networkStateManager: NetworkStateManager,
     private val sessionManager: com.ash.simpledataentry.data.SessionManager,
-    private val metadataCacheService: com.ash.simpledataentry.data.cache.MetadataCacheService
+    private val metadataCacheService: com.ash.simpledataentry.data.cache.MetadataCacheService,
+    private val syncStatusController: SyncStatusController
 ) : ViewModel() {
     private val _state = MutableStateFlow(DataEntryState())
     val state: StateFlow<DataEntryState> = _state.asStateFlow()
+    private val _uiState = MutableStateFlow<UiState<DataEntryState>>(UiState.Loading(LoadingOperation.Initial))
+    val uiState: StateFlow<UiState<DataEntryState>> = _uiState.asStateFlow()
+    private var lastSuccessfulState: DataEntryState? = null
+    val syncController: SyncStatusController = syncStatusController
+
+    private fun emitSuccessState() {
+        val current = _state.value
+        lastSuccessfulState = current
+        _uiState.value = UiState.Success(current)
+    }
+
+    private fun updateState(
+        autoEmit: Boolean = true,
+        transform: (DataEntryState) -> DataEntryState
+    ) {
+        _state.update(transform)
+        if (autoEmit && _uiState.value is UiState.Success) {
+            emitSuccessState()
+        }
+    }
+
+    private fun setUiLoading(operation: LoadingOperation, progress: LoadingProgress? = null) {
+        _uiState.value = UiState.Loading(operation, progress)
+    }
+
+    private fun setUiError(error: UiError) {
+        _uiState.value = UiState.Error(error, previousData = lastSuccessfulState)
+    }
 
     // Grouping analyzer for intelligent data element organization
     private val groupingAnalyzer = DataElementGroupingAnalyzer()
@@ -122,7 +156,7 @@ class DataEntryViewModel @Inject constructor(
         // Observe sync progress from SyncQueueManager
         viewModelScope.launch {
             syncQueueManager.detailedProgress.collect { progress ->
-                _state.update { currentState ->
+                updateState { currentState ->
                     currentState.copy(
                         detailedSyncProgress = progress,
                         isSyncing = progress != null
@@ -161,7 +195,13 @@ class DataEntryViewModel @Inject constructor(
     ) {
         viewModelScope.launch {
             try {
-                _state.update { currentState ->
+                val initialProgress = com.ash.simpledataentry.presentation.core.NavigationProgress(
+                    phase = com.ash.simpledataentry.presentation.core.LoadingPhase.INITIALIZING,
+                    overallPercentage = 10,
+                    phaseTitle = com.ash.simpledataentry.presentation.core.LoadingPhase.INITIALIZING.title,
+                    phaseDetail = "Preparing form..."
+                )
+                updateState { currentState ->
                     currentState.copy(
                         isLoading = true,
                         error = null,
@@ -171,24 +211,25 @@ class DataEntryViewModel @Inject constructor(
                         orgUnit = orgUnitId,
                         attributeOptionCombo = attributeOptionCombo,
                         isEditMode = isEditMode,
+                        navigationProgress = initialProgress
+                    )
+                }
+                setUiLoading(
+                    operation = LoadingOperation.Navigation(initialProgress),
+                    progress = LoadingProgress(message = initialProgress.phaseDetail)
+                )
+
+                // Step 1: Load Drafts (10-30%)
+                updateState {
+                    it.copy(
                         navigationProgress = com.ash.simpledataentry.presentation.core.NavigationProgress(
-                            phase = com.ash.simpledataentry.presentation.core.LoadingPhase.INITIALIZING,
-                            overallPercentage = 10,
-                            phaseTitle = com.ash.simpledataentry.presentation.core.LoadingPhase.INITIALIZING.title,
-                            phaseDetail = "Preparing form..."
+                            phase = com.ash.simpledataentry.presentation.core.LoadingPhase.LOADING_DATA,
+                            overallPercentage = 25,
+                            phaseTitle = com.ash.simpledataentry.presentation.core.LoadingPhase.LOADING_DATA.title,
+                            phaseDetail = "Loading draft data..."
                         )
                     )
                 }
-
-                // Step 1: Load Drafts (10-30%)
-                _state.update { it.copy(
-                    navigationProgress = com.ash.simpledataentry.presentation.core.NavigationProgress(
-                        phase = com.ash.simpledataentry.presentation.core.LoadingPhase.LOADING_DATA,
-                        overallPercentage = 25,
-                        phaseTitle = com.ash.simpledataentry.presentation.core.LoadingPhase.LOADING_DATA.title,
-                        phaseDetail = "Loading draft data..."
-                    )
-                )}
 
                 val drafts = withContext(Dispatchers.IO) {
                     draftDao.getDraftsForInstance(datasetId, period, orgUnitId, attributeOptionCombo)
@@ -200,26 +241,30 @@ class DataEntryViewModel @Inject constructor(
                 }
 
                 // Step 2: Load Data Values (30-50%)
-                _state.update { it.copy(
-                    navigationProgress = com.ash.simpledataentry.presentation.core.NavigationProgress(
-                        phase = com.ash.simpledataentry.presentation.core.LoadingPhase.LOADING_DATA,
-                        overallPercentage = 40,
-                        phaseTitle = com.ash.simpledataentry.presentation.core.LoadingPhase.LOADING_DATA.title,
-                        phaseDetail = "Loading form data..."
+                updateState {
+                    it.copy(
+                        navigationProgress = com.ash.simpledataentry.presentation.core.NavigationProgress(
+                            phase = com.ash.simpledataentry.presentation.core.LoadingPhase.LOADING_DATA,
+                            overallPercentage = 40,
+                            phaseTitle = com.ash.simpledataentry.presentation.core.LoadingPhase.LOADING_DATA.title,
+                            phaseDetail = "Loading form data..."
+                        )
                     )
-                )}
+                }
 
                 val dataValuesFlow = repository.getDataValues(datasetId, period, orgUnitId, attributeOptionCombo)
                 dataValuesFlow.collect { values ->
                     // Step 3: Process Categories (50-70%)
-                    _state.update { it.copy(
-                        navigationProgress = com.ash.simpledataentry.presentation.core.NavigationProgress(
-                            phase = com.ash.simpledataentry.presentation.core.LoadingPhase.PROCESSING_DATA,
-                            overallPercentage = 60,
-                            phaseTitle = com.ash.simpledataentry.presentation.core.LoadingPhase.PROCESSING_DATA.title,
-                            phaseDetail = "Processing categories..."
+                    updateState {
+                        it.copy(
+                            navigationProgress = com.ash.simpledataentry.presentation.core.NavigationProgress(
+                                phase = com.ash.simpledataentry.presentation.core.LoadingPhase.PROCESSING_DATA,
+                                overallPercentage = 60,
+                                phaseTitle = com.ash.simpledataentry.presentation.core.LoadingPhase.PROCESSING_DATA.title,
+                                phaseDetail = "Processing categories..."
+                            )
                         )
-                    )}
+                    }
 
                     val uniqueCategoryCombos = values
                         .mapNotNull { it.categoryOptionCombo }
@@ -287,14 +332,16 @@ class DataEntryViewModel @Inject constructor(
                     }
 
                     // Step 3.5: Load Option Sets (65-80%)
-                    _state.update { it.copy(
-                        navigationProgress = com.ash.simpledataentry.presentation.core.NavigationProgress(
-                            phase = com.ash.simpledataentry.presentation.core.LoadingPhase.PROCESSING_DATA,
-                            overallPercentage = 70,
-                            phaseTitle = com.ash.simpledataentry.presentation.core.LoadingPhase.PROCESSING_DATA.title,
-                            phaseDetail = "Loading option sets..."
+                    updateState {
+                        it.copy(
+                            navigationProgress = com.ash.simpledataentry.presentation.core.NavigationProgress(
+                                phase = com.ash.simpledataentry.presentation.core.LoadingPhase.PROCESSING_DATA,
+                                overallPercentage = 70,
+                                phaseTitle = com.ash.simpledataentry.presentation.core.LoadingPhase.PROCESSING_DATA.title,
+                                phaseDetail = "Loading option sets..."
+                            )
                         )
-                    )}
+                    }
 
                     val optionSets = repository.getAllOptionSetsForDataset(datasetId)
 
@@ -310,14 +357,16 @@ class DataEntryViewModel @Inject constructor(
                     Log.d("DataEntryViewModel", "Fetched ${validationRules.size} validation rules for dataset $datasetId")
 
                     // Step 3.6: Analyze grouping strategies per section (75-85%)
-                    _state.update { it.copy(
-                        navigationProgress = com.ash.simpledataentry.presentation.core.NavigationProgress(
-                            phase = com.ash.simpledataentry.presentation.core.LoadingPhase.PROCESSING_DATA,
-                            overallPercentage = 80,
-                            phaseTitle = com.ash.simpledataentry.presentation.core.LoadingPhase.PROCESSING_DATA.title,
-                            phaseDetail = "Analyzing data grouping..."
+                    updateState {
+                        it.copy(
+                            navigationProgress = com.ash.simpledataentry.presentation.core.NavigationProgress(
+                                phase = com.ash.simpledataentry.presentation.core.LoadingPhase.PROCESSING_DATA,
+                                overallPercentage = 80,
+                                phaseTitle = com.ash.simpledataentry.presentation.core.LoadingPhase.PROCESSING_DATA.title,
+                                phaseDetail = "Analyzing data grouping..."
+                            )
                         )
-                    )}
+                    }
 
                     val groupedBySection = mergedValues.groupBy { it.sectionName }
 
@@ -371,16 +420,18 @@ class DataEntryViewModel @Inject constructor(
                         .associate { it.groupTitle to it.members.map { dv -> dv.dataElement } }
 
                     // Step 4: Finalizing (85-100%)
-                    _state.update { it.copy(
-                        navigationProgress = com.ash.simpledataentry.presentation.core.NavigationProgress(
-                            phase = com.ash.simpledataentry.presentation.core.LoadingPhase.COMPLETING,
-                            overallPercentage = 90,
-                            phaseTitle = com.ash.simpledataentry.presentation.core.LoadingPhase.COMPLETING.title,
-                            phaseDetail = "Setting up form..."
+                    updateState {
+                        it.copy(
+                            navigationProgress = com.ash.simpledataentry.presentation.core.NavigationProgress(
+                                phase = com.ash.simpledataentry.presentation.core.LoadingPhase.COMPLETING,
+                                overallPercentage = 90,
+                                phaseTitle = com.ash.simpledataentry.presentation.core.LoadingPhase.COMPLETING.title,
+                                phaseDetail = "Setting up form..."
+                            )
                         )
-                    )}
+                    }
 
-                    _state.update { currentState ->
+                    updateState { currentState ->
                         val dataElementGroupedSections = groupedBySection.mapValues { (_, sectionValues) ->
                             sectionValues.groupBy { it.dataElement }
                         }
@@ -445,16 +496,18 @@ class DataEntryViewModel @Inject constructor(
                 
                 // Load draft count after data is loaded
                 loadDraftCount()
-                
+                emitSuccessState()
+
             } catch (e: Exception) {
                 Log.e("DataEntryViewModel", "Failed to load data values", e)
-                _state.update { currentState ->
+                updateState { currentState ->
                     currentState.copy(
                         error = "Failed to load data values: ${e.message}",
                         isLoading = false,
                         navigationProgress = com.ash.simpledataentry.presentation.core.NavigationProgress.error(e.message ?: "Failed to load data values")
                     )
                 }
+                setUiError(UiError.Local(e.message ?: "Failed to load data values"))
             }
         }
     }
@@ -474,7 +527,7 @@ class DataEntryViewModel @Inject constructor(
                 savePressed = false
             }
 
-            _state.update { currentState ->
+            updateState { currentState ->
                 var updateCount = 0
                 val updatedValues = currentState.dataValues.map {
                     if (it.dataElement == dataElementUid && it.categoryOptionCombo == categoryOptionComboUid) {
@@ -548,7 +601,7 @@ class DataEntryViewModel @Inject constructor(
 
     fun saveAllDataValues(context: android.content.Context? = null) {
         viewModelScope.launch {
-            _state.update { it.copy(saveInProgress = true, saveResult = null) }
+            updateState { it.copy(saveInProgress = true, saveResult = null) }
             savePressed = true
             val stateSnapshot = _state.value
 
@@ -573,13 +626,13 @@ class DataEntryViewModel @Inject constructor(
 
                 dirtyDataValues.clear()
 
-                _state.update { it.copy(
+                updateState { it.copy(
                     saveInProgress = false,
                     saveResult = Result.success(Unit)
                 ) }
 
             } catch (e: Exception) {
-                _state.update { it.copy(
+                updateState { it.copy(
                     saveInProgress = false,
                     saveResult = Result.failure(e)
                 ) }
@@ -589,12 +642,12 @@ class DataEntryViewModel @Inject constructor(
 
     fun syncCurrentEntryForm() {
         viewModelScope.launch {
-            _state.update { it.copy(isLoading = true, error = null) }
+            updateState { it.copy(isLoading = true, error = null) }
             val stateSnapshot = _state.value
             // More permissive network check - allow 2G connections
             val networkState = networkStateManager.networkState.value
             if (!networkState.isConnected || !networkState.hasInternet) {
-                _state.update { it.copy(isLoading = false, error = "Cannot sync while offline.") }
+                updateState { it.copy(isLoading = false, error = "Cannot sync while offline.") }
                 return@launch
             }
 
@@ -631,7 +684,7 @@ class DataEntryViewModel @Inject constructor(
                         "DataEntryViewModel",
                         "Failed to stage ${'$'}{failed.size} drafts: ${'$'}{failed.map { it.exceptionOrNull()?.message }}"
                     )
-                    _state.update {
+                    updateState {
                         it.copy(
                             isLoading = false,
                             error = "Failed to stage some values for upload."
@@ -663,7 +716,7 @@ class DataEntryViewModel @Inject constructor(
                             "DataEntryViewModel",
                             "Upload failed or returned empty result: $uploadResult"
                         )
-                        _state.update {
+                        updateState {
                             it.copy(
                                 isLoading = false,
                                 error = "Upload failed or returned empty result."
@@ -673,7 +726,7 @@ class DataEntryViewModel @Inject constructor(
                     }
                 } catch (e: Exception) {
                     Log.e("DataEntryViewModel", "Upload failed: ${'$'}{e.message}", e)
-                    _state.update {
+                    updateState {
                         it.copy(
                             isLoading = false,
                             error = "Upload failed: ${'$'}{e.message}"
@@ -712,7 +765,7 @@ class DataEntryViewModel @Inject constructor(
                         stateSnapshot.attributeOptionCombo
                     )
                 }
-                _state.update { it.copy(localDraftCount = draftCount) }
+                updateState { it.copy(localDraftCount = draftCount) }
             } catch (e: Exception) {
                 Log.e("DataEntryViewModel", "Failed to load draft count", e)
             }
@@ -748,7 +801,7 @@ class DataEntryViewModel @Inject constructor(
                         } else {
                             "Data entry synced successfully"
                         }
-                        _state.update {
+                        updateState {
                             it.copy(
                                 successMessage = message,
                                 detailedSyncProgress = null // Clear progress when done
@@ -758,7 +811,7 @@ class DataEntryViewModel @Inject constructor(
                     onFailure = { error ->
                         Log.e("DataEntryViewModel", "Enhanced sync failed", error)
                         val errorMessage = error.message ?: "Failed to sync data entry"
-                        _state.update {
+                        updateState {
                             it.copy(
                                 error = errorMessage,
                                 detailedSyncProgress = null // Clear progress on failure
@@ -768,7 +821,7 @@ class DataEntryViewModel @Inject constructor(
                 )
             } catch (e: Exception) {
                 Log.e("DataEntryViewModel", "Enhanced sync failed", e)
-                _state.update {
+                updateState {
                     it.copy(
                         isSyncing = false,
                         error = e.message ?: "Failed to sync data entry",
@@ -780,13 +833,13 @@ class DataEntryViewModel @Inject constructor(
     }
 
     fun clearMessages() {
-        _state.update { it.copy(error = null, successMessage = null) }
+        updateState { it.copy(error = null, successMessage = null) }
     }
 
     fun dismissSyncOverlay() {
         // Clear error state in SyncQueueManager to prevent persistent dialogs
         syncQueueManager.clearErrorState()
-        _state.update {
+        updateState {
             it.copy(
                 detailedSyncProgress = null,
                 isSyncing = false
@@ -796,7 +849,7 @@ class DataEntryViewModel @Inject constructor(
 
 
     fun toggleSection(sectionName: String) {
-        _state.update { currentState ->
+        updateState { currentState ->
             val current = currentState.isExpandedSections[sectionName] ?: false
             currentState.copy(
                 isExpandedSections = currentState.isExpandedSections.toMutableMap().apply {
@@ -807,9 +860,9 @@ class DataEntryViewModel @Inject constructor(
     }
 
     fun setCurrentSectionIndex(index: Int) {
-        _state.update { currentState ->
+        updateState { currentState ->
             if (index < 0 || index >= currentState.totalSections) { // Safety check
-                return@update currentState
+                return@updateState currentState
             }
             val newIndex = if (currentState.currentSectionIndex == index) {
                 -1 // If clicking the currently open section, close it
@@ -822,8 +875,8 @@ class DataEntryViewModel @Inject constructor(
 
 
     fun goToNextSection() {
-        _state.update { currentState ->
-            if (currentState.totalSections == 0) return@update currentState
+        updateState { currentState ->
+            if (currentState.totalSections == 0) return@updateState currentState
 
             val newIndex = if (currentState.currentSectionIndex == -1) {
                 0 // If nothing is open, "Next" opens the first section
@@ -835,8 +888,8 @@ class DataEntryViewModel @Inject constructor(
     }
 
     fun goToPreviousSection() {
-        _state.update { currentState ->
-            if (currentState.totalSections == 0) return@update currentState
+        updateState { currentState ->
+            if (currentState.totalSections == 0) return@updateState currentState
 
             val newIndex = if (currentState.currentSectionIndex == -1) {
                 currentState.totalSections - 1 // If nothing is open, "Previous" opens the last section
@@ -849,7 +902,7 @@ class DataEntryViewModel @Inject constructor(
 
 
     fun toggleCategoryGroup(sectionName: String, categoryGroup: String) {
-        _state.update { currentState ->
+        updateState { currentState ->
             val key = "$sectionName:$categoryGroup"
             val newExpanded = if (currentState.expandedCategoryGroup == key) null else key
             currentState.copy(expandedCategoryGroup = newExpanded)
@@ -860,7 +913,7 @@ class DataEntryViewModel @Inject constructor(
         val currentStep = _state.value.currentStep
         val totalSteps = _state.value.dataValues.size
         return if (currentStep < totalSteps - 1) {
-            _state.update { currentState ->
+            updateState { currentState ->
                 currentState.copy(
                     currentStep = currentStep + 1,
                     currentDataValue = _state.value.dataValues[currentStep + 1]
@@ -868,7 +921,7 @@ class DataEntryViewModel @Inject constructor(
             }
             false
         } else {
-            _state.update { currentState ->
+            updateState { currentState ->
                 currentState.copy(
                     isEditMode = true,
                     isCompleted = true
@@ -881,7 +934,7 @@ class DataEntryViewModel @Inject constructor(
     fun moveToPreviousStep(): Boolean {
         val currentStep = _state.value.currentStep
         return if (currentStep > 0) {
-            _state.update { currentState ->
+            updateState { currentState ->
                 currentState.copy(
                     currentStep = currentStep - 1,
                     currentDataValue = _state.value.dataValues[currentStep - 1]
@@ -926,11 +979,11 @@ class DataEntryViewModel @Inject constructor(
     }
 
     fun setNavigating(isNavigating: Boolean) {
-        _state.update { it.copy(isNavigating = isNavigating) }
+        updateState { it.copy(isNavigating = isNavigating) }
     }
 
     fun resetSaveFeedback() {
-        _state.update { it.copy(saveResult = null, saveInProgress = false) }
+        updateState { it.copy(saveResult = null, saveInProgress = false) }
         // Don't reset savePressed here - only reset when new changes are made
     }
 
@@ -985,7 +1038,7 @@ class DataEntryViewModel @Inject constructor(
     }
 
     fun toggleGridRow(sectionName: String, rowKey: String) {
-        _state.update { currentState ->
+        updateState { currentState ->
             val currentSet = currentState.expandedGridRows[sectionName] ?: emptySet()
             val newSet =
                 if (currentSet.contains(rowKey)) currentSet - rowKey else currentSet + rowKey
@@ -1007,7 +1060,7 @@ class DataEntryViewModel @Inject constructor(
             Log.d("DataEntryViewModel", "=== COMPLETION FLOW: Starting validation for completion ===")
             Log.d("DataEntryViewModel", "Current isCompleted state: ${stateSnapshot.isCompleted}")
             Log.d("DataEntryViewModel", "Dataset: ${stateSnapshot.datasetId}, Period: ${stateSnapshot.period}, OrgUnit: ${stateSnapshot.orgUnit}")
-            _state.update { it.copy(isValidating = true, error = null, validationSummary = null) }
+            updateState { it.copy(isValidating = true, error = null, validationSummary = null) }
             
             try {
                 val validationResult = validationRepository.validateDatasetInstance(
@@ -1021,7 +1074,7 @@ class DataEntryViewModel @Inject constructor(
                 
                 Log.d("DataEntryViewModel", "Validation completed: ${validationResult.errorCount} errors, ${validationResult.warningCount} warnings")
                 
-                _state.update { 
+                updateState { 
                     it.copy(
                         isValidating = false, 
                         validationSummary = validationResult
@@ -1030,7 +1083,7 @@ class DataEntryViewModel @Inject constructor(
                 
             } catch (e: Exception) {
                 Log.e("DataEntryViewModel", "Error during validation: ${e.message}", e)
-                _state.update {
+                updateState {
                     it.copy(
                         isValidating = false,
                         error = "Error during validation: ${e.message}"
@@ -1046,7 +1099,7 @@ class DataEntryViewModel @Inject constructor(
             Log.d("DataEntryViewModel", "=== COMPLETION FLOW: Proceeding with dataset completion after validation ===")
             Log.d("DataEntryViewModel", "Dataset: ${stateSnapshot.datasetId}, Period: ${stateSnapshot.period}, OrgUnit: ${stateSnapshot.orgUnit}")
             Log.d("DataEntryViewModel", "AttributeOptionCombo: ${stateSnapshot.attributeOptionCombo}")
-            _state.update { it.copy(isLoading = true, error = null) }
+            updateState { it.copy(isLoading = true, error = null) }
             
             try {
                 val result = useCases.completeDatasetInstance(
@@ -1065,11 +1118,11 @@ class DataEntryViewModel @Inject constructor(
                     }
                     
                     Log.d("DataEntryViewModel", successMessage)
-                    _state.update { it.copy(isCompleted = true, isLoading = false, validationSummary = null) }
+                    updateState { it.copy(isCompleted = true, isLoading = false, validationSummary = null) }
                     onResult(true, successMessage)
                 } else {
                     Log.e("DataEntryViewModel", "Failed to mark dataset as complete: ${result.exceptionOrNull()?.message}")
-                    _state.update {
+                    updateState {
                         it.copy(
                             isLoading = false,
                             error = result.exceptionOrNull()?.message
@@ -1080,7 +1133,7 @@ class DataEntryViewModel @Inject constructor(
                 
             } catch (e: Exception) {
                 Log.e("DataEntryViewModel", "Error during completion: ${e.message}", e)
-                _state.update {
+                updateState {
                     it.copy(
                         isLoading = false,
                         error = "Error during completion: ${e.message}"
@@ -1097,7 +1150,7 @@ class DataEntryViewModel @Inject constructor(
             Log.d("DataEntryViewModel", "=== COMPLETION FLOW: Marking dataset as incomplete ===")
             Log.d("DataEntryViewModel", "Dataset: ${stateSnapshot.datasetId}, Period: ${stateSnapshot.period}, OrgUnit: ${stateSnapshot.orgUnit}")
             Log.d("DataEntryViewModel", "AttributeOptionCombo: ${stateSnapshot.attributeOptionCombo}")
-            _state.update { it.copy(isLoading = true, error = null) }
+            updateState { it.copy(isLoading = true, error = null) }
 
             try {
                 val result = useCases.markDatasetInstanceIncomplete(
@@ -1108,7 +1161,7 @@ class DataEntryViewModel @Inject constructor(
                 )
 
                 if (result.isSuccess) {
-                    _state.update {
+                    updateState {
                         it.copy(
                             isLoading = false,
                             isCompleted = false,
@@ -1118,29 +1171,29 @@ class DataEntryViewModel @Inject constructor(
                     onResult(true, "Dataset marked as incomplete")
                 } else {
                     Log.e("DataEntryViewModel", "Failed to mark dataset incomplete: ${result.exceptionOrNull()}")
-                    _state.update { it.copy(isLoading = false, error = result.exceptionOrNull()?.message) }
+                    updateState { it.copy(isLoading = false, error = result.exceptionOrNull()?.message) }
                     onResult(false, result.exceptionOrNull()?.message)
                 }
             } catch (e: Exception) {
                 Log.e("DataEntryViewModel", "Exception marking dataset incomplete: ${e.message}", e)
-                _state.update { it.copy(isLoading = false, error = e.message) }
+                updateState { it.copy(isLoading = false, error = e.message) }
                 onResult(false, e.message)
             }
         }
     }
 
     fun clearValidationResult() {
-        _state.update { it.copy(validationSummary = null) }
+        updateState { it.copy(validationSummary = null) }
     }
 
     // === Enhanced Completion Workflow ===
 
     fun showCompletionDialog() {
-        _state.update { it.copy(showCompletionDialog = true) }
+        updateState { it.copy(showCompletionDialog = true) }
     }
 
     fun dismissCompletionDialog() {
-        _state.update {
+        updateState {
             it.copy(
                 showCompletionDialog = false,
                 completionAction = null,
@@ -1150,7 +1203,7 @@ class DataEntryViewModel @Inject constructor(
     }
 
     fun startCompletionWorkflow(action: com.ash.simpledataentry.presentation.core.CompletionAction) {
-        _state.update {
+        updateState {
             it.copy(
                 completionAction = action,
                 showCompletionDialog = false
@@ -1178,7 +1231,7 @@ class DataEntryViewModel @Inject constructor(
         viewModelScope.launch {
             try {
                 // Step 1: Preparing (0-10%)
-                _state.update {
+                updateState {
                     it.copy(
                         isValidating = true,
                         error = null,
@@ -1194,7 +1247,7 @@ class DataEntryViewModel @Inject constructor(
                 }
 
                 // Step 2: Validating (10-70%)
-                _state.update {
+                updateState {
                     it.copy(
                         completionProgress = com.ash.simpledataentry.presentation.core.CompletionProgress(
                             phase = com.ash.simpledataentry.presentation.core.CompletionPhase.VALIDATING,
@@ -1216,7 +1269,7 @@ class DataEntryViewModel @Inject constructor(
                 )
 
                 // Step 3: Processing Results (70-90%)
-                _state.update {
+                updateState {
                     it.copy(
                         completionProgress = com.ash.simpledataentry.presentation.core.CompletionProgress(
                             phase = com.ash.simpledataentry.presentation.core.CompletionPhase.PROCESSING_RESULTS,
@@ -1228,7 +1281,7 @@ class DataEntryViewModel @Inject constructor(
                     )
                 }
 
-                _state.update {
+                updateState {
                     it.copy(
                         isValidating = false,
                         validationSummary = validationResult,
@@ -1238,7 +1291,7 @@ class DataEntryViewModel @Inject constructor(
 
             } catch (e: Exception) {
                 Log.e("DataEntryViewModel", "Enhanced validation failed", e)
-                _state.update {
+                updateState {
                     it.copy(
                         isValidating = false,
                         error = "Validation failed: ${e.message}",
@@ -1256,7 +1309,7 @@ class DataEntryViewModel @Inject constructor(
         viewModelScope.launch {
             try {
                 // Step 1: Preparing (0-10%)
-                _state.update {
+                updateState {
                     it.copy(
                         isLoading = true,
                         error = null,
@@ -1270,7 +1323,7 @@ class DataEntryViewModel @Inject constructor(
                 }
 
                 // Step 2: Completing (10-90%)
-                _state.update {
+                updateState {
                     it.copy(
                         completionProgress = com.ash.simpledataentry.presentation.core.CompletionProgress(
                             phase = com.ash.simpledataentry.presentation.core.CompletionPhase.COMPLETING,
@@ -1290,7 +1343,7 @@ class DataEntryViewModel @Inject constructor(
 
                 if (result.isSuccess) {
                     // Step 3: Completed (90-100%)
-                    _state.update {
+                    updateState {
                         it.copy(
                             completionProgress = com.ash.simpledataentry.presentation.core.CompletionProgress(
                                 phase = com.ash.simpledataentry.presentation.core.CompletionPhase.COMPLETED,
@@ -1303,7 +1356,7 @@ class DataEntryViewModel @Inject constructor(
 
                     // Show success briefly, then clear
                     kotlinx.coroutines.delay(1500)
-                    _state.update {
+                    updateState {
                         it.copy(
                             isCompleted = true,
                             isLoading = false,
@@ -1312,7 +1365,7 @@ class DataEntryViewModel @Inject constructor(
                         )
                     }
                 } else {
-                    _state.update {
+                    updateState {
                         it.copy(
                             isLoading = false,
                             error = result.exceptionOrNull()?.message ?: "Failed to complete dataset",
@@ -1325,7 +1378,7 @@ class DataEntryViewModel @Inject constructor(
 
             } catch (e: Exception) {
                 Log.e("DataEntryViewModel", "Direct completion failed", e)
-                _state.update {
+                updateState {
                     it.copy(
                         isLoading = false,
                         error = "Completion failed: ${e.message}",
@@ -1346,7 +1399,7 @@ class DataEntryViewModel @Inject constructor(
         val stateSnapshot = _state.value
         viewModelScope.launch {
             try {
-                _state.update {
+                updateState {
                     it.copy(
                         isLoading = true,
                         error = null,
@@ -1367,7 +1420,7 @@ class DataEntryViewModel @Inject constructor(
                 )
 
                 if (result.isSuccess) {
-                    _state.update {
+                    updateState {
                         it.copy(
                             isLoading = false,
                             isCompleted = false,
@@ -1377,7 +1430,7 @@ class DataEntryViewModel @Inject constructor(
                         )
                     }
                 } else {
-                    _state.update {
+                    updateState {
                         it.copy(
                             isLoading = false,
                             error = result.exceptionOrNull()?.message ?: "Failed to mark incomplete",
@@ -1390,7 +1443,7 @@ class DataEntryViewModel @Inject constructor(
 
             } catch (e: Exception) {
                 Log.e("DataEntryViewModel", "Mark incomplete failed", e)
-                _state.update {
+                updateState {
                     it.copy(
                         isLoading = false,
                         error = e.message ?: "Failed to mark incomplete",
@@ -1442,7 +1495,7 @@ class DataEntryViewModel @Inject constructor(
      * Updates hidden fields, warnings, errors, calculated values, etc.
      */
     private fun applyProgramRuleEffects(effect: com.ash.simpledataentry.domain.model.ProgramRuleEffect) {
-        _state.update { currentState ->
+        updateState { currentState ->
             currentState.copy(
                 hiddenFields = effect.hiddenFields,
                 disabledFields = effect.disabledFields,

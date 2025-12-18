@@ -5,6 +5,7 @@ import android.content.Context
 import android.util.Log
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
+import com.ash.simpledataentry.data.sync.SyncStatusController
 import com.ash.simpledataentry.domain.model.CompletionStatus
 import com.ash.simpledataentry.domain.model.DatasetInstance
 import com.ash.simpledataentry.domain.model.DatasetInstanceFilterState
@@ -25,8 +26,13 @@ import com.ash.simpledataentry.util.PeriodHelper
 import com.ash.simpledataentry.data.local.DataValueDraftDao
 import com.ash.simpledataentry.data.sync.SyncQueueManager
 import com.ash.simpledataentry.data.sync.DetailedSyncProgress
-import com.ash.simpledataentry.presentation.core.NavigationProgress
+import com.ash.simpledataentry.presentation.core.LoadingOperation
 import com.ash.simpledataentry.presentation.core.LoadingPhase
+import com.ash.simpledataentry.presentation.core.LoadingProgress
+import com.ash.simpledataentry.presentation.core.NavigationProgress
+import com.ash.simpledataentry.presentation.core.UiError
+import com.ash.simpledataentry.presentation.core.UiState
+import com.ash.simpledataentry.util.toUiError
 import dagger.hilt.android.lifecycle.HiltViewModel
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -38,8 +44,6 @@ import javax.inject.Inject
 data class DatasetInstancesState(
     val instances: List<ProgramInstance> = emptyList(),
     val filteredInstances: List<ProgramInstance> = emptyList(),
-    val isLoading: Boolean = false,
-    val isSyncing: Boolean = false,
     val error: String? = null,
     val successMessage: String? = null,
     val attributeOptionCombos: List<Pair<String, String>> = emptyList(),
@@ -52,6 +56,19 @@ data class DatasetInstancesState(
     val navigationProgress: NavigationProgress? = null // Enhanced loading progress
 )
 
+data class DatasetInstancesData(
+    val instances: List<ProgramInstance> = emptyList(),
+    val filteredInstances: List<ProgramInstance> = emptyList(),
+    val successMessage: String? = null,
+    val attributeOptionCombos: List<Pair<String, String>> = emptyList(),
+    val dataset: com.ash.simpledataentry.domain.model.Dataset? = null,
+    val program: com.ash.simpledataentry.domain.model.Program? = null,
+    val programType: ProgramType = ProgramType.DATASET,
+    val localInstanceCount: Int = 0,
+    val instancesWithDrafts: Set<String> = emptySet(),
+    val detailedSyncProgress: DetailedSyncProgress? = null
+)
+
 @HiltViewModel
 class DatasetInstancesViewModel @Inject constructor(
     private val getDatasetInstancesUseCase: GetDatasetInstancesUseCase,
@@ -62,6 +79,7 @@ class DatasetInstancesViewModel @Inject constructor(
     private val draftDao: DataValueDraftDao,
     private val syncQueueManager: SyncQueueManager,
     private val sessionManager: com.ash.simpledataentry.data.SessionManager,
+    private val syncStatusController: SyncStatusController,
     private val app: Application
 ) : ViewModel() {
     private var programId: String = ""
@@ -69,6 +87,13 @@ class DatasetInstancesViewModel @Inject constructor(
 
     private val _state = MutableStateFlow(DatasetInstancesState())
     val state: StateFlow<DatasetInstancesState> = _state.asStateFlow()
+
+    private val _uiState = MutableStateFlow<UiState<DatasetInstancesData>>(
+        UiState.Loading(LoadingOperation.Initial)
+    )
+    val uiState: StateFlow<UiState<DatasetInstancesData>> = _uiState.asStateFlow()
+
+    val syncController: SyncStatusController = syncStatusController
 
     // --- Bulk completion state ---
     private val _bulkCompletionMode = MutableStateFlow(false)
@@ -80,6 +105,42 @@ class DatasetInstancesViewModel @Inject constructor(
     // Filter state
     private val _filterState = MutableStateFlow(DatasetInstanceFilterState())
     val filterState: StateFlow<DatasetInstanceFilterState> = _filterState.asStateFlow()
+
+    private fun DatasetInstancesState.toData(): DatasetInstancesData {
+        return DatasetInstancesData(
+            instances = instances,
+            filteredInstances = filteredInstances,
+            successMessage = successMessage,
+            attributeOptionCombos = attributeOptionCombos,
+            dataset = dataset,
+            program = program,
+            programType = programType,
+            localInstanceCount = localInstanceCount,
+            instancesWithDrafts = instancesWithDrafts,
+            detailedSyncProgress = detailedSyncProgress
+        )
+    }
+
+    private fun emitSuccessState() {
+        _uiState.value = UiState.Success(_state.value.toData())
+    }
+
+    private fun updateState(
+        autoEmit: Boolean = true,
+        transform: DatasetInstancesState.() -> DatasetInstancesState
+    ) {
+        _state.value = transform(_state.value)
+        if (autoEmit) {
+            emitSuccessState()
+        }
+    }
+
+    private fun setState(newState: DatasetInstancesState, autoEmit: Boolean = true) {
+        _state.value = newState
+        if (autoEmit) {
+            emitSuccessState()
+        }
+    }
 
     init {
         // Account change observer - MUST come first
@@ -99,10 +160,11 @@ class DatasetInstancesViewModel @Inject constructor(
         // Observe sync progress from SyncQueueManager
         viewModelScope.launch {
             syncQueueManager.detailedProgress.collect { progress ->
-                _state.value = _state.value.copy(
-                    detailedSyncProgress = progress,
-                    isSyncing = progress != null
-                )
+                updateState {
+                    copy(
+                        detailedSyncProgress = progress
+                    )
+                }
             }
         }
     }
@@ -110,7 +172,7 @@ class DatasetInstancesViewModel @Inject constructor(
     private fun resetToInitialState() {
         programId = ""
         currentProgramType = ProgramType.DATASET
-        _state.value = DatasetInstancesState()
+        setState(DatasetInstancesState())
         _filterState.value = DatasetInstanceFilterState()
         _bulkCompletionMode.value = false
         _selectedInstances.value = emptySet()
@@ -251,26 +313,35 @@ class DatasetInstancesViewModel @Inject constructor(
 
         Log.d("DatasetInstancesVM", "Enhanced loading program data for ID: $programId, type: $currentProgramType")
         viewModelScope.launch {
-            _state.value = _state.value.copy(
-                isLoading = true,
-                error = null,
-                navigationProgress = NavigationProgress(
-                    phase = LoadingPhase.INITIALIZING,
-                    overallPercentage = 10,
-                    phaseTitle = LoadingPhase.INITIALIZING.title,
-                    phaseDetail = "Preparing to load data..."
+            val previousData = _state.value.toData()
+            val initialProgress = NavigationProgress(
+                phase = LoadingPhase.INITIALIZING,
+                overallPercentage = 10,
+                phaseTitle = LoadingPhase.INITIALIZING.title,
+                phaseDetail = "Preparing to load data..."
+            )
+            updateState(autoEmit = false) {
+                copy(
+                    error = null,
+                    navigationProgress = initialProgress
                 )
+            }
+            _uiState.value = UiState.Loading(
+                operation = LoadingOperation.Navigation(initialProgress),
+                progress = LoadingProgress(message = initialProgress.phaseDetail)
             )
             try {
                 // Step 1: Load Configuration (10-30%)
-                _state.value = _state.value.copy(
-                    navigationProgress = NavigationProgress(
-                        phase = LoadingPhase.LOADING_DATA,
-                        overallPercentage = 25,
-                        phaseTitle = LoadingPhase.LOADING_DATA.title,
-                        phaseDetail = "Loading configuration..."
+                updateState(autoEmit = false) {
+                    copy(
+                        navigationProgress = NavigationProgress(
+                            phase = LoadingPhase.LOADING_DATA,
+                            overallPercentage = 25,
+                            phaseTitle = LoadingPhase.LOADING_DATA.title,
+                            phaseDetail = "Loading configuration..."
+                        )
                     )
-                )
+                }
 
                 Log.d("DatasetInstancesVM", "Fetching program instances")
                 // Get attribute option combos only for datasets
@@ -282,14 +353,16 @@ class DatasetInstancesViewModel @Inject constructor(
                 Log.d("DatasetInstancesVM", "getAttributeOptionCombos returned: $attributeOptionCombos")
                 
                 // Step 2: Get Program Information (30-50%)
-                _state.value = _state.value.copy(
-                    navigationProgress = NavigationProgress(
-                        phase = LoadingPhase.LOADING_DATA,
-                        overallPercentage = 40,
-                        phaseTitle = LoadingPhase.LOADING_DATA.title,
-                        phaseDetail = "Fetching program information..."
+                updateState(autoEmit = false) {
+                    copy(
+                        navigationProgress = NavigationProgress(
+                            phase = LoadingPhase.LOADING_DATA,
+                            overallPercentage = 40,
+                            phaseTitle = LoadingPhase.LOADING_DATA.title,
+                            phaseDetail = "Fetching program information..."
+                        )
                     )
-                )
+                }
 
                 // Get program information based on type
                 var dataset: com.ash.simpledataentry.domain.model.Dataset? = null
@@ -311,14 +384,16 @@ class DatasetInstancesViewModel @Inject constructor(
                 }
                 
                 // Step 3: Load Instances (50-70%)
-                _state.value = _state.value.copy(
-                    navigationProgress = NavigationProgress(
-                        phase = LoadingPhase.LOADING_DATA,
-                        overallPercentage = 60,
-                        phaseTitle = LoadingPhase.LOADING_DATA.title,
-                        phaseDetail = "Loading program instances..."
+                updateState(autoEmit = false) {
+                    copy(
+                        navigationProgress = NavigationProgress(
+                            phase = LoadingPhase.LOADING_DATA,
+                            overallPercentage = 60,
+                            phaseTitle = LoadingPhase.LOADING_DATA.title,
+                            phaseDetail = "Loading program instances..."
+                        )
                     )
-                )
+                }
 
                 // Load instances based on program type
                 val instancesResult = when (currentProgramType) {
@@ -383,14 +458,16 @@ class DatasetInstancesViewModel @Inject constructor(
                         Log.d("DatasetInstancesVM", "Received "+instances.size+" instances")
 
                         // Step 4: Process Draft Status (70-90%)
-                        _state.value = _state.value.copy(
-                            navigationProgress = NavigationProgress(
-                                phase = LoadingPhase.PROCESSING_DATA,
-                                overallPercentage = 80,
-                                phaseTitle = LoadingPhase.PROCESSING_DATA.title,
-                                phaseDetail = "Checking draft status..."
+                        updateState(autoEmit = false) {
+                            copy(
+                                navigationProgress = NavigationProgress(
+                                    phase = LoadingPhase.PROCESSING_DATA,
+                                    overallPercentage = 80,
+                                    phaseTitle = LoadingPhase.PROCESSING_DATA.title,
+                                    phaseDetail = "Checking draft status..."
+                                )
                             )
-                        )
+                        }
 
                         // Check for instances with draft values (only applies to dataset instances)
                         val instancesWithDrafts = mutableSetOf<String>()
@@ -418,49 +495,62 @@ class DatasetInstancesViewModel @Inject constructor(
                         Log.d("DatasetInstancesVM", "Found ${instancesWithDrafts.size} instances with local draft values")
 
                         // Step 5: Finalizing (90-100%)
-                        _state.value = _state.value.copy(
-                            navigationProgress = NavigationProgress(
-                                phase = LoadingPhase.COMPLETING,
-                                overallPercentage = 100,
-                                phaseTitle = LoadingPhase.COMPLETING.title,
-                                phaseDetail = "Ready!"
+                        updateState(autoEmit = false) {
+                            copy(
+                                navigationProgress = NavigationProgress(
+                                    phase = LoadingPhase.COMPLETING,
+                                    overallPercentage = 100,
+                                    phaseTitle = LoadingPhase.COMPLETING.title,
+                                    phaseDetail = "Ready!"
+                                )
                             )
-                        )
+                        }
 
-                        _state.value = _state.value.copy(
-                            instances = instances,
-                            filteredInstances = applyFilters(orderInstances(instances)),
-                            isLoading = false,
-                            error = null,
-                            attributeOptionCombos = attributeOptionCombos,
-                            dataset = dataset,
-                            program = program,
-                            programType = currentProgramType,
-                            localInstanceCount = instancesWithDrafts.size,
-                            instancesWithDrafts = instancesWithDrafts,
-                            navigationProgress = null // Clear progress when done
-                        )
+                        updateState {
+                            copy(
+                                instances = instances,
+                                filteredInstances = applyFilters(orderInstances(instances)),
+                                error = null,
+                                attributeOptionCombos = attributeOptionCombos,
+                                dataset = dataset,
+                                program = program,
+                                programType = currentProgramType,
+                                localInstanceCount = instancesWithDrafts.size,
+                                instancesWithDrafts = instancesWithDrafts,
+                                navigationProgress = null // Clear progress when done
+                            )
+                        }
                     },
-                    onFailure = { error ->
-                        Log.e("DatasetInstancesVM", "Error loading data", error)
-                        _state.value = _state.value.copy(
-                            isLoading = false,
-                            error = error.message ?: "Failed to load program data",
-                            attributeOptionCombos = attributeOptionCombos,
-                            dataset = dataset,
-                            program = program,
-                            programType = currentProgramType,
-                            localInstanceCount = 0,
-                            navigationProgress = NavigationProgress.error(error.message ?: "Failed to load program data")
+                    onFailure = { throwable ->
+                        Log.e("DatasetInstancesVM", "Error loading data", throwable)
+                        updateState(autoEmit = false) {
+                            copy(
+                                error = throwable.message ?: "Failed to load program data",
+                                attributeOptionCombos = attributeOptionCombos,
+                                dataset = dataset,
+                                program = program,
+                                programType = currentProgramType,
+                                localInstanceCount = 0,
+                                navigationProgress = NavigationProgress.error(throwable.message ?: "Failed to load program data")
+                            )
+                        }
+                        _uiState.value = UiState.Error(
+                            error = throwable.toUiError(),
+                            previousData = previousData
                         )
                     }
                 )
             } catch (e: Exception) {
                 Log.e("DatasetInstancesVM", "Error loading data", e)
-                _state.value = _state.value.copy(
-                    isLoading = false,
-                    error = e.message ?: "Failed to load program data",
-                    navigationProgress = NavigationProgress.error(e.message ?: "Failed to load program data")
+                updateState(autoEmit = false) {
+                    copy(
+                        error = e.message ?: "Failed to load program data",
+                        navigationProgress = NavigationProgress.error(e.message ?: "Failed to load program data")
+                    )
+                }
+                _uiState.value = UiState.Error(
+                    error = e.toUiError(),
+                    previousData = previousData
                 )
             }
         }
@@ -474,6 +564,7 @@ class DatasetInstancesViewModel @Inject constructor(
 
         Log.d("DatasetInstancesVM", "Starting enhanced sync for program: $programId, type: $currentProgramType, uploadFirst: $uploadFirst")
         viewModelScope.launch {
+            val previousData = _state.value.toData()
             try {
                 when (currentProgramType) {
                     com.ash.simpledataentry.domain.model.ProgramType.TRACKER -> {
@@ -483,16 +574,24 @@ class DatasetInstancesViewModel @Inject constructor(
                             onSuccess = {
                                 Log.d("DatasetInstancesVM", "Tracker data sync completed successfully")
                                 loadData() // Reload all data after sync
-                                _state.value = _state.value.copy(
-                                    successMessage = "Tracker enrollments synced successfully from server",
-                                    detailedSyncProgress = null
-                                )
+                                updateState {
+                                    copy(
+                                        successMessage = "Tracker enrollments synced successfully from server",
+                                        detailedSyncProgress = null
+                                    )
+                                }
                             },
-                            onFailure = { error ->
-                                Log.e("DatasetInstancesVM", "Tracker sync failed", error)
-                                _state.value = _state.value.copy(
-                                    error = "Failed to sync tracker data: ${error.message}",
-                                    detailedSyncProgress = null
+                            onFailure = { throwable ->
+                                Log.e("DatasetInstancesVM", "Tracker sync failed", throwable)
+                                updateState(autoEmit = false) {
+                                    copy(
+                                        error = "Failed to sync tracker data: ${throwable.message}",
+                                        detailedSyncProgress = null
+                                    )
+                                }
+                                _uiState.value = UiState.Error(
+                                    error = throwable.toUiError(),
+                                    previousData = previousData
                                 )
                             }
                         )
@@ -504,16 +603,24 @@ class DatasetInstancesViewModel @Inject constructor(
                             onSuccess = {
                                 Log.d("DatasetInstancesVM", "Event data sync completed successfully")
                                 loadData() // Reload all data after sync
-                                _state.value = _state.value.copy(
-                                    successMessage = "Event instances synced successfully from server",
-                                    detailedSyncProgress = null
-                                )
+                                updateState {
+                                    copy(
+                                        successMessage = "Event instances synced successfully from server",
+                                        detailedSyncProgress = null
+                                    )
+                                }
                             },
-                            onFailure = { error ->
-                                Log.e("DatasetInstancesVM", "Event sync failed", error)
-                                _state.value = _state.value.copy(
-                                    error = "Failed to sync event data: ${error.message}",
-                                    detailedSyncProgress = null
+                            onFailure = { throwable ->
+                                Log.e("DatasetInstancesVM", "Event sync failed", throwable)
+                                updateState(autoEmit = false) {
+                                    copy(
+                                        error = "Failed to sync event data: ${throwable.message}",
+                                        detailedSyncProgress = null
+                                    )
+                                }
+                                _uiState.value = UiState.Error(
+                                    error = throwable.toUiError(),
+                                    previousData = previousData
                                 )
                             }
                         )
@@ -530,33 +637,50 @@ class DatasetInstancesViewModel @Inject constructor(
                                 } else {
                                     "Dataset instances synced successfully"
                                 }
-                                _state.value = _state.value.copy(
-                                    successMessage = message,
-                                    detailedSyncProgress = null
-                                )
+                                updateState {
+                                    copy(
+                                        successMessage = message,
+                                        detailedSyncProgress = null
+                                    )
+                                }
                             },
-                            onFailure = { error ->
-                                Log.e("DatasetInstancesVM", "Dataset sync failed", error)
-                                _state.value = _state.value.copy(
-                                    error = error.message ?: "Failed to sync dataset instances",
-                                    detailedSyncProgress = null
+                            onFailure = { throwable ->
+                                Log.e("DatasetInstancesVM", "Dataset sync failed", throwable)
+                                updateState(autoEmit = false) {
+                                    copy(
+                                        error = throwable.message ?: "Failed to sync dataset instances",
+                                        detailedSyncProgress = null
+                                    )
+                                }
+                                _uiState.value = UiState.Error(
+                                    error = throwable.toUiError(),
+                                    previousData = previousData
                                 )
                             }
                         )
                     }
                     else -> {
                         Log.w("DatasetInstancesVM", "Unknown program type for sync: $currentProgramType")
-                        _state.value = _state.value.copy(
-                            error = "Cannot sync: Unknown program type"
+                        updateState(autoEmit = false) {
+                            copy(error = "Cannot sync: Unknown program type")
+                        }
+                        _uiState.value = UiState.Error(
+                            error = UiError.Local("Cannot sync: Unknown program type"),
+                            previousData = previousData
                         )
                     }
                 }
             } catch (e: Exception) {
                 Log.e("DatasetInstancesVM", "Sync failed", e)
-                _state.value = _state.value.copy(
-                    isSyncing = false,
-                    error = e.message ?: "Failed to sync data",
-                    detailedSyncProgress = null
+                updateState(autoEmit = false) {
+                    copy(
+                        error = e.message ?: "Failed to sync data",
+                        detailedSyncProgress = null
+                    )
+                }
+                _uiState.value = UiState.Error(
+                    error = e.toUiError(),
+                    previousData = previousData
                 )
             }
         }
@@ -569,10 +693,11 @@ class DatasetInstancesViewModel @Inject constructor(
     fun dismissSyncOverlay() {
         // Clear error state in SyncQueueManager to prevent persistent dialogs
         syncQueueManager.clearErrorState()
-        _state.value = _state.value.copy(
-            detailedSyncProgress = null,
-            isSyncing = false
-        )
+        updateState {
+            copy(
+                detailedSyncProgress = null
+            )
+        }
     }
 
     fun toggleBulkCompletionMode() {
@@ -596,11 +721,25 @@ class DatasetInstancesViewModel @Inject constructor(
     fun bulkCompleteSelectedInstances(onResult: (Boolean, String?) -> Unit) {
         val selected = _selectedInstances.value
         val allInstances = _state.value.instances.associateBy { it.id }
+        val totalDatasetInstances = allInstances.values.count { it is ProgramInstance.DatasetInstance }
+        if (totalDatasetInstances == 0) {
+            onResult(false, "No dataset instances available")
+            return
+        }
+
         viewModelScope.launch {
-            _state.value = _state.value.copy(isLoading = true, error = null)
+            val progressTracker = LoadingProgress(message = "Updating completion status...")
+            _uiState.value = UiState.Loading(
+                operation = LoadingOperation.BulkOperation(
+                    itemsProcessed = 0,
+                    totalItems = totalDatasetInstances,
+                    operationName = "Updating completion"
+                ),
+                progress = progressTracker
+            )
             var anyError: String? = null
+            var processed = 0
             for ((uid, instance) in allInstances) {
-                // Only handle completion for dataset instances for now
                 if (instance is ProgramInstance.DatasetInstance) {
                     val shouldBeComplete = selected.contains(uid) || instance.state == com.ash.simpledataentry.domain.model.ProgramInstanceState.COMPLETED
                     val isComplete = instance.state == com.ash.simpledataentry.domain.model.ProgramInstanceState.COMPLETED
@@ -617,16 +756,27 @@ class DatasetInstancesViewModel @Inject constructor(
                             orgUnit = instance.organisationUnit.id,
                             attributeOptionCombo = instance.attributeOptionCombo
                         )
-                        else -> null // No action needed
+                        else -> null
                     }
+                    processed++
+                    _uiState.value = UiState.Loading(
+                        operation = LoadingOperation.BulkOperation(
+                            itemsProcessed = processed.coerceAtMost(totalDatasetInstances),
+                            totalItems = totalDatasetInstances,
+                            operationName = "Updating completion"
+                        ),
+                        progress = progressTracker
+                    )
+
                     if (result != null && result.isFailure) {
                         anyError = result.exceptionOrNull()?.message ?: "Unknown error"
                         break
                     }
                 }
-                // TODO: Handle tracker enrollments and events completion
             }
-            _state.value = _state.value.copy(isLoading = false)
+
+            emitSuccessState()
+
             if (anyError != null) {
                 onResult(false, anyError)
             } else {
@@ -640,14 +790,21 @@ class DatasetInstancesViewModel @Inject constructor(
         val instance = allInstances[uid]
         if (instance is ProgramInstance.DatasetInstance) {
             viewModelScope.launch {
-                _state.value = _state.value.copy(isLoading = true, error = null)
+                _uiState.value = UiState.Loading(
+                    operation = LoadingOperation.BulkOperation(
+                        itemsProcessed = 0,
+                        totalItems = 1,
+                        operationName = "Marking instance incomplete"
+                    ),
+                    progress = LoadingProgress(message = "Updating completion status...")
+                )
                 val result = datasetInstacesRepository.markDatasetInstanceIncomplete(
                     datasetId = instance.programId,
                     period = instance.period.id,
                     orgUnit = instance.organisationUnit.id,
                     attributeOptionCombo = instance.attributeOptionCombo
                 )
-                _state.value = _state.value.copy(isLoading = false)
+                emitSuccessState()
                 if (result.isFailure) {
                     onResult(false, result.exceptionOrNull()?.message ?: "Unknown error")
                 } else {
@@ -661,26 +818,46 @@ class DatasetInstancesViewModel @Inject constructor(
 
     fun bulkMarkInstancesIncomplete(uids: Set<String>, onResult: (Boolean, String?) -> Unit) {
         val allInstances = _state.value.instances.associateBy { it.id }
+        val datasetInstances = uids.mapNotNull { uid -> allInstances[uid] as? ProgramInstance.DatasetInstance }
+        if (datasetInstances.isEmpty()) {
+            onResult(false, "No dataset instances selected")
+            return
+        }
+
         viewModelScope.launch {
-            _state.value = _state.value.copy(isLoading = true, error = null)
+            val progressTracker = LoadingProgress(message = "Updating completion status...")
+            _uiState.value = UiState.Loading(
+                operation = LoadingOperation.BulkOperation(
+                    itemsProcessed = 0,
+                    totalItems = datasetInstances.size,
+                    operationName = "Marking incomplete"
+                ),
+                progress = progressTracker
+            )
             var anyError: String? = null
-            for (uid in uids) {
-                val instance = allInstances[uid]
-                if (instance is ProgramInstance.DatasetInstance) {
-                    val result = datasetInstacesRepository.markDatasetInstanceIncomplete(
-                        datasetId = instance.programId,
-                        period = instance.period.id,
-                        orgUnit = instance.organisationUnit.id,
-                        attributeOptionCombo = instance.attributeOptionCombo
-                    )
-                    if (result.isFailure) {
-                        anyError = result.exceptionOrNull()?.message ?: "Unknown error"
-                        break
-                    }
+            var processed = 0
+            for (instance in datasetInstances) {
+                val result = datasetInstacesRepository.markDatasetInstanceIncomplete(
+                    datasetId = instance.programId,
+                    period = instance.period.id,
+                    orgUnit = instance.organisationUnit.id,
+                    attributeOptionCombo = instance.attributeOptionCombo
+                )
+                processed++
+                _uiState.value = UiState.Loading(
+                    operation = LoadingOperation.BulkOperation(
+                        itemsProcessed = processed.coerceAtMost(datasetInstances.size),
+                        totalItems = datasetInstances.size,
+                        operationName = "Marking incomplete"
+                    ),
+                    progress = progressTracker
+                )
+                if (result.isFailure) {
+                    anyError = result.exceptionOrNull()?.message ?: "Unknown error"
+                    break
                 }
-                // TODO: Handle tracker enrollments and events
             }
-            _state.value = _state.value.copy(isLoading = false)
+            emitSuccessState()
             if (anyError != null) {
                 onResult(false, anyError)
             } else {
@@ -694,14 +871,21 @@ class DatasetInstancesViewModel @Inject constructor(
         val instance = allInstances[uid]
         if (instance is ProgramInstance.DatasetInstance) {
             viewModelScope.launch {
-                _state.value = _state.value.copy(isLoading = true, error = null)
+                _uiState.value = UiState.Loading(
+                    operation = LoadingOperation.BulkOperation(
+                        itemsProcessed = 0,
+                        totalItems = 1,
+                        operationName = "Marking instance complete"
+                    ),
+                    progress = LoadingProgress(message = "Updating completion status...")
+                )
                 val result = datasetInstacesRepository.completeDatasetInstance(
                     datasetId = instance.programId,
                     period = instance.period.id,
                     orgUnit = instance.organisationUnit.id,
                     attributeOptionCombo = instance.attributeOptionCombo
                 )
-                _state.value = _state.value.copy(isLoading = false)
+                emitSuccessState()
                 if (result.isFailure) {
                     onResult(false, result.exceptionOrNull()?.message ?: "Unknown error")
                 } else {
@@ -717,9 +901,11 @@ class DatasetInstancesViewModel @Inject constructor(
     fun updateFilterState(newFilterState: DatasetInstanceFilterState) {
         _filterState.value = newFilterState
         val currentInstances = _state.value.instances
-        _state.value = _state.value.copy(
-            filteredInstances = applyFilters(orderInstances(currentInstances))
-        )
+        updateState {
+            copy(
+                filteredInstances = applyFilters(orderInstances(currentInstances))
+            )
+        }
     }
 
     private fun applyFilters(instances: List<ProgramInstance>): List<ProgramInstance> {
@@ -811,9 +997,11 @@ class DatasetInstancesViewModel @Inject constructor(
     fun clearFilters() {
         _filterState.value = DatasetInstanceFilterState()
         val currentInstances = _state.value.instances
-        _state.value = _state.value.copy(
-            filteredInstances = orderInstances(currentInstances)
-        )
+        updateState {
+            copy(
+                filteredInstances = orderInstances(currentInstances)
+            )
+        }
     }
 
     private fun orderInstances(instances: List<ProgramInstance>): List<ProgramInstance> {
