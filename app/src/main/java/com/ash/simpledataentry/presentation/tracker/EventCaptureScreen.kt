@@ -27,10 +27,11 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.navigation.NavController
-import com.ash.simpledataentry.presentation.core.DetailedSyncOverlay
-import com.ash.simpledataentry.presentation.core.FullScreenLoader
+import com.ash.simpledataentry.presentation.core.AdaptiveLoadingOverlay
 import com.ash.simpledataentry.presentation.core.ShimmerFormSection
 import com.ash.simpledataentry.presentation.core.DatePickerDialog
+import com.ash.simpledataentry.presentation.core.LoadingOperation
+import com.ash.simpledataentry.presentation.core.UiState
 import com.ash.simpledataentry.domain.model.DataValue
 import com.ash.simpledataentry.domain.model.DataEntryType
 import org.hisp.dhis.mobile.ui.designsystem.component.InputText
@@ -57,6 +58,24 @@ fun EventCaptureScreen(
     eventId: String? = null
 ) {
     val state by viewModel.state.collectAsState()
+    val rawOverlayState by viewModel.uiState.collectAsState()
+    val overlayState = rawOverlayState
+    val adaptiveUiState = remember(overlayState) {
+        when (overlayState) {
+            is UiState.Loading -> {
+                val operation = overlayState.operation
+                if (operation is LoadingOperation.Syncing ||
+                    operation is LoadingOperation.Saving ||
+                    operation is LoadingOperation.BulkOperation
+                ) {
+                    overlayState
+                } else {
+                    UiState.Success(Unit)
+                }
+            }
+            else -> UiState.Success(Unit)
+        }
+    }
     val snackbarHostState = remember { SnackbarHostState() }
     val coroutineScope = rememberCoroutineScope()
     val context = LocalContext.current
@@ -282,11 +301,8 @@ fun EventCaptureScreen(
         },
         snackbarHost = { SnackbarHost(snackbarHostState) }
     ) { paddingValues ->
-        // Sync overlay (reuse EditEntry pattern)
-        DetailedSyncOverlay(
-            progress = state.detailedSyncProgress,
-            onNavigateBack = { viewModel.clearMessages() },
-            onCancel = { viewModel.clearMessages() },
+        AdaptiveLoadingOverlay(
+            uiState = adaptiveUiState,
             modifier = Modifier.fillMaxSize()
         ) {
             when {
@@ -306,42 +322,36 @@ fun EventCaptureScreen(
                         }
                     }
                 }
-                state.saveInProgress -> {
-                    FullScreenLoader(
-                        message = if (state.isEditMode) "Updating event..." else "Creating event...",
-                        isVisible = true
-                    )
-                }
                 state.error != null -> {
-                Column(
-                    modifier = Modifier
-                        .fillMaxSize()
-                        .padding(paddingValues)
-                        .padding(16.dp),
-                    horizontalAlignment = Alignment.CenterHorizontally,
-                    verticalArrangement = Arrangement.Center
-                ) {
-                    Text(
-                        text = "Error loading event",
-                        style = MaterialTheme.typography.headlineSmall,
-                        color = MaterialTheme.colorScheme.error
-                    )
-                    Text(
-                        text = state.error ?: "Unknown error",
-                        style = MaterialTheme.typography.bodyMedium,
-                        color = MaterialTheme.colorScheme.onSurface
-                    )
-                }
+                    Column(
+                        modifier = Modifier
+                            .fillMaxSize()
+                            .padding(paddingValues)
+                            .padding(16.dp),
+                        horizontalAlignment = Alignment.CenterHorizontally,
+                        verticalArrangement = Arrangement.Center
+                    ) {
+                        Text(
+                            text = "Error loading event",
+                            style = MaterialTheme.typography.headlineSmall,
+                            color = MaterialTheme.colorScheme.error
+                        )
+                        Text(
+                            text = state.error ?: "Unknown error",
+                            style = MaterialTheme.typography.bodyMedium,
+                            color = MaterialTheme.colorScheme.onSurface
+                        )
+                    }
                 }
                 else -> {
                     LazyColumn(
-                    modifier = Modifier
-                        .fillMaxSize()
-                        .padding(paddingValues)
-                        .background(MaterialTheme.colorScheme.background),
-                    contentPadding = PaddingValues(16.dp),
-                    verticalArrangement = Arrangement.spacedBy(16.dp)
-                ) {
+                        modifier = Modifier
+                            .fillMaxSize()
+                            .padding(paddingValues)
+                            .background(MaterialTheme.colorScheme.background),
+                        contentPadding = PaddingValues(16.dp),
+                        verticalArrangement = Arrangement.spacedBy(16.dp)
+                    ) {
                     // Event metadata section
                     item {
                         Card(

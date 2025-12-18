@@ -276,6 +276,227 @@ fun DatasetInstancesPullDownFilter(
     }
 }
 
+@Composable
+private fun DatasetInstancesContent(
+    filteredInstances: List<com.ash.simpledataentry.domain.model.ProgramInstance>,
+    attributeOptionCombos: List<Pair<String, String>>,
+    instancesWithDrafts: Set<String>,
+    bulkMode: Boolean,
+    selectedInstances: Set<String>,
+    isBlockingOperation: Boolean,
+    hasBlockingOverlay: Boolean,
+    uiState: UiState<DatasetInstancesData>,
+    navController: NavController,
+    datasetId: String,
+    datasetName: String,
+    viewModel: DatasetInstancesViewModel
+) {
+    val listContent: @Composable () -> Unit = {
+        LazyColumn(
+            modifier = Modifier.fillMaxSize(),
+            contentPadding = PaddingValues(16.dp),
+            verticalArrangement = Arrangement.spacedBy(8.dp)
+        ) {
+            items(filteredInstances) { instance ->
+                val formattedDate = try {
+                    instance.lastUpdated?.let { date ->
+                        val outputFormat = SimpleDateFormat("dd/MM/yyyy", Locale.ENGLISH)
+                        outputFormat.format(date)
+                    } ?: "N/A"
+                } catch (e: Exception) {
+                    Log.e("DatasetInstancesScreen", "Error parsing date: ", e)
+                    "N/A"
+                }
+                val periodText = when (instance) {
+                    is com.ash.simpledataentry.domain.model.ProgramInstance.DatasetInstance ->
+                        instance.period.toString().replace("Period(id=", "").replace(")", "")
+                    is com.ash.simpledataentry.domain.model.ProgramInstance.TrackerEnrollment ->
+                        java.text.SimpleDateFormat("MMM dd, yyyy", java.util.Locale.getDefault()).format(instance.enrollmentDate)
+                    is com.ash.simpledataentry.domain.model.ProgramInstance.EventInstance ->
+                        instance.eventDate?.let { java.text.SimpleDateFormat("MMM dd, yyyy", java.util.Locale.getDefault()).format(it) } ?: "No date"
+                }
+
+                val attrComboName = when (instance) {
+                    is com.ash.simpledataentry.domain.model.ProgramInstance.DatasetInstance -> {
+                        attributeOptionCombos.find { it.first == instance.attributeOptionCombo }?.second
+                            ?: instance.attributeOptionCombo
+                    }
+                    else -> ""
+                }
+                val showAttrCombo = when (instance) {
+                    is com.ash.simpledataentry.domain.model.ProgramInstance.DatasetInstance ->
+                        !attrComboName.equals("default", ignoreCase = true)
+                    else -> false
+                }
+                val isComplete = instance.state == com.ash.simpledataentry.domain.model.ProgramInstanceState.COMPLETED
+
+                val instanceKey = when (instance) {
+                    is com.ash.simpledataentry.domain.model.ProgramInstance.DatasetInstance ->
+                        "${instance.programId}|${instance.period.id}|${instance.organisationUnit.id}|${instance.attributeOptionCombo}"
+                    is com.ash.simpledataentry.domain.model.ProgramInstance.TrackerEnrollment ->
+                        "${instance.programId}|${instance.trackedEntityInstance}|${instance.organisationUnit.id}"
+                    is com.ash.simpledataentry.domain.model.ProgramInstance.EventInstance ->
+                        "${instance.programId}|${instance.programStage}|${instance.organisationUnit.id}|${instance.eventDate?.time ?: 0}"
+                }
+                val hasLocalChanges = instancesWithDrafts.contains(instanceKey)
+
+                val dateForTopRight = instance.lastUpdated?.let { formattedDate }
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    if (bulkMode) {
+                        Checkbox(
+                            checked = selectedInstances.contains(instance.id) || isComplete,
+                            onCheckedChange = {
+                                if (!isBlockingOperation && !isComplete) {
+                                    viewModel.toggleInstanceSelection(instance.id)
+                                }
+                            },
+                            enabled = !isBlockingOperation && !isComplete,
+                            colors = CheckboxDefaults.colors(
+                                checkedColor = if (isComplete) MaterialTheme.colorScheme.onSurface.copy(alpha = 0.38f) else MaterialTheme.colorScheme.primary,
+                                uncheckedColor = if (isComplete) MaterialTheme.colorScheme.onSurface.copy(alpha = 0.38f) else MaterialTheme.colorScheme.onSurface
+                            )
+                        )
+                    }
+                    Box(modifier = Modifier.weight(1f)) {
+                        Card(
+                            modifier = Modifier.fillMaxWidth(),
+                            colors = CardDefaults.cardColors(
+                                containerColor = MaterialTheme.colorScheme.surface
+                            ),
+                            elevation = CardDefaults.cardElevation(
+                                defaultElevation = 2.dp,
+                                pressedElevation = 4.dp
+                            ),
+                            onClick = {
+                                if (!isBlockingOperation && !bulkMode) {
+                                    val encodedDatasetId = URLEncoder.encode(datasetId, "UTF-8")
+                                    val encodedDatasetName = URLEncoder.encode(datasetName, "UTF-8")
+                                    when (instance) {
+                                        is com.ash.simpledataentry.domain.model.ProgramInstance.DatasetInstance -> {
+                                            navController.navigate("EditEntry/$encodedDatasetId/${instance.period.id}/${instance.organisationUnit.id}/${instance.attributeOptionCombo}/$encodedDatasetName") {
+                                                launchSingleTop = true
+                                                popUpTo("DatasetInstances/{datasetId}/{datasetName}") {
+                                                    saveState = true
+                                                }
+                                            }
+                                        }
+                                        is com.ash.simpledataentry.domain.model.ProgramInstance.TrackerEnrollment -> {
+                                            navController.navigate("TrackerDashboard/${instance.id}/$encodedDatasetId/$encodedDatasetName") {
+                                                launchSingleTop = true
+                                                popUpTo("DatasetInstances/{datasetId}/{datasetName}") {
+                                                    saveState = true
+                                                }
+                                            }
+                                        }
+                                        is com.ash.simpledataentry.domain.model.ProgramInstance.EventInstance -> {
+                                            navController.navigate("EditStandaloneEvent/$encodedDatasetId/$encodedDatasetName/${instance.id}") {
+                                                launchSingleTop = true
+                                                popUpTo("DatasetInstances/{datasetId}/{datasetName}") {
+                                                    saveState = true
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        ) {
+                            Column(
+                                modifier = Modifier.padding(16.dp)
+                            ) {
+                                Row(
+                                    modifier = Modifier.fillMaxWidth(),
+                                    horizontalArrangement = Arrangement.SpaceBetween,
+                                    verticalAlignment = Alignment.CenterVertically
+                                ) {
+                                    Text(
+                                        text = "${instance.organisationUnit.name} • $periodText",
+                                        style = MaterialTheme.typography.titleMedium,
+                                        color = MaterialTheme.colorScheme.onSurface,
+                                        modifier = Modifier.weight(1f)
+                                    )
+
+                                    if (dateForTopRight != null) {
+                                        Text(
+                                            text = dateForTopRight,
+                                            style = MaterialTheme.typography.bodySmall,
+                                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                                        )
+                                    }
+                                }
+
+                                if (showAttrCombo || hasLocalChanges || isComplete) {
+                                    Spacer(modifier = Modifier.height(4.dp))
+                                    Row(
+                                        modifier = Modifier.fillMaxWidth(),
+                                        horizontalArrangement = Arrangement.SpaceBetween,
+                                        verticalAlignment = Alignment.CenterVertically
+                                    ) {
+                                        if (showAttrCombo) {
+                                            Text(
+                                                text = attrComboName,
+                                                style = MaterialTheme.typography.bodyMedium,
+                                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                                modifier = Modifier.weight(1f)
+                                            )
+                                        } else {
+                                            Spacer(modifier = Modifier.weight(1f))
+                                        }
+
+                                        if ((hasLocalChanges || isComplete) && !bulkMode) {
+                                            Row(
+                                                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                                                verticalAlignment = Alignment.CenterVertically
+                                            ) {
+                                                if (hasLocalChanges) {
+                                                    Icon(
+                                                        imageVector = Icons.Default.Sync,
+                                                        contentDescription = "Not synced",
+                                                        tint = MaterialTheme.colorScheme.onSecondaryContainer,
+                                                        modifier = Modifier
+                                                            .size(20.dp)
+                                                            .background(
+                                                                MaterialTheme.colorScheme.secondaryContainer,
+                                                                CircleShape
+                                                            )
+                                                            .padding(4.dp)
+                                                    )
+                                                }
+
+                                                if (isComplete) {
+                                                    Icon(
+                                                        imageVector = Icons.Default.CheckCircle,
+                                                        contentDescription = "Complete",
+                                                        tint = MaterialTheme.colorScheme.primary,
+                                                        modifier = Modifier.size(20.dp)
+                                                    )
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    if (hasBlockingOverlay) {
+        AdaptiveLoadingOverlay(
+            uiState = uiState,
+            modifier = Modifier.fillMaxSize()
+        ) {
+            listContent()
+        }
+    } else {
+        listContent()
+    }
+}
+
 @SuppressLint("SuspiciousIndentation")
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -314,13 +535,15 @@ fun DatasetInstancesScreen(
         is UiState.Error -> currentUiState.previousData?.also { lastSuccessData = it } ?: lastSuccessData
         is UiState.Loading -> lastSuccessData
     }
-    val isUiLoading = currentUiState is UiState.Loading
-    val showInitialShimmer = isUiLoading && currentData == null
-    val isSyncOverlayActive = currentData?.detailedSyncProgress != null
-    val syncOverlayState: UiState<DatasetInstancesData?> =
-        currentData?.detailedSyncProgress?.let { progress ->
-            UiState.Loading(LoadingOperation.Syncing(progress))
-        } ?: UiState.Success(currentData)
+    val showInitialShimmer = currentUiState is UiState.Loading &&
+        currentUiState.operation is LoadingOperation.Initial &&
+        currentData == null
+    val hasBlockingOverlay = currentUiState is UiState.Loading &&
+        currentUiState.operation !is LoadingOperation.Initial &&
+        currentData != null
+    val isBlockingOperation = hasBlockingOverlay
+    val isSyncInProgress = currentUiState is UiState.Loading &&
+        currentUiState.operation is LoadingOperation.Syncing
 
     LaunchedEffect(currentUiState) {
         if (currentUiState is UiState.Error) {
@@ -355,7 +578,7 @@ fun DatasetInstancesScreen(
             // Keep icons visible during loading - just disable them
             IconButton(
                 onClick = { showFilterSection = !showFilterSection },
-                enabled = !isSyncOverlayActive && !bulkMode
+                enabled = !isBlockingOperation && !bulkMode && currentData != null
             ) {
                 Icon(
                     imageVector = Icons.Default.FilterList,
@@ -366,13 +589,13 @@ fun DatasetInstancesScreen(
             }
             IconButton(
                 onClick = {
-                    if (!isSyncOverlayActive && currentData != null) {
+                    if (!isBlockingOperation && currentData != null) {
                         showSyncDialog = true
                     }
                 },
-                enabled = !isUiLoading && !isSyncOverlayActive && !bulkMode && currentData != null
+                enabled = !isBlockingOperation && !bulkMode && currentData != null
             ) {
-                if (isSyncOverlayActive) {
+                if (isSyncInProgress) {
                     CircularProgressIndicator(
                         modifier = Modifier.size(24.dp),
                         strokeWidth = 2.dp,
@@ -389,7 +612,7 @@ fun DatasetInstancesScreen(
             }
             IconButton(
                 onClick = { viewModel.toggleBulkCompletionMode() },
-                enabled = !isUiLoading && !isSyncOverlayActive && currentData != null
+                enabled = !isBlockingOperation && currentData != null
             ) {
                 Icon(
                     imageVector = Icons.Default.Check,
@@ -403,6 +626,9 @@ fun DatasetInstancesScreen(
             {
                 FloatingActionButton(
                     onClick = {
+                        if (isBlockingOperation) {
+                            return@FloatingActionButton
+                        }
                         val encodedDatasetName = URLEncoder.encode(datasetName, "UTF-8")
                         when (currentData.programType) {
                             com.ash.simpledataentry.domain.model.ProgramType.DATASET -> {
@@ -489,239 +715,41 @@ fun DatasetInstancesScreen(
                     }
                 }
 
-                AdaptiveLoadingOverlay(
-                    uiState = syncOverlayState,
-                    modifier = Modifier.fillMaxSize()
-                ) {
-                    when {
-                        showInitialShimmer -> {
-                            ShimmerLoadingList(
-                                itemCount = 8,
-                                modifier = Modifier.fillMaxSize()
+                when {
+                    showInitialShimmer -> {
+                        ShimmerLoadingList(
+                            itemCount = 8,
+                            modifier = Modifier.fillMaxSize()
+                        )
+                    }
+                    currentData != null -> {
+                        DatasetInstancesContent(
+                            filteredInstances = currentData.filteredInstances,
+                            attributeOptionCombos = currentData.attributeOptionCombos,
+                            instancesWithDrafts = currentData.instancesWithDrafts,
+                            bulkMode = bulkMode,
+                            selectedInstances = selectedInstances,
+                            isBlockingOperation = isBlockingOperation,
+                            hasBlockingOverlay = hasBlockingOverlay,
+                            uiState = currentUiState,
+                            navController = navController,
+                            datasetId = datasetId,
+                            datasetName = datasetName,
+                            viewModel = viewModel
+                        )
+                    }
+                    else -> {
+                        Box(
+                            modifier = Modifier
+                                .fillMaxSize()
+                                .padding(32.dp),
+                            contentAlignment = Alignment.Center
+                        ) {
+                            Text(
+                                text = "No dataset instances available.",
+                                style = MaterialTheme.typography.bodyMedium,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
                             )
-                        }
-                        currentData != null -> {
-                            val attributeOptionCombos = currentData.attributeOptionCombos
-                            val instancesWithDrafts = currentData.instancesWithDrafts
-                            val filteredInstances = currentData.filteredInstances
-                            val content: @Composable () -> Unit = {
-                                LazyColumn(
-                                    modifier = Modifier.fillMaxSize(),
-                                    contentPadding = PaddingValues(16.dp),
-                                    verticalArrangement = Arrangement.spacedBy(8.dp)
-                                ) {
-                                    items(filteredInstances) { instance ->
-                                        val formattedDate = try {
-                                            instance.lastUpdated?.let { date ->
-                                                val outputFormat = SimpleDateFormat("dd/MM/yyyy", Locale.ENGLISH)
-                                                outputFormat.format(date)
-                                            } ?: "N/A"
-                                        } catch (e: Exception) {
-                                            Log.e("DatasetInstancesScreen", "Error parsing date: ", e)
-                                            "N/A"
-                                        }
-                                        val periodText = when (instance) {
-                                            is com.ash.simpledataentry.domain.model.ProgramInstance.DatasetInstance ->
-                                                instance.period.toString().replace("Period(id=", "").replace(")", "")
-                                            is com.ash.simpledataentry.domain.model.ProgramInstance.TrackerEnrollment ->
-                                                java.text.SimpleDateFormat("MMM dd, yyyy", java.util.Locale.getDefault()).format(instance.enrollmentDate)
-                                            is com.ash.simpledataentry.domain.model.ProgramInstance.EventInstance ->
-                                                instance.eventDate?.let { java.text.SimpleDateFormat("MMM dd, yyyy", java.util.Locale.getDefault()).format(it) } ?: "No date"
-                                        }
-
-                                        val attrComboName = when (instance) {
-                                            is com.ash.simpledataentry.domain.model.ProgramInstance.DatasetInstance -> {
-                                                attributeOptionCombos.find { it.first == instance.attributeOptionCombo }?.second
-                                                    ?: instance.attributeOptionCombo
-                                            }
-                                            else -> ""
-                                        }
-                                        val showAttrCombo = when (instance) {
-                                            is com.ash.simpledataentry.domain.model.ProgramInstance.DatasetInstance ->
-                                                !attrComboName.equals("default", ignoreCase = true)
-                                            else -> false
-                                        }
-                                        val isComplete = instance.state == com.ash.simpledataentry.domain.model.ProgramInstanceState.COMPLETED
-
-                                        val instanceKey = when (instance) {
-                                            is com.ash.simpledataentry.domain.model.ProgramInstance.DatasetInstance ->
-                                                "${instance.programId}|${instance.period.id}|${instance.organisationUnit.id}|${instance.attributeOptionCombo}"
-                                            is com.ash.simpledataentry.domain.model.ProgramInstance.TrackerEnrollment ->
-                                                "${instance.programId}|${instance.trackedEntityInstance}|${instance.organisationUnit.id}"
-                                            is com.ash.simpledataentry.domain.model.ProgramInstance.EventInstance ->
-                                                "${instance.programId}|${instance.programStage}|${instance.organisationUnit.id}|${instance.eventDate?.time ?: 0}"
-                                        }
-                                        val hasLocalChanges = instancesWithDrafts.contains(instanceKey)
-
-                                        val dateForTopRight = instance.lastUpdated?.let { formattedDate }
-                                        Row(
-                                            verticalAlignment = Alignment.CenterVertically,
-                                            modifier = Modifier.fillMaxWidth()
-                                        ) {
-                                            if (bulkMode) {
-                                                Checkbox(
-                                                    checked = selectedInstances.contains(instance.id) || isComplete,
-                                                    onCheckedChange = {
-                                                        if (!isUiLoading && !isSyncOverlayActive && !isComplete) {
-                                                            viewModel.toggleInstanceSelection(instance.id)
-                                                        }
-                                                    },
-                                                    enabled = !isUiLoading && !isSyncOverlayActive && !isComplete,
-                                                    colors = CheckboxDefaults.colors(
-                                                        checkedColor = if (isComplete) MaterialTheme.colorScheme.onSurface.copy(alpha = 0.38f) else MaterialTheme.colorScheme.primary,
-                                                        uncheckedColor = if (isComplete) MaterialTheme.colorScheme.onSurface.copy(alpha = 0.38f) else MaterialTheme.colorScheme.onSurface
-                                                    )
-                                                )
-                                            }
-                                            Box(modifier = Modifier.weight(1f)) {
-                                                Card(
-                                                    modifier = Modifier.fillMaxWidth(),
-                                                    colors = CardDefaults.cardColors(
-                                                        containerColor = MaterialTheme.colorScheme.surface
-                                                    ),
-                                                    elevation = CardDefaults.cardElevation(
-                                                        defaultElevation = 2.dp,
-                                                        pressedElevation = 4.dp
-                                                    ),
-                                                    onClick = {
-                                                        if (!isUiLoading && !isSyncOverlayActive && !bulkMode) {
-                                                            val encodedDatasetId = URLEncoder.encode(datasetId, "UTF-8")
-                                                            val encodedDatasetName = URLEncoder.encode(datasetName, "UTF-8")
-                                                            when (instance) {
-                                                                is com.ash.simpledataentry.domain.model.ProgramInstance.DatasetInstance -> {
-                                                                    navController.navigate("EditEntry/$encodedDatasetId/${instance.period.id}/${instance.organisationUnit.id}/${instance.attributeOptionCombo}/$encodedDatasetName") {
-                                                                        launchSingleTop = true
-                                                                        popUpTo("DatasetInstances/{datasetId}/{datasetName}") {
-                                                                            saveState = true
-                                                                        }
-                                                                    }
-                                                                }
-                                                                is com.ash.simpledataentry.domain.model.ProgramInstance.TrackerEnrollment -> {
-                                                                    navController.navigate("TrackerDashboard/${instance.id}/$encodedDatasetId/$encodedDatasetName") {
-                                                                        launchSingleTop = true
-                                                                        popUpTo("DatasetInstances/{datasetId}/{datasetName}") {
-                                                                            saveState = true
-                                                                        }
-                                                                    }
-                                                                }
-                                                                is com.ash.simpledataentry.domain.model.ProgramInstance.EventInstance -> {
-                                                                    navController.navigate("EditStandaloneEvent/$encodedDatasetId/$encodedDatasetName/${instance.id}") {
-                                                                        launchSingleTop = true
-                                                                        popUpTo("DatasetInstances/{datasetId}/{datasetName}") {
-                                                                            saveState = true
-                                                                        }
-                                                                    }
-                                                                }
-                                                            }
-                                                        }
-                                                    }
-                                                ) {
-                                                    Column(
-                                                        modifier = Modifier.padding(16.dp)
-                                                    ) {
-                                                        Row(
-                                                            modifier = Modifier.fillMaxWidth(),
-                                                            horizontalArrangement = Arrangement.SpaceBetween,
-                                                            verticalAlignment = Alignment.CenterVertically
-                                                        ) {
-                                                            Text(
-                                                                text = "${instance.organisationUnit.name} • $periodText",
-                                                                style = MaterialTheme.typography.titleMedium,
-                                                                color = MaterialTheme.colorScheme.onSurface,
-                                                                modifier = Modifier.weight(1f)
-                                                            )
-
-                                                            if (dateForTopRight != null) {
-                                                                Text(
-                                                                    text = dateForTopRight,
-                                                                    style = MaterialTheme.typography.bodySmall,
-                                                                    color = MaterialTheme.colorScheme.onSurfaceVariant
-                                                                )
-                                                            }
-                                                        }
-
-                                                        if (showAttrCombo || hasLocalChanges || isComplete) {
-                                                            Spacer(modifier = Modifier.height(4.dp))
-                                                            Row(
-                                                                modifier = Modifier.fillMaxWidth(),
-                                                                horizontalArrangement = Arrangement.SpaceBetween,
-                                                                verticalAlignment = Alignment.CenterVertically
-                                                            ) {
-                                                                if (showAttrCombo) {
-                                                                    Text(
-                                                                        text = attrComboName,
-                                                                        style = MaterialTheme.typography.bodyMedium,
-                                                                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                                                        modifier = Modifier.weight(1f)
-                                                                    )
-                                                                } else {
-                                                                    Spacer(modifier = Modifier.weight(1f))
-                                                                }
-
-                                                                if ((hasLocalChanges || isComplete) && !bulkMode) {
-                                                                    Row(
-                                                                        horizontalArrangement = Arrangement.spacedBy(8.dp),
-                                                                        verticalAlignment = Alignment.CenterVertically
-                                                                    ) {
-                                                                        if (hasLocalChanges) {
-                                                                            Icon(
-                                                                                imageVector = Icons.Default.Sync,
-                                                                                contentDescription = "Not synced",
-                                                                                tint = MaterialTheme.colorScheme.onSecondaryContainer,
-                                                                                modifier = Modifier
-                                                                                    .size(20.dp)
-                                                                                    .background(
-                                                                                        MaterialTheme.colorScheme.secondaryContainer,
-                                                                                        CircleShape
-                                                                                    )
-                                                                                    .padding(4.dp)
-                                                                            )
-                                                                        }
-
-                                                                        if (isComplete) {
-                                                                            Icon(
-                                                                                imageVector = Icons.Default.CheckCircle,
-                                                                                contentDescription = "Complete",
-                                                                                tint = MaterialTheme.colorScheme.primary,
-                                                                                modifier = Modifier.size(20.dp)
-                                                                            )
-                                                                        }
-                                                                    }
-                                                                }
-                                                            }
-                                                        }
-                                                    }
-                                                }
-                                            }
-                                        }
-                                    }
-                                }
-                            }
-
-                            if (isUiLoading) {
-                                AdaptiveLoadingOverlay(
-                                    uiState = currentUiState,
-                                    modifier = Modifier.fillMaxSize()
-                                ) {
-                                    content()
-                                }
-                            } else {
-                                content()
-                            }
-                        }
-                        else -> {
-                            Box(
-                                modifier = Modifier
-                                    .fillMaxSize()
-                                    .padding(32.dp),
-                                contentAlignment = Alignment.Center
-                            ) {
-                                Text(
-                                    text = "No dataset instances available.",
-                                    style = MaterialTheme.typography.bodyMedium,
-                                    color = MaterialTheme.colorScheme.onSurfaceVariant
-                                )
-                            }
                         }
                     }
                 }
@@ -779,14 +807,14 @@ fun DatasetInstancesScreen(
                                         ?: "Failed to complete selected instances.")
                             }
                         },
-                        enabled = selectedInstances.isNotEmpty() && !isUiLoading && !isSyncOverlayActive,
+                        enabled = selectedInstances.isNotEmpty() && !isBlockingOperation,
                         modifier = Modifier.padding(end = 8.dp)
                     ) {
                         Text("Complete Selected")
                     }
                     Button(
                         onClick = { viewModel.clearBulkSelection() },
-                        enabled = !isUiLoading && !isSyncOverlayActive,
+                        enabled = !isBlockingOperation,
                         modifier = Modifier.padding(start = 8.dp)
                     ) {
                         Text("Cancel")

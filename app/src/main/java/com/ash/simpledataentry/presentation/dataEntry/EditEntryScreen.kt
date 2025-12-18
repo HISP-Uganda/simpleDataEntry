@@ -37,6 +37,7 @@ import org.hisp.dhis.mobile.ui.designsystem.component.InputText
 import org.hisp.dhis.mobile.ui.designsystem.component.SupportingTextData
 import org.hisp.dhis.mobile.ui.designsystem.component.SupportingTextState
 import com.ash.simpledataentry.domain.model.*
+import com.ash.simpledataentry.presentation.core.AdaptiveLoadingOverlay
 import com.ash.simpledataentry.presentation.core.BaseScreen
 import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.ExperimentalFoundationApi
@@ -47,15 +48,16 @@ import androidx.compose.material.icons.filled.Sync
 import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.CheckCircle
 import androidx.compose.ui.platform.LocalContext
-import com.ash.simpledataentry.presentation.core.DetailedSyncOverlay
 import com.ash.simpledataentry.presentation.core.CompletionProgressOverlay
 import com.ash.simpledataentry.presentation.core.CompletionAction
 import androidx.compose.foundation.relocation.BringIntoViewRequester
 import androidx.compose.foundation.relocation.bringIntoViewRequester
 import androidx.compose.ui.platform.LocalFocusManager
 import com.ash.simpledataentry.presentation.dataEntry.components.SectionNavigator
-import com.ash.simpledataentry.presentation.core.FullScreenLoader
+import com.ash.simpledataentry.presentation.core.LoadingOperation
+import com.ash.simpledataentry.presentation.core.LoadingProgress
 import com.ash.simpledataentry.presentation.core.ShimmerFormSection
+import com.ash.simpledataentry.presentation.core.UiState
 
 data class Quadruple<A, B, C, D>(val first: A, val second: B, val third: C, val fourth: D)
 
@@ -627,6 +629,25 @@ fun EditEntryScreen(
     val context = LocalContext.current
     val focusManager = LocalFocusManager.current
     val listState = rememberLazyListState()
+    val syncProgress = state.detailedSyncProgress
+    val overlayUiState: UiState<*> = remember(
+        syncProgress,
+        state.saveInProgress,
+        state.isEditMode
+    ) {
+        when {
+            syncProgress != null -> UiState.Loading(
+                LoadingOperation.Syncing(syncProgress)
+            )
+            state.saveInProgress -> UiState.Loading(
+                LoadingOperation.Saving(),
+                LoadingProgress(
+                    message = if (state.isEditMode) "Saving changes..." else "Saving data..."
+                )
+            )
+            else -> UiState.Success(Unit)
+        }
+    }
     // Define onValueChange ONCE here, at the top
     val onValueChange: (String, DataValue) -> Unit = { value, dataValue ->
         viewModel.updateCurrentValue(value, dataValue.dataElement, dataValue.categoryOptionCombo)
@@ -946,11 +967,8 @@ fun EditEntryScreen(
             }
         }
     ) {
-        // Enhanced sync overlay with dismissal capability
-        DetailedSyncOverlay(
-            progress = state.detailedSyncProgress,
-            onNavigateBack = { viewModel.dismissSyncOverlay() },
-            onCancel = { viewModel.dismissSyncOverlay() },
+        AdaptiveLoadingOverlay(
+            uiState = overlayUiState,
             modifier = Modifier.fillMaxSize()
         ) {
             CompletionProgressOverlay(
@@ -1231,4 +1249,3 @@ fun EditEntryScreen(
                 )
             }
         }}}}}
-

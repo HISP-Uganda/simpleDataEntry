@@ -107,7 +107,8 @@ class EventCaptureViewModel @Inject constructor(
     val state: StateFlow<EventCaptureState> = _state.asStateFlow()
     private val _uiState = MutableStateFlow<UiState<EventCaptureState>>(UiState.Loading(LoadingOperation.Initial))
     val uiState: StateFlow<UiState<EventCaptureState>> = _uiState.asStateFlow()
-    private var lastSuccessfulState: EventCaptureState? = null
+private var lastSuccessfulState: EventCaptureState? = null
+private var isShowingSyncOverlay = false
     val syncController: SyncStatusController = syncStatusController
 
     private fun emitSuccessState() {
@@ -145,10 +146,20 @@ class EventCaptureViewModel @Inject constructor(
         // Observe sync progress (reuse DataEntry pattern)
         viewModelScope.launch {
             syncQueueManager.detailedProgress.collect { progress ->
-                updateState { it.copy(
-                    detailedSyncProgress = progress,
-                    isSyncing = progress != null
-                ) }
+                updateState {
+                    it.copy(
+                        detailedSyncProgress = progress,
+                        isSyncing = progress != null
+                    )
+                }
+
+                if (progress != null) {
+                    isShowingSyncOverlay = true
+                    setUiLoading(LoadingOperation.Syncing(progress))
+                } else if (isShowingSyncOverlay) {
+                    isShowingSyncOverlay = false
+                    emitSuccessState()
+                }
             }
         }
     }
@@ -457,9 +468,16 @@ class EventCaptureViewModel @Inject constructor(
         viewModelScope.launch {
             try {
                 updateState { it.copy(saveInProgress = true, error = null) }
+                val currentState = _state.value
+                val savingProgress = LoadingProgress(
+                    message = if (currentState.isEditMode) "Updating event..." else "Creating event..."
+                )
+                setUiLoading(
+                    operation = LoadingOperation.Saving(),
+                    progress = savingProgress
+                )
 
                 val d2Instance = d2 ?: throw Exception("Not authenticated")
-                val currentState = _state.value
 
                 if (!currentState.canSave) {
                     throw Exception("Cannot save: validation errors exist")
@@ -484,6 +502,7 @@ class EventCaptureViewModel @Inject constructor(
                 _state.value.eventId?.let { eventId ->
                     evaluateProgramRules(eventId)
                 }
+                emitSuccessState()
 
             } catch (e: Exception) {
                 updateState {
@@ -493,6 +512,7 @@ class EventCaptureViewModel @Inject constructor(
                         error = "Failed to save event: ${e.message}"
                     )
                 }
+                emitSuccessState()
             }
         }
     }
