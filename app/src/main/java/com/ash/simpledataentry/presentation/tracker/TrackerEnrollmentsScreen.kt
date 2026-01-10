@@ -305,6 +305,7 @@ private fun EnrollmentCard(
     val phoneValue = remember(enrollment.attributes) {
         resolveAttributeValue(enrollment.attributes, listOf("phone", "mobile", "tel"))
     }
+    val visitsCount = enrollment.events.size
 
     Card(
         modifier = Modifier.fillMaxWidth(),
@@ -384,6 +385,12 @@ private fun EnrollmentCard(
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                     modifier = Modifier.weight(1f)
                 )
+                StatusChip(
+                    text = "Events $visitsCount",
+                    containerColor = MaterialTheme.colorScheme.surfaceVariant,
+                    contentColor = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+                Spacer(modifier = Modifier.width(8.dp))
                 Text(
                     text = "Enrolled $enrollmentDate",
                     style = MaterialTheme.typography.bodySmall,

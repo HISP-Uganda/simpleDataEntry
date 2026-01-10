@@ -377,6 +377,7 @@ class DatasetInstancesRepositoryImpl @Inject constructor(
             // PHASE 2: Populate Room cache after successful SDK sync
             Log.d(TAG, "STEP 7: Populating Room cache...")
             populateTrackerEnrollmentsCache(programId)
+            populateEventInstancesCache(programId)
 
             Log.d(TAG, "=== TRACKER DATA SYNC COMPLETED ===")
 
@@ -537,6 +538,45 @@ class DatasetInstancesRepositoryImpl @Inject constructor(
 
                 // Map Room entities to domain models
                 entities.map { entity ->
+                    val enrollmentEvents = if (entity.id.isNotBlank()) {
+                        try {
+                            val cachedEvents = eventInstanceDao.getByEnrollment(entity.id)
+                            if (cachedEvents.isNotEmpty()) {
+                                cachedEvents.map { eventEntity ->
+                                    com.ash.simpledataentry.domain.model.Event(
+                                        id = eventEntity.id,
+                                        programId = eventEntity.programId,
+                                        programStageId = eventEntity.programStageId,
+                                        enrollmentId = eventEntity.enrollmentId,
+                                        organisationUnitId = eventEntity.organisationUnitId,
+                                        organisationUnit = eventEntity.organisationUnitName,
+                                        status = eventEntity.status,
+                                        deleted = eventEntity.deleted
+                                    )
+                                }
+                            } else {
+                                d2.eventModule().events()
+                                    .byEnrollmentUid().eq(entity.id)
+                                    .blockingGet()
+                                    .map { event ->
+                                        com.ash.simpledataentry.domain.model.Event(
+                                            id = event.uid(),
+                                            programId = event.program() ?: programId,
+                                            programStageId = event.programStage() ?: "",
+                                            enrollmentId = event.enrollment(),
+                                            organisationUnitId = event.organisationUnit() ?: "",
+                                            status = event.status()?.name ?: "UNKNOWN",
+                                            deleted = event.deleted() ?: false
+                                        )
+                                    }
+                            }
+                        } catch (e: Exception) {
+                            Log.w(TAG, "Failed to fetch events for enrollment ${entity.id}", e)
+                            emptyList()
+                        }
+                    } else {
+                        emptyList()
+                    }
                     // Fetch TEI attributes from SDK (still blocking but much faster than full enrollment query)
                     val teiUid = entity.trackedEntityInstanceId
                     val attributeValues = if (teiUid.isNotEmpty()) {
@@ -609,7 +649,8 @@ class DatasetInstancesRepositoryImpl @Inject constructor(
                         incidentDate = incidentDate,
                         followUp = entity.followUp,
                         completedDate = null,  // TODO: Add to Room entity if needed
-                        attributes = attributeValues
+                        attributes = attributeValues,
+                        events = enrollmentEvents
                     )
                 }
             }

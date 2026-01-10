@@ -4,13 +4,15 @@ package com.ash.simpledataentry.presentation.tracker
 
 import androidx.activity.compose.BackHandler
 import androidx.compose.animation.AnimatedVisibility
-import androidx.compose.animation.core.animateFloatAsState
+import androidx.compose.foundation.gestures.animateScrollBy
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.rememberLazyListState
+import androidx.compose.foundation.relocation.BringIntoViewRequester
+import androidx.compose.foundation.relocation.bringIntoViewRequester
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
@@ -21,6 +23,8 @@ import androidx.compose.material.icons.filled.KeyboardArrowDown
 import androidx.compose.material.icons.filled.Save
 import androidx.compose.material.icons.filled.Sync
 import androidx.compose.material.icons.filled.Warning
+import androidx.compose.foundation.BorderStroke
+import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
@@ -28,6 +32,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.rotate
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.graphics.Brush
+import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
@@ -60,6 +65,7 @@ import kotlinx.coroutines.launch
 import java.text.SimpleDateFormat
 import java.util.*
 
+@OptIn(ExperimentalFoundationApi::class)
 @Composable
 fun EventCaptureScreen(
     viewModel: EventCaptureViewModel = hiltViewModel(),
@@ -105,7 +111,7 @@ fun EventCaptureScreen(
     }
 
     // Reuse EditEntry unsaved changes detection pattern
-    val hasUnsavedChanges = state.dataValues.any { it.value != null && it.value!!.isNotBlank() } && !state.saveSuccess
+    val hasUnsavedChanges = viewModel.hasUnsavedChanges()
 
     // Back handler for unsaved changes
     BackHandler(enabled = hasUnsavedChanges && !state.saveInProgress) {
@@ -256,54 +262,57 @@ fun EventCaptureScreen(
 
     LaunchedEffect(currentSectionIndex, sectionNames.size) {
         if (sectionNames.isNotEmpty()) {
-            val sectionStartIndex = 3
+            val sectionStartIndex = 1
             val targetIndex = sectionStartIndex + currentSectionIndex
-            listState.animateScrollToItem(targetIndex)
+            listState.animateScrollToItem(index = targetIndex)
         }
     }
 
     // Main screen with Material 3 Scaffold (reuse TrackerEnrollment pattern)
     Scaffold(
         topBar = {
-            TopAppBar(
-                title = {
-                    Column {
-                        Text(
-                            text = state.programName.ifBlank { "Event Capture" },
-                            style = MaterialTheme.typography.titleMedium
-                        )
-                        if (state.programStageName.isNotBlank()) {
+            Column {
+                TopAppBar(
+                    title = {
+                        Column {
                             Text(
-                                text = state.programStageName,
-                                style = MaterialTheme.typography.bodySmall,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                                text = state.programName.ifBlank { "Event Capture" },
+                                style = MaterialTheme.typography.titleMedium
                             )
+                            if (state.programStageName.isNotBlank()) {
+                                Text(
+                                    text = state.programStageName,
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                                )
+                            }
+                        }
+                    },
+                    navigationIcon = navigationIcon,
+                    actions = {
+                        // Sync button
+                        IconButton(
+                            onClick = { showSyncDialog = true },
+                            enabled = !state.isSyncing
+                        ) {
+                            if (state.isSyncing) {
+                                CircularProgressIndicator(
+                                    modifier = Modifier.size(24.dp),
+                                    strokeWidth = 2.dp,
+                                    color = MaterialTheme.colorScheme.primary
+                                )
+                            } else {
+                                Icon(
+                                    imageVector = Icons.Default.Sync,
+                                    contentDescription = "Sync",
+                                    tint = MaterialTheme.colorScheme.onSurface
+                                )
+                            }
                         }
                     }
-                },
-                navigationIcon = navigationIcon,
-                actions = {
-                    // Sync button
-                    IconButton(
-                        onClick = { showSyncDialog = true },
-                        enabled = !state.isSyncing
-                    ) {
-                        if (state.isSyncing) {
-                            CircularProgressIndicator(
-                                modifier = Modifier.size(24.dp),
-                                strokeWidth = 2.dp,
-                                color = MaterialTheme.colorScheme.primary
-                            )
-                        } else {
-                            Icon(
-                                imageVector = Icons.Default.Sync,
-                                contentDescription = "Sync",
-                                tint = MaterialTheme.colorScheme.onSurface
-                            )
-                        }
-                    }
-                }
-            )
+                )
+
+            }
         },
         snackbarHost = { SnackbarHost(snackbarHostState) }
     ) { paddingValues ->
@@ -382,84 +391,6 @@ fun EventCaptureScreen(
                                     .fillMaxSize()
                                     .padding(16.dp)
                             ) {
-                                Surface(
-                                    color = MaterialTheme.colorScheme.primary
-                                ) {
-                                    Row(
-                                        modifier = Modifier
-                                            .fillMaxWidth()
-                                            .padding(horizontal = 16.dp, vertical = 12.dp),
-                                        horizontalArrangement = Arrangement.spacedBy(12.dp),
-                                        verticalAlignment = Alignment.CenterVertically
-                                    ) {
-                                        androidx.compose.material3.Button(
-                                            onClick = { viewModel.saveEvent() },
-                                            enabled = state.canSave && !state.saveInProgress,
-                                            colors = androidx.compose.material3.ButtonDefaults.buttonColors(
-                                                containerColor = Color.White.copy(alpha = 0.2f),
-                                                contentColor = Color.White
-                                            ),
-                                            modifier = Modifier.weight(1f),
-                                            shape = RoundedCornerShape(16.dp)
-                                        ) {
-                                            Icon(
-                                                imageVector = Icons.Default.Save,
-                                                contentDescription = null,
-                                                modifier = Modifier.size(18.dp)
-                                            )
-                                            Spacer(modifier = Modifier.width(8.dp))
-                                            Text("Save")
-                                        }
-
-                                        androidx.compose.material3.Button(
-                                            onClick = {
-                                                coroutineScope.launch {
-                                                    val message = if (state.validationErrors.isEmpty()) {
-                                                        "All required fields are filled."
-                                                    } else {
-                                                        state.validationErrors.joinToString("\n")
-                                                    }
-                                                    snackbarHostState.showSnackbar(message)
-                                                }
-                                            },
-                                            enabled = !state.saveInProgress,
-                                            colors = androidx.compose.material3.ButtonDefaults.buttonColors(
-                                                containerColor = Color.White.copy(alpha = 0.2f),
-                                                contentColor = Color.White
-                                            ),
-                                            modifier = Modifier.weight(1f),
-                                            shape = RoundedCornerShape(16.dp)
-                                        ) {
-                                            Icon(
-                                                imageVector = Icons.Default.Warning,
-                                                contentDescription = null,
-                                                modifier = Modifier.size(18.dp)
-                                            )
-                                            Spacer(modifier = Modifier.width(8.dp))
-                                            Text("Validate")
-                                        }
-
-                                        androidx.compose.material3.Button(
-                                            onClick = { viewModel.completeEvent() },
-                                            enabled = state.isEditMode && !state.saveInProgress,
-                                            colors = androidx.compose.material3.ButtonDefaults.buttonColors(
-                                                containerColor = Color.White.copy(alpha = 0.2f),
-                                                contentColor = Color.White
-                                            ),
-                                            modifier = Modifier.weight(1f),
-                                            shape = RoundedCornerShape(16.dp)
-                                        ) {
-                                            Icon(
-                                                imageVector = Icons.Default.Check,
-                                                contentDescription = null,
-                                                modifier = Modifier.size(18.dp)
-                                            )
-                                            Spacer(modifier = Modifier.width(8.dp))
-                                            Text("Complete")
-                                        }
-                                    }
-                                }
-
                                 if (sectionNames.isNotEmpty()) {
                                     SectionNavigationBar(
                                         currentSection = Section(currentSectionName),
@@ -474,8 +405,68 @@ fun EventCaptureScreen(
                                         },
                                         onPreviousSubsection = {},
                                         onNextSubsection = {},
-                                        hasSubsections = false
+                                        hasSubsections = false,
+                                        modifier = Modifier.padding(bottom = 8.dp)
                                     )
+                                }
+
+                                Row(
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .padding(horizontal = 8.dp, vertical = 4.dp),
+                                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                                    verticalAlignment = Alignment.CenterVertically
+                                ) {
+                                    OutlinedButton(
+                                        onClick = { viewModel.saveEvent() },
+                                        enabled = state.canSave && !state.saveInProgress,
+                                        modifier = Modifier.weight(1f)
+                                    ) {
+                                        Icon(
+                                            imageVector = Icons.Default.Save,
+                                            contentDescription = null,
+                                            modifier = Modifier.size(18.dp)
+                                        )
+                                        Spacer(modifier = Modifier.width(6.dp))
+                                        Text("Save")
+                                    }
+
+                                    OutlinedButton(
+                                        onClick = {
+                                            coroutineScope.launch {
+                                                val message = if (state.validationErrors.isEmpty()) {
+                                                    "All required fields are filled."
+                                                } else {
+                                                    state.validationErrors.joinToString("\n")
+                                                }
+                                                snackbarHostState.showSnackbar(message)
+                                            }
+                                        },
+                                        enabled = !state.saveInProgress,
+                                        modifier = Modifier.weight(1f)
+                                    ) {
+                                        Icon(
+                                            imageVector = Icons.Default.Warning,
+                                            contentDescription = null,
+                                            modifier = Modifier.size(18.dp)
+                                        )
+                                        Spacer(modifier = Modifier.width(6.dp))
+                                        Text("Validate")
+                                    }
+
+                                    Button(
+                                        onClick = { viewModel.completeEvent() },
+                                        enabled = state.isEditMode && !state.saveInProgress,
+                                        modifier = Modifier.weight(1f)
+                                    ) {
+                                        Icon(
+                                            imageVector = Icons.Default.Check,
+                                            contentDescription = null,
+                                            modifier = Modifier.size(18.dp)
+                                        )
+                                        Spacer(modifier = Modifier.width(6.dp))
+                                        Text("Complete")
+                                    }
                                 }
 
                                 LazyColumn(
@@ -484,53 +475,6 @@ fun EventCaptureScreen(
                                     contentPadding = PaddingValues(8.dp),
                                     verticalArrangement = Arrangement.spacedBy(16.dp)
                                 ) {
-                                    item {
-                                        Row(
-                                            verticalAlignment = Alignment.CenterVertically,
-                                            horizontalArrangement = Arrangement.spacedBy(12.dp)
-                                        ) {
-                                            Box(
-                                                modifier = Modifier
-                                                    .size(56.dp)
-                                                    .background(DHIS2BlueLight, CircleShape),
-                                                contentAlignment = Alignment.Center
-                                            ) {
-                                                Icon(
-                                                    imageVector = Icons.Default.Event,
-                                                    contentDescription = null,
-                                                    tint = DHIS2Blue,
-                                                    modifier = Modifier.size(28.dp)
-                                                )
-                                            }
-                                            Column {
-                                                Text(
-                                                    text = state.programStageName.ifBlank { "Event Details" },
-                                                    style = MaterialTheme.typography.titleMedium,
-                                                    fontWeight = FontWeight.SemiBold
-                                                )
-                                                Text(
-                                                    text = state.programName.ifBlank { "Event Capture" },
-                                                    style = MaterialTheme.typography.bodySmall,
-                                                    color = MaterialTheme.colorScheme.onSurfaceVariant
-                                                )
-                                            }
-                                        }
-                                    }
-
-                                    item {
-                                        Surface(
-                                            color = DHIS2BlueLight.copy(alpha = 0.35f),
-                                            shape = RoundedCornerShape(12.dp)
-                                        ) {
-                                            Text(
-                                                text = "Offline mode supported. Event will sync when connected.",
-                                                style = MaterialTheme.typography.bodySmall,
-                                                color = MaterialTheme.colorScheme.onSurface,
-                                                modifier = Modifier.padding(12.dp)
-                                            )
-                                        }
-                                    }
-
                                     // Event metadata section
                                     item {
                                         Column(
@@ -607,6 +551,7 @@ fun EventCaptureScreen(
                                                     dataValues = sectionValues,
                                                     impliedCombination = state.impliedCategoriesBySection[sectionName],
                                                     impliedMappings = state.impliedCategoryMappingsBySection[sectionName] ?: emptyList(),
+                                                    hasData = state.sectionHasData[sectionName] == true,
                                                     isExpanded = expandedSection == sectionName,
                                                     onToggle = {
                                                         expandedSection = if (expandedSection == sectionName) {
@@ -675,20 +620,6 @@ fun EventCaptureScreen(
                                         }
                                     }
                                 }
-
-                                TextButton(
-                                    onClick = {
-                                        if (hasUnsavedChanges) {
-                                            showSaveDialog = true
-                                            pendingNavAction.value = { navController.popBackStack() }
-                                        } else {
-                                            navController.popBackStack()
-                                        }
-                                    },
-                                    modifier = Modifier.align(Alignment.CenterHorizontally)
-                                ) {
-                                    Text("Cancel")
-                                }
                             }
                         }
                     }
@@ -708,192 +639,287 @@ private fun EventSectionAccordion(
     dataValues: List<DataValue>,
     impliedCombination: com.ash.simpledataentry.domain.model.ImpliedCategoryCombination?,
     impliedMappings: List<com.ash.simpledataentry.domain.model.ImpliedCategoryMapping>,
+    hasData: Boolean,
     isExpanded: Boolean,
     onToggle: () -> Unit,
     onValueChange: (String, DataValue) -> Unit,
     programRuleEffect: com.ash.simpledataentry.domain.model.ProgramRuleEffect?
 ) {
-    val rotationState by animateFloatAsState(
-        targetValue = if (isExpanded) 180f else 0f,
-        label = "Section rotation"
-    )
     val totalElements = dataValues.size
     val elementsWithData = dataValues.count { !it.value.isNullOrBlank() }
 
-    Column(modifier = Modifier.fillMaxWidth()) {
-        // Section header (collapsible)
-        Surface(
-            modifier = Modifier
-                .fillMaxWidth()
-                .heightIn(min = 56.dp)
-                .clickable { onToggle() },
-            color = MaterialTheme.colorScheme.primaryContainer,
-            shape = MaterialTheme.shapes.medium
-        ) {
-            Row(
-                modifier = Modifier
-                    .padding(16.dp)
-                    .fillMaxWidth(),
-                horizontalArrangement = Arrangement.SpaceBetween,
-                verticalAlignment = Alignment.CenterVertically
-            ) {
-                Column(modifier = Modifier.weight(1f)) {
-                    Text(
-                        text = sectionName,
-                        style = MaterialTheme.typography.titleMedium,
-                        fontWeight = FontWeight.Bold
-                    )
-                    Text(
-                        text = "($elementsWithData/$totalElements elements)",
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onPrimaryContainer.copy(alpha = 0.7f)
+    EventDataElementAccordion(
+        header = "$sectionName ($elementsWithData/$totalElements elements)",
+        hasData = hasData,
+        expanded = isExpanded,
+        onToggleExpand = onToggle
+    ) {
+        if (impliedCombination != null && impliedMappings.isNotEmpty()) {
+            // Render nested accordions based on implied categories
+            ImpliedCategoryGroupRecursive(
+                mappings = impliedMappings,
+                categories = impliedCombination.categories,
+                dataValues = dataValues,
+                onValueChange = onValueChange,
+                programRuleEffect = programRuleEffect,
+                level = 0
+            )
+        } else {
+            // No implied categories - render flat list
+            dataValues.forEach { dataValue ->
+                key(dataValue.dataElement) {
+                    EventDataValueField(
+                        dataValue = dataValue,
+                        onValueChange = { value -> onValueChange(value, dataValue) },
+                        programRuleEffect = programRuleEffect,
+                        modifier = Modifier.padding(vertical = 4.dp)
                     )
                 }
-                Icon(
-                    imageVector = Icons.Default.KeyboardArrowDown,
-                    contentDescription = if (isExpanded) "Collapse section" else "Expand section",
-                    modifier = Modifier
-                        .rotate(rotationState)
-                        .size(24.dp)
-                )
             }
         }
+    }
+}
 
-        // Section content
-        AnimatedVisibility(visible = isExpanded) {
-            Column(
+@OptIn(ExperimentalFoundationApi::class)
+@Composable
+private fun EventDataElementAccordion(
+    header: String,
+    hasData: Boolean,
+    expanded: Boolean,
+    onToggleExpand: () -> Unit,
+    content: @Composable () -> Unit
+) {
+    val bringIntoViewRequester = remember { BringIntoViewRequester() }
+    val coroutineScope = rememberCoroutineScope()
+
+    LaunchedEffect(expanded) {
+        if (expanded) {
+            coroutineScope.launch {
+                bringIntoViewRequester.bringIntoView()
+            }
+        }
+    }
+
+    Card(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(vertical = 6.dp),
+        colors = CardDefaults.cardColors(
+            containerColor = MaterialTheme.colorScheme.surface
+        ),
+        border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline.copy(alpha = 0.3f)),
+        elevation = CardDefaults.cardElevation(defaultElevation = 2.dp),
+        shape = RoundedCornerShape(12.dp)
+    ) {
+        Row(modifier = Modifier.fillMaxWidth()) {
+            // Left accent border
+            Box(
                 modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(start = 8.dp, top = 8.dp, bottom = 8.dp)
-            ) {
-                if (impliedCombination != null && impliedMappings.isNotEmpty()) {
-                    // Render nested accordions based on implied categories
-                    val groupingService = com.ash.simpledataentry.domain.grouping.ImpliedCategoryInferenceService()
-                    val grouped = groupingService.groupByImpliedCategories(impliedMappings, impliedCombination)
+                    .width(4.dp)
+                    .heightIn(min = 64.dp)
+                    .background(
+                        if (hasData) MaterialTheme.colorScheme.primary
+                        else MaterialTheme.colorScheme.outline.copy(alpha = 0.5f),
+                        shape = RoundedCornerShape(topStart = 12.dp, bottomStart = 12.dp)
+                    )
+            )
 
-                    grouped.forEach { (categoryPath, mappings) ->
-                        key(categoryPath.joinToString("_")) {
-                            ImpliedCategoryGroup(
-                                categoryPath = categoryPath,
-                                mappings = mappings,
-                                categories = impliedCombination.categories,
-                                dataValues = dataValues,
-                                onValueChange = onValueChange,
-                                programRuleEffect = programRuleEffect,
-                                level = 0
-                            )
+            Column(modifier = Modifier.weight(1f)) {
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .clickable {
+                            onToggleExpand()
+                            if (!expanded) {
+                                coroutineScope.launch {
+                                    bringIntoViewRequester.bringIntoView()
+                                }
+                            }
                         }
+                        .padding(horizontal = 16.dp, vertical = 14.dp),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Column(modifier = Modifier.weight(1f)) {
+                        Text(
+                            text = header,
+                            style = MaterialTheme.typography.titleSmall,
+                            fontWeight = FontWeight.SemiBold,
+                            maxLines = 2,
+                            overflow = TextOverflow.Ellipsis
+                        )
+                        Text(
+                            text = if (hasData) "Has data" else "No data",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = if (hasData) MaterialTheme.colorScheme.primary
+                                   else MaterialTheme.colorScheme.onSurface.copy(alpha = 0.6f)
+                        )
                     }
-                } else {
-                    // No implied categories - render flat list
-                    dataValues.forEach { dataValue ->
-                        key(dataValue.dataElement) {
-                            EventDataValueField(
-                                dataValue = dataValue,
-                                onValueChange = { value -> onValueChange(value, dataValue) },
-                                programRuleEffect = programRuleEffect,
-                                modifier = Modifier.padding(vertical = 4.dp)
-                            )
-                        }
+                    Icon(
+                        imageVector = Icons.Default.KeyboardArrowDown,
+                        contentDescription = "Expand/Collapse",
+                        modifier = Modifier
+                            .rotate(if (expanded) 180f else 0f)
+                            .size(24.dp)
+                    )
+                }
+
+                AnimatedVisibility(visible = expanded) {
+                    Column(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(start = 12.dp, end = 12.dp, bottom = 16.dp)
+                            .bringIntoViewRequester(bringIntoViewRequester)
+                    ) {
+                        content()
                     }
                 }
             }
         }
     }
-
-    Spacer(modifier = Modifier.height(8.dp))
 }
 
 /**
  * Nested accordion for implied categories
- * Recursively renders category levels from the inferred structure
+ * Recursively renders category levels from the inferred structure.
  */
 @Composable
-private fun ImpliedCategoryGroup(
-    categoryPath: List<String>,
+private fun ImpliedCategoryGroupRecursive(
     mappings: List<com.ash.simpledataentry.domain.model.ImpliedCategoryMapping>,
     categories: List<com.ash.simpledataentry.domain.model.ImpliedCategory>,
     dataValues: List<DataValue>,
     onValueChange: (String, DataValue) -> Unit,
     programRuleEffect: com.ash.simpledataentry.domain.model.ProgramRuleEffect?,
-    level: Int
+    level: Int = 0
 ) {
-    var isExpanded by remember { mutableStateOf(false) } // Nested categories collapsed by default
+    if (level >= categories.size) {
+        mappings.forEach { mapping ->
+            val dataValue = dataValues.find { it.dataElement == mapping.dataElementId }
+            if (dataValue != null) {
+                key(dataValue.dataElement) {
+                    EventDataValueField(
+                        dataValue = dataValue,
+                        onValueChange = { value -> onValueChange(value, dataValue) },
+                        programRuleEffect = programRuleEffect,
+                        modifier = Modifier.padding(vertical = 4.dp)
+                    )
+                }
+            }
+        }
+        return
+    }
 
-    val rotationState by animateFloatAsState(
-        targetValue = if (isExpanded) 180f else 0f,
-        label = "Category rotation"
-    )
+    val currentCategory = categories[level]
+    val groupedByCurrentLevel = mappings
+        .mapNotNull { mapping ->
+            val option = mapping.categoryOptionsByLevel[currentCategory.level] ?: return@mapNotNull null
+            option to mapping
+        }
+        .groupBy({ it.first }, { it.second })
 
-    // Get the category name for this level
-    val categoryName = if (level < categoryPath.size) categoryPath[level] else ""
+    if (groupedByCurrentLevel.isEmpty()) {
+        mappings.forEach { mapping ->
+            val dataValue = dataValues.find { it.dataElement == mapping.dataElementId }
+            if (dataValue != null) {
+                key(dataValue.dataElement) {
+                    EventDataValueField(
+                        dataValue = dataValue,
+                        onValueChange = { value -> onValueChange(value, dataValue) },
+                        programRuleEffect = programRuleEffect,
+                        modifier = Modifier.padding(vertical = 4.dp)
+                    )
+                }
+            }
+        }
+        return
+    }
 
-    // Indent based on nesting level
-    val startPadding = (level * 16).dp
+    groupedByCurrentLevel.forEach { (optionName, submappings) ->
+        key("${level}_$optionName") {
+            var isExpanded by remember { mutableStateOf(false) }
+            EventCategoryAccordion(
+                header = optionName,
+                expanded = isExpanded,
+                onToggleExpand = { isExpanded = !isExpanded }
+            ) {
+                ImpliedCategoryGroupRecursive(
+                    mappings = submappings,
+                    categories = categories,
+                    dataValues = dataValues,
+                    onValueChange = onValueChange,
+                    programRuleEffect = programRuleEffect,
+                    level = level + 1
+                )
+            }
+        }
+    }
+}
 
-    Column(
-        modifier = Modifier
-            .fillMaxWidth()
-            .padding(start = startPadding)
-    ) {
-        // Category header
-        Surface(
+@OptIn(ExperimentalFoundationApi::class)
+@Composable
+private fun EventCategoryAccordion(
+    header: String,
+    expanded: Boolean,
+    onToggleExpand: () -> Unit,
+    content: @Composable () -> Unit
+) {
+    val bringIntoViewRequester = remember { BringIntoViewRequester() }
+    val coroutineScope = rememberCoroutineScope()
+    Column(modifier = Modifier.fillMaxWidth()) {
+        Card(
             modifier = Modifier
                 .fillMaxWidth()
-                .heightIn(min = 48.dp)
-                .clickable { isExpanded = !isExpanded },
-            color = MaterialTheme.colorScheme.secondaryContainer,
-            shape = MaterialTheme.shapes.small
+                .heightIn(min = 44.dp)
+                .clickable {
+                    onToggleExpand()
+                    if (!expanded) {
+                        coroutineScope.launch {
+                            bringIntoViewRequester.bringIntoView()
+                        }
+                    }
+                },
+            colors = CardDefaults.cardColors(
+                containerColor = MaterialTheme.colorScheme.surface
+            ),
+            border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline.copy(alpha = 0.25f)),
+            elevation = CardDefaults.cardElevation(defaultElevation = 1.dp),
+            shape = RoundedCornerShape(10.dp)
         ) {
             Row(
                 modifier = Modifier
-                    .padding(12.dp)
+                    .padding(horizontal = 14.dp, vertical = 10.dp)
                     .fillMaxWidth(),
                 horizontalArrangement = Arrangement.SpaceBetween,
                 verticalAlignment = Alignment.CenterVertically
             ) {
                 Text(
-                    text = categoryName,
-                    style = MaterialTheme.typography.titleSmall,
+                    text = header,
+                    style = MaterialTheme.typography.bodyMedium,
                     fontWeight = FontWeight.Medium,
                     modifier = Modifier.weight(1f)
                 )
                 Icon(
                     imageVector = Icons.Default.KeyboardArrowDown,
-                    contentDescription = if (isExpanded) "Collapse" else "Expand",
+                    contentDescription = "Expand/Collapse Category",
                     modifier = Modifier
-                        .rotate(rotationState)
+                        .rotate(if (expanded) 180f else 0f)
                         .size(20.dp)
                 )
             }
         }
 
         // Category content
-        AnimatedVisibility(visible = isExpanded) {
+        AnimatedVisibility(visible = expanded) {
             Column(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .padding(top = 8.dp)
+                    .padding(start = 12.dp, top = 8.dp)
+                    .bringIntoViewRequester(bringIntoViewRequester)
             ) {
-                // Render data value fields for this category combination
-                mappings.forEach { mapping ->
-                    val dataValue = dataValues.find { it.dataElement == mapping.dataElementId }
-                    if (dataValue != null) {
-                        key(dataValue.dataElement) {
-                            EventDataValueField(
-                                dataValue = dataValue,
-                                onValueChange = { value -> onValueChange(value, dataValue) },
-                                programRuleEffect = programRuleEffect,
-                                modifier = Modifier.padding(vertical = 4.dp)
-                            )
-                        }
-                    }
-                }
+                content()
             }
         }
     }
-
-    Spacer(modifier = Modifier.height(4.dp))
 }
 
 @Composable

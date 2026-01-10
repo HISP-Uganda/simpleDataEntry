@@ -27,7 +27,7 @@ import androidx.compose.material.icons.filled.People
 import androidx.compose.material.icons.filled.Sort
 import androidx.compose.material.icons.filled.Storage
 import androidx.compose.material.icons.filled.Info
-import androidx.compose.material.icons.filled.Logout
+import androidx.compose.material.icons.automirrored.filled.Logout
 import androidx.compose.material.icons.filled.Menu
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material.icons.filled.Sync
@@ -326,14 +326,7 @@ fun DatasetsScreen(
         else -> "Up to date"
     }
 
-    // Refresh program counts when navigating back to this screen
-    LaunchedEffect(navController.currentBackStackEntry) {
-        // Only refresh if we're actually on this screen (not navigating away)
-        val currentRoute = navController.currentBackStackEntry?.destination?.route
-        if (currentRoute == "datasets") {
-            viewModel.refreshPrograms()
-        }
-    }
+    // Do not auto-sync when navigating back; sync is login/ manual only.
 
     ModalNavigationDrawer(
         drawerState = drawerState,
@@ -383,7 +376,7 @@ fun DatasetsScreen(
                 )
 
                 NavigationDrawerItem(
-                    icon = { Icon(Icons.Default.Logout, contentDescription = null) },
+                    icon = { Icon(Icons.AutoMirrored.Filled.Logout, contentDescription = null) },
                     label = { Text("Logout") },
                     selected = false,
                     onClick = {
@@ -527,7 +520,7 @@ fun DatasetsScreen(
                             containerColor = MaterialTheme.colorScheme.surface,
                             contentColor = MaterialTheme.colorScheme.onSurface,
                             indicator = { tabPositions ->
-                                TabRowDefaults.Indicator(
+                                TabRowDefaults.SecondaryIndicator(
                                     modifier = Modifier.tabIndicatorOffset(tabPositions[when (data.currentProgramType) {
                                         DomainProgramType.ALL -> 0
                                         DomainProgramType.DATASET -> 1

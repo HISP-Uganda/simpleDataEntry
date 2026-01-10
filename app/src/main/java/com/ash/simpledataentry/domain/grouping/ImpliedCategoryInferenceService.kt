@@ -2,6 +2,7 @@ package com.ash.simpledataentry.domain.grouping
 
 import android.util.Log
 import com.ash.simpledataentry.domain.model.*
+import java.util.Locale
 import javax.inject.Inject
 import javax.inject.Singleton
 
@@ -40,13 +41,28 @@ class ImpliedCategoryInferenceService @Inject constructor() {
         Log.d(TAG, "=== ANALYZING SECTION '$sectionName' ===")
         Log.d(TAG, "Total data elements: ${dataElements.size}")
 
-        // Try each separator pattern
+        var bestResult: ImpliedCategoryCombination? = null
+        var bestScore = Double.NEGATIVE_INFINITY
+
+        // Try each separator pattern, keep the strongest category signal.
         for (separator in SEPARATORS) {
             val result = tryInferWithSeparator(dataElements, separator, sectionName)
-            if (result != null && result.confidence >= MIN_CONFIDENCE) {
-                Log.d(TAG, "✓ Pattern detected with separator '$separator': confidence=${result.confidence}")
-                return result
+            if (result != null) {
+                val optionCount = result.categories.sumOf { it.options.size }
+                val score = result.confidence + (result.categories.size * 0.1) + (optionCount * 0.001)
+                if (score > bestScore) {
+                    bestScore = score
+                    bestResult = result
+                }
             }
+        }
+
+        if (bestResult != null && bestResult.confidence >= MIN_CONFIDENCE) {
+            Log.d(
+                TAG,
+                "✓ Pattern detected: ${bestResult.categories.size} categories, confidence=${bestResult.confidence}"
+            )
+            return bestResult
         }
 
         Log.d(TAG, "✗ No clear category pattern detected for section '$sectionName'")
@@ -77,55 +93,9 @@ class ImpliedCategoryInferenceService @Inject constructor() {
             return null
         }
 
-        // Find the maximum depth (number of parts)
-        val maxDepth = parsedNames.maxOfOrNull { it.second.size } ?: return null
+        val (reinferredCategories, depthConsistency) = buildCategoriesWithFallback(parsedNames, separator)
 
-        // Check if depth is consistent
-        val depthCounts = parsedNames.groupingBy { it.second.size }.eachCount()
-        val mostCommonDepth = depthCounts.maxByOrNull { it.value }?.key ?: return null
-
-        // At least 80% should have the same depth
-        val depthConsistency = (depthCounts[mostCommonDepth] ?: 0).toDouble() / parsedNames.size
-        if (depthConsistency < 0.8) {
-            Log.d(TAG, "  Separator '$separator': inconsistent depth (${(depthConsistency * 100).toInt()}% consistency)")
-            return null
-        }
-
-        // Build category structure
-        val categories = mutableListOf<ImpliedCategory>()
-
-        // For each level (except the last which is the field name)
-        for (level in 0 until mostCommonDepth - 1) {
-            val optionsAtLevel = parsedNames
-                .filter { it.second.size == mostCommonDepth }
-                .map { it.second[level].trim() }
-                .distinct()
-                .sorted()
-
-            // Skip levels with too many unique values (probably not a category)
-            if (optionsAtLevel.size > 20) {
-                Log.d(TAG, "  Separator '$separator': level $level has ${optionsAtLevel.size} options (too many)")
-                continue
-            }
-
-            // Skip levels where every element has a unique value (not a category)
-            val elementsAtDepth = parsedNames.count { it.second.size == mostCommonDepth }
-            if (optionsAtLevel.size == elementsAtDepth) {
-                Log.d(TAG, "  Separator '$separator': level $level has all unique values (not a category)")
-                continue
-            }
-
-            categories.add(
-                ImpliedCategory(
-                    name = "Category ${level + 1}",  // Generic name, could be improved with NLP
-                    options = optionsAtLevel,
-                    level = level,
-                    separator = separator
-                )
-            )
-        }
-
-        if (categories.isEmpty()) {
+        if (reinferredCategories.isEmpty()) {
             Log.d(TAG, "  Separator '$separator': no valid categories found")
             return null
         }
@@ -136,7 +106,7 @@ class ImpliedCategoryInferenceService @Inject constructor() {
         // 3. Number of categories found
         val confidence = (structuredRatio * 0.5) +
                         (depthConsistency * 0.3) +
-                        (minOf(categories.size / 3.0, 1.0) * 0.2)
+                        (minOf(reinferredCategories.size / 3.0, 1.0) * 0.2)
 
         val pattern = when (separator) {
             " - " -> CategoryPattern.HIERARCHICAL
@@ -147,18 +117,109 @@ class ImpliedCategoryInferenceService @Inject constructor() {
             else -> CategoryPattern.FLAT
         }
 
-        Log.d(TAG, "  Separator '$separator': ${categories.size} categories, confidence=$confidence")
-        categories.forEachIndexed { index, cat ->
+        Log.d(TAG, "  Separator '$separator': ${reinferredCategories.size} categories, confidence=$confidence")
+        reinferredCategories.forEachIndexed { index, cat ->
             Log.d(TAG, "    Level $index: ${cat.options.size} options - ${cat.options.take(3).joinToString(", ")}${if (cat.options.size > 3) "..." else ""}")
         }
 
         return ImpliedCategoryCombination(
-            categories = categories,
+            categories = reinferredCategories,
             confidence = confidence,
             pattern = pattern,
             totalDataElements = dataElements.size,
             structuredDataElements = parsedNames.size
         )
+    }
+
+    private fun buildCategoriesWithFallback(
+        parsedNames: List<Pair<DataValue, List<String>>>,
+        separator: String
+    ): Pair<List<ImpliedCategory>, Double> {
+        val parts = parsedNames.map { it.second }
+        val (mostCommonDepth, depthConsistency) = computeDepthStats(parts)
+        val baseCategories = buildCategories(parts, separator, baseLevel = 0, mostCommonDepth = mostCommonDepth)
+        if (baseCategories.isNotEmpty()) {
+            return baseCategories to depthConsistency
+        }
+
+        val commonPrefix = parts.firstOrNull()?.firstOrNull()
+        val hasCommonPrefix = commonPrefix != null && parts.all {
+            it.isNotEmpty() && it.first().trim().equals(commonPrefix.trim(), ignoreCase = true)
+        }
+        if (!hasCommonPrefix) {
+            return emptyList<ImpliedCategory>() to depthConsistency
+        }
+
+        val trimmedParts = parts.mapNotNull { tokens ->
+            if (tokens.size <= 1) null else tokens.drop(1)
+        }
+        if (trimmedParts.isEmpty()) {
+            return emptyList<ImpliedCategory>() to depthConsistency
+        }
+        val (trimmedDepth, trimmedConsistency) = computeDepthStats(trimmedParts)
+        val trimmedCategories = buildCategories(
+            trimmedParts,
+            separator = separator,
+            baseLevel = 1,
+            mostCommonDepth = trimmedDepth
+        )
+        return trimmedCategories to trimmedConsistency
+    }
+
+    private fun computeDepthStats(parts: List<List<String>>): Pair<Int, Double> {
+        val depthCounts = parts.groupingBy { it.size }.eachCount()
+        val mostCommonDepth = depthCounts.maxByOrNull { it.value }?.key ?: return 0 to 0.0
+        val depthConsistency = (depthCounts[mostCommonDepth] ?: 0).toDouble() / parts.size
+        return mostCommonDepth to depthConsistency
+    }
+
+    private fun buildCategories(
+        parts: List<List<String>>,
+        separator: String,
+        baseLevel: Int,
+        mostCommonDepth: Int
+    ): List<ImpliedCategory> {
+        if (mostCommonDepth <= 0) {
+            return emptyList()
+        }
+        val categories = mutableListOf<ImpliedCategory>()
+        val elementsAtDepth = parts.count { it.size == mostCommonDepth }
+        for (level in 0 until mostCommonDepth) {
+            val optionsAtLevel = parts
+                .filter { it.size == mostCommonDepth }
+                .map { it[level].trim() }
+                .distinct()
+                .sorted()
+
+            if (optionsAtLevel.size <= 1 && parts.size > 1) {
+                Log.d(TAG, "  Separator '$separator': level ${baseLevel + level} has single option (skipping)")
+                continue
+            }
+            if (optionsAtLevel.size > 20) {
+                Log.d(
+                    TAG,
+                    "  Separator '$separator': level ${baseLevel + level} has ${optionsAtLevel.size} options (too many)"
+                )
+                continue
+            }
+            if (optionsAtLevel.size == elementsAtDepth) {
+                Log.d(
+                    TAG,
+                    "  Separator '$separator': level ${baseLevel + level} has all unique values (not a category)"
+                )
+                continue
+            }
+
+            categories.add(
+                ImpliedCategory(
+                    name = inferCategoryName(optionsAtLevel, baseLevel + level),
+                    options = optionsAtLevel,
+                    level = baseLevel + level,
+                    separator = separator
+                )
+            )
+        }
+        return categories
     }
 
     /**
@@ -181,7 +242,7 @@ class ImpliedCategoryInferenceService @Inject constructor() {
 
                 // Map each level to its option
                 combination.categories.forEach { category ->
-                    if (category.level < parts.size - 1) {
+                    if (category.level < parts.size) {
                         categoryOptions[category.level] = parts[category.level].trim()
                     }
                 }
@@ -213,5 +274,70 @@ class ImpliedCategoryInferenceService @Inject constructor() {
                 mapping.categoryOptionsByLevel[category.level] ?: ""
             }
         }
+    }
+
+    private fun inferCategoryName(options: List<String>, level: Int): String {
+        val normalized = options.map { it.trim().lowercase(Locale.ENGLISH) }
+        val normalizedSet = normalized.toSet()
+        val genderKeys = setOf("male", "female", "man", "woman", "boy", "girl", "m", "f")
+        val yesNoKeys = setOf("yes", "no", "true", "false")
+        val monthKeys = setOf(
+            "january", "february", "march", "april", "may", "june",
+            "july", "august", "september", "october", "november", "december",
+            "jan", "feb", "mar", "apr", "jun", "jul", "aug", "sep", "sept", "oct", "nov", "dec"
+        )
+        val ageRangePattern = Regex(
+            "^(under\\s+\\d+|\\d+\\s*\\+|\\d+\\s*-\\s*\\d+|\\d+\\s*to\\s*\\d+)$"
+        )
+        val gradePattern = Regex("^(p\\d+|grade\\s*\\d+|g\\d+)$")
+
+        if (normalizedSet.containsAll(setOf("male", "female")) ||
+            normalizedSet.containsAll(setOf("m", "f")) ||
+            normalizedSet.containsAll(setOf("boy", "girl")) ||
+            normalizedSet.containsAll(setOf("man", "woman"))
+        ) {
+            return "Gender"
+        }
+
+        if (normalizedSet.intersect(yesNoKeys).size >= 2) {
+            return "Response"
+        }
+
+        if (normalized.all { it.contains("trimester") }) {
+            return "Trimester"
+        }
+
+        if (normalized.all { it.contains("quarter") } || normalized.all { it.startsWith("q") }) {
+            return "Quarter"
+        }
+
+        if (normalized.all { it in monthKeys }) {
+            return "Month"
+        }
+
+        if (normalized.all { ageRangePattern.matches(it) }) {
+            return "Age group"
+        }
+
+        if (normalized.all { gradePattern.matches(it) || it.contains("grade") }) {
+            return "Grade"
+        }
+
+        val commonSuffix = findCommonSuffixWord(options)
+        if (!commonSuffix.isNullOrBlank()) {
+            return commonSuffix.replaceFirstChar { char ->
+                if (char.isLowerCase()) char.titlecase(Locale.ENGLISH) else char.toString()
+            }
+        }
+
+        return "Category ${level + 1}"
+    }
+
+    private fun findCommonSuffixWord(options: List<String>): String? {
+        if (options.isEmpty()) return null
+        val suffixes = options.mapNotNull { option ->
+            option.trim().split(Regex("\\s+")).lastOrNull()?.lowercase(Locale.ENGLISH)
+        }
+        return if (suffixes.distinct().size == 1) suffixes.first() else null
     }
 }

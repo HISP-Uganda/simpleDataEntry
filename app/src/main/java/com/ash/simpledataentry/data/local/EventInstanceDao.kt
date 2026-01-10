@@ -18,6 +18,9 @@ interface EventInstanceDao {
     @Query("SELECT * FROM event_instances WHERE programId = :programId AND deleted = 0")
     fun getByProgram(programId: String): Flow<List<EventInstanceEntity>>
 
+    @Query("SELECT * FROM event_instances WHERE enrollmentId = :enrollmentId AND deleted = 0")
+    suspend fun getByEnrollment(enrollmentId: String): List<EventInstanceEntity>
+
     @Query("DELETE FROM event_instances WHERE programId = :programId")
     suspend fun deleteByProgram(programId: String)
 

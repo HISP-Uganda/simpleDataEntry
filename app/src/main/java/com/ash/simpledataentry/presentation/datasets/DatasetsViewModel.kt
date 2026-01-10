@@ -105,8 +105,7 @@ class DatasetsViewModel @Inject constructor(
 
     fun refreshPrograms() {
         viewModelScope.launch {
-            syncQueueManager.startDownloadOnlySync()
-            // loadPrograms() will auto-update via reactive Flow when sync completes
+            loadPrograms()
         }
     }
 

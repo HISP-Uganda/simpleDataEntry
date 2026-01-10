@@ -41,7 +41,16 @@ fun SettingsScreen(
     navController: NavController,
     viewModel: SettingsViewModel = hiltViewModel()
 ) {
-    val state by viewModel.state.collectAsState()
+    val uiState by viewModel.uiState.collectAsState()
+    var lastData by remember { mutableStateOf(SettingsData()) }
+    val state = when (val current = uiState) {
+        is com.ash.simpledataentry.presentation.core.UiState.Success -> {
+            lastData = current.data
+            current.data
+        }
+        is com.ash.simpledataentry.presentation.core.UiState.Error -> current.previousData ?: lastData
+        is com.ash.simpledataentry.presentation.core.UiState.Loading -> lastData
+    }
     val dateFormatter = remember { SimpleDateFormat("MMM dd, yyyy", Locale.getDefault()) }
     val haptic = LocalHapticFeedback.current
     var showDeleteAllConfirmation by remember { mutableStateOf(false) }
@@ -76,7 +85,28 @@ fun SettingsScreen(
                             onFrequencyChanged = viewModel::setSyncFrequency,
                             enabled = true // ENABLED: Now has persistence
                         )
-                        
+                        Button(
+                            onClick = { viewModel.syncMetadataNow() },
+                            enabled = !state.isMetadataSyncing,
+                            modifier = Modifier.fillMaxWidth()
+                        ) {
+                            if (state.isMetadataSyncing) {
+                                CircularProgressIndicator(
+                                    modifier = Modifier.size(18.dp),
+                                    strokeWidth = 2.dp,
+                                    color = MaterialTheme.colorScheme.onPrimary
+                                )
+                                Spacer(modifier = Modifier.width(8.dp))
+                            }
+                            Text("Sync metadata now")
+                        }
+                        state.metadataSyncMessage?.let { message ->
+                            Text(
+                                text = message,
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                        }
                     }
                 }
             }
@@ -166,7 +196,7 @@ fun SettingsScreen(
                                 color = MaterialTheme.colorScheme.onSurfaceVariant
                             )
                         }
-                        Divider(
+                        HorizontalDivider(
                             modifier = Modifier
                                 .height(48.dp)
                                 .width(1.dp)
@@ -408,7 +438,7 @@ fun SettingsScreen(
     }
 
     // Error Snackbar
-    state.error?.let { error ->
+    (uiState as? com.ash.simpledataentry.presentation.core.UiState.Error)?.error?.let { error ->
         LaunchedEffect(error) {
             // Handle error display
         }
@@ -761,7 +791,7 @@ private fun DataManagementActions(
         
         if (isExporting) {
             LinearProgressIndicator(
-                progress = exportProgress,
+                progress = { exportProgress },
                 modifier = Modifier.fillMaxWidth()
             )
         }

@@ -7,7 +7,9 @@ import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.ScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.Label
@@ -17,6 +19,7 @@ import androidx.compose.material.icons.filled.DateRange
 import androidx.compose.material.icons.filled.Edit
 import androidx.compose.material.icons.filled.Event
 import androidx.compose.material.icons.filled.LocationOn
+import androidx.compose.material.icons.filled.Search
 import androidx.compose.material.icons.filled.Phone
 import androidx.compose.material.icons.filled.Tag
 import androidx.compose.material.icons.filled.CalendarMonth
@@ -275,6 +278,7 @@ private fun ProfileTabContent(
         item {
             EnrollmentInfoCard(
                 uiState = uiState,
+                eventsCount = uiState.events.size,
                 onEditEnrollment = onEditEnrollment
             )
         }
@@ -288,11 +292,49 @@ private fun EventsTabContent(
     onAddEventForStage: (String) -> Unit,
     viewModel: TrackerDashboardViewModel
 ) {
+    var stageQuery by remember { mutableStateOf("") }
+    val listState = rememberLazyListState()
+    val searchTargetIndex = remember(uiState.programStages, stageQuery) {
+        val query = stageQuery.trim()
+        if (query.isBlank()) {
+            -1
+        } else {
+            uiState.programStages.indexOfFirst { stage ->
+                val name = stage.name ?: ""
+                name.contains(query, ignoreCase = true)
+            }
+        }
+    }
+
+    LaunchedEffect(searchTargetIndex, uiState.programStages.size) {
+        if (searchTargetIndex >= 0) {
+            listState.animateScrollToItem(searchTargetIndex + 1)
+        }
+    }
+
     LazyColumn(
+        state = listState,
         modifier = Modifier.fillMaxSize(),
         contentPadding = PaddingValues(16.dp),
         verticalArrangement = Arrangement.spacedBy(16.dp)
     ) {
+        if (uiState.programStages.isNotEmpty()) {
+            item {
+                OutlinedTextField(
+                    value = stageQuery,
+                    onValueChange = { stageQuery = it },
+                    modifier = Modifier.fillMaxWidth(),
+                    singleLine = true,
+                    placeholder = { Text("Search stages...") },
+                    leadingIcon = {
+                        Icon(
+                            imageVector = Icons.Default.Search,
+                            contentDescription = null
+                        )
+                    }
+                )
+            }
+        }
         if (uiState.programStages.isEmpty()) {
             item {
                 Card(modifier = Modifier.fillMaxWidth()) {
@@ -340,6 +382,7 @@ private fun EventsTabContent(
 @Composable
 private fun EnrollmentInfoCard(
     uiState: TrackerDashboardUiState,
+    eventsCount: Int,
     onEditEnrollment: () -> Unit
 ) {
     var showAttributes by remember { mutableStateOf(false) }
@@ -420,6 +463,12 @@ private fun EnrollmentInfoCard(
 
                 EnrollmentStatusChip(status = uiState.enrollmentStatus)
             }
+
+            Spacer(modifier = Modifier.height(8.dp))
+            InfoRow(
+                label = "Events",
+                value = eventsCount.toString()
+            )
 
             // Show Attributes Button (only if attributes exist)
             if (uiState.trackedEntityAttributes.isNotEmpty()) {
@@ -1016,15 +1065,17 @@ private fun CompactEventTable(
     rows: List<EventTableRow>,
     onRowClick: (EventTableRow) -> Unit
 ) {
+    val scrollState = rememberScrollState()
     Column(modifier = Modifier.fillMaxWidth()) {
         // Header row
-        CompactTableHeaderRow(columns = columns)
+        CompactTableHeaderRow(columns = columns, scrollState = scrollState)
 
         // Data rows
         rows.forEach { row ->
             CompactTableDataRow(
                 row = row,
                 columns = columns,
+                scrollState = scrollState,
                 onClick = { onRowClick(row) }
             )
             if (row != rows.last()) {
@@ -1035,12 +1086,15 @@ private fun CompactEventTable(
 }
 
 @Composable
-private fun CompactTableHeaderRow(columns: List<EventTableColumn>) {
+private fun CompactTableHeaderRow(
+    columns: List<EventTableColumn>,
+    scrollState: ScrollState
+) {
     Row(
         modifier = Modifier
             .fillMaxWidth()
             .background(MaterialTheme.colorScheme.surfaceVariant)
-            .horizontalScroll(rememberScrollState())
+            .horizontalScroll(scrollState)
             .padding(vertical = 8.dp)
     ) {
         columns.forEach { column ->
@@ -1072,13 +1126,14 @@ private fun CompactTableHeaderCell(column: EventTableColumn) {
 private fun CompactTableDataRow(
     row: EventTableRow,
     columns: List<EventTableColumn>,
+    scrollState: ScrollState,
     onClick: () -> Unit
 ) {
     Row(
         modifier = Modifier
             .fillMaxWidth()
             .clickable { onClick() }
-            .horizontalScroll(rememberScrollState())
+            .horizontalScroll(scrollState)
             .padding(vertical = 8.dp)
     ) {
         columns.forEach { column ->

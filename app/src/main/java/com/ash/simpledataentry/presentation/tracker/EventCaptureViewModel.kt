@@ -66,6 +66,7 @@ data class EventCaptureState(
     // Map of sectionName -> ImpliedCategoryCombination (since each section can have different patterns)
     val impliedCategoriesBySection: Map<String, ImpliedCategoryCombination> = emptyMap(),
     val impliedCategoryMappingsBySection: Map<String, List<ImpliedCategoryMapping>> = emptyMap(),
+    val sectionHasData: Map<String, Boolean> = emptyMap(),
 
     // Reuse validation patterns from DataEntry
     val validationState: ValidationState = ValidationState.VALID,
@@ -109,6 +110,9 @@ class EventCaptureViewModel @Inject constructor(
     val uiState: StateFlow<UiState<EventCaptureState>> = _uiState.asStateFlow()
 private var lastSuccessfulState: EventCaptureState? = null
 private var isShowingSyncOverlay = false
+    private var initialValues: Map<String, String?> = emptyMap()
+    private var initialEventDate: Date? = null
+    private var initialOrganisationUnitId: String? = null
     val syncController: SyncStatusController = syncStatusController
 
     private fun emitSuccessState() {
@@ -389,9 +393,11 @@ private var isShowingSyncOverlay = false
                         selectedOrganisationUnitId = orgUnitId,
                         isCompleted = completed,
                         impliedCategoriesBySection = impliedCategoriesBySection,
-                        impliedCategoryMappingsBySection = impliedMappingsBySection
+                        impliedCategoryMappingsBySection = impliedMappingsBySection,
+                        sectionHasData = calculateSectionHasData(updatedDataValues)
                     )
                 }
+                cacheInitialState(updatedDataValues, eventDate, orgUnitId)
 
                 updateCanSave()
 
@@ -428,7 +434,8 @@ private var isShowingSyncOverlay = false
 
             currentState.copy(
                 dataValues = updatedDataValues,
-                currentDataValue = dataValue.copy(value = value.ifBlank { null })
+                currentDataValue = dataValue.copy(value = value.ifBlank { null }),
+                sectionHasData = calculateSectionHasData(updatedDataValues)
             )
         }
         updateCanSave()
@@ -447,6 +454,42 @@ private var isShowingSyncOverlay = false
     fun updateOrganisationUnit(orgUnitId: String) {
         updateState { it.copy(selectedOrganisationUnitId = orgUnitId) }
         updateCanSave()
+    }
+
+    fun hasUnsavedChanges(): Boolean {
+        val currentState = _state.value
+        val currentValues = currentState.dataValues.associate { dataValue ->
+            "${dataValue.dataElement}|${dataValue.categoryOptionCombo}" to dataValue.value?.ifBlank { null }
+        }
+        val normalizedInitial = initialValues.mapValues { it.value?.ifBlank { null } }
+        if (currentValues != normalizedInitial) {
+            return true
+        }
+        if (currentState.eventDate != initialEventDate) {
+            return true
+        }
+        if (currentState.selectedOrganisationUnitId != initialOrganisationUnitId) {
+            return true
+        }
+        return false
+    }
+
+    private fun cacheInitialState(
+        dataValues: List<DataValue>,
+        eventDate: Date?,
+        organisationUnitId: String?
+    ) {
+        initialValues = dataValues.associate { dataValue ->
+            "${dataValue.dataElement}|${dataValue.categoryOptionCombo}" to dataValue.value?.ifBlank { null }
+        }
+        initialEventDate = eventDate
+        initialOrganisationUnitId = organisationUnitId
+    }
+
+    private fun calculateSectionHasData(dataValues: List<DataValue>): Map<String, Boolean> {
+        return dataValues
+            .groupBy { it.sectionName }
+            .mapValues { (_, values) -> values.any { !it.value.isNullOrBlank() } }
     }
 
     private fun updateCanSave() {
@@ -504,6 +547,7 @@ private var isShowingSyncOverlay = false
                         successMessage = if (currentState.isEditMode) "Event updated successfully" else "Event created successfully"
                     )
                 }
+                cacheInitialState(_state.value.dataValues, _state.value.eventDate, _state.value.selectedOrganisationUnitId)
 
                 // Trigger program rules evaluation after save
                 _state.value.eventId?.let { eventId ->
@@ -849,9 +893,15 @@ private var isShowingSyncOverlay = false
     ): ImpliedCategoryCombination? {
         // Check cache first
         val cached = metadataCacheService.getImpliedCategories(programId, sectionName)
-        if (cached != null) {
+        if (cached != null && cached.categories.any { it.options.size > 1 }) {
             android.util.Log.d("EventCaptureVM", "Using cached implied categories for $programId:$sectionName")
             return cached
+        }
+        if (cached != null) {
+            android.util.Log.d(
+                "EventCaptureVM",
+                "Cached implied categories lack meaningful options for $programId:$sectionName - recomputing"
+            )
         }
 
         // Infer from data element names

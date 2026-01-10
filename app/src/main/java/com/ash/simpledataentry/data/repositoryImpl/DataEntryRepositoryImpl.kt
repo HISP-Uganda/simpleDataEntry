@@ -526,10 +526,10 @@ class DataEntryRepositoryImpl @Inject constructor(
                 .uid(datasetId)
                 .blockingGet() ?: return@withContext emptyList()
             val categoryComboUid = dataSet.categoryCombo()?.uid() ?: return@withContext emptyList()
-            d2.categoryModule().categoryOptionCombos()
+            val combos = d2.categoryModule().categoryOptionCombos()
                 .byCategoryComboUid().eq(categoryComboUid)
                 .blockingGet()
-                .map { it.uid() to (it.displayName() ?: it.uid()) }
+        combos.map { it.uid() to (it.displayName() ?: it.uid()) }
         }
     }
 
