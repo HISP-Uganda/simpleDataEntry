@@ -34,6 +34,26 @@ fun AdaptiveLoadingOverlay(
     when (uiState) {
         is UiState.Loading -> {
             val progress = uiState.progress
+            val stepInfo = when (val operation = uiState.operation) {
+                is LoadingOperation.Navigation -> {
+                    operation.progress.loadingType?.let { loadingType ->
+                        buildNavigationStepInfo(operation.progress, loadingType)
+                    }
+                }
+                is LoadingOperation.Syncing -> buildSyncStepInfo(operation.progress)
+                else -> null
+            }
+
+            if (stepInfo != null) {
+                StepLoadingScreen(
+                    type = stepInfo.type,
+                    currentStep = stepInfo.stepIndex,
+                    progressPercent = stepInfo.percent,
+                    currentLabel = stepInfo.label,
+                    modifier = modifier.fillMaxSize()
+                )
+                return
+            }
 
             // Show detailed progress if long-running or if progress tracking exists
             if (progress?.isLongRunning == true || uiState.operation !is LoadingOperation.Initial) {
@@ -75,6 +95,77 @@ fun AdaptiveLoadingOverlay(
             }
         }
     }
+}
+
+private data class StepOverlayInfo(
+    val type: StepLoadingType,
+    val stepIndex: Int,
+    val percent: Int,
+    val label: String
+)
+
+private fun buildNavigationStepInfo(
+    progress: NavigationProgress,
+    loadingType: StepLoadingType
+): StepOverlayInfo {
+    val stepIndex = when (loadingType) {
+        StepLoadingType.ENTRY -> when (progress.phase) {
+            LoadingPhase.INITIALIZING -> 0
+            LoadingPhase.LOADING_DATA -> 1
+            LoadingPhase.PROCESSING,
+            LoadingPhase.PROCESSING_DATA -> 1
+            LoadingPhase.COMPLETING,
+            LoadingPhase.FINALIZING -> 2
+            LoadingPhase.AUTHENTICATING,
+            LoadingPhase.DOWNLOADING_METADATA -> 0
+        }
+        StepLoadingType.LOGIN -> when (progress.phase) {
+            LoadingPhase.INITIALIZING -> 0
+            LoadingPhase.AUTHENTICATING -> 1
+            LoadingPhase.DOWNLOADING_METADATA -> 2
+            LoadingPhase.LOADING_DATA -> 3
+            LoadingPhase.PROCESSING,
+            LoadingPhase.PROCESSING_DATA -> 4
+            LoadingPhase.COMPLETING,
+            LoadingPhase.FINALIZING -> 5
+        }
+        StepLoadingType.SYNC -> 0
+    }
+    val percent = when {
+        progress.overallPercentage in 1..100 -> progress.overallPercentage
+        progress.percentage in 1..100 -> progress.percentage
+        else -> 0
+    }
+    val label = when {
+        progress.phaseDetail.isNotBlank() -> progress.phaseDetail
+        progress.phaseTitle.isNotBlank() -> progress.phaseTitle
+        progress.message.isNotBlank() -> progress.message
+        else -> ""
+    }
+    return StepOverlayInfo(loadingType, stepIndex, percent, label)
+}
+
+private fun buildSyncStepInfo(progress: DetailedSyncProgress): StepOverlayInfo {
+    val stepIndex = when (progress.phase) {
+        SyncPhase.INITIALIZING,
+        SyncPhase.PREPARING,
+        SyncPhase.VALIDATING_CONNECTION,
+        SyncPhase.UPLOADING_DATA -> 0
+        SyncPhase.SYNCING_METADATA,
+        SyncPhase.DOWNLOADING_METADATA,
+        SyncPhase.DOWNLOADING_DATA,
+        SyncPhase.DOWNLOADING_DATASETS,
+        SyncPhase.DOWNLOADING_TRACKER_DATA,
+        SyncPhase.DOWNLOADING_EVENTS -> 1
+        SyncPhase.FINALIZING -> 2
+    }
+    val percent = progress.overallPercentage.coerceIn(0, 100)
+    val label = if (progress.phaseDetail.isNotBlank()) {
+        progress.phaseDetail
+    } else {
+        progress.phaseTitle
+    }
+    return StepOverlayInfo(StepLoadingType.SYNC, stepIndex, percent, label)
 }
 
 /**
@@ -171,7 +262,9 @@ internal fun DetailedProgressOverlay(
 
         // Progress card
         Box(
-            modifier = Modifier.fillMaxSize(),
+            modifier = Modifier
+                .fillMaxSize()
+                .background(MaterialTheme.colorScheme.surface.copy(alpha = 0.5f)),
             contentAlignment = Alignment.Center
         ) {
             ProgressCard(
@@ -242,6 +335,57 @@ private fun ProgressCard(
                         totalItems = syncProgress.totalItems,
                         phase = syncProgress.phase
                     )
+
+                    Spacer(modifier = Modifier.height(12.dp))
+                    Text(
+                        text = "Please keep the app open",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.6f),
+                        textAlign = TextAlign.Center
+                    )
+                }
+
+                is LoadingOperation.Navigation -> {
+                    val navigationProgress = operation.progress
+                    val title = navigationProgress.phaseTitle
+                        .ifBlank { navigationProgress.message }
+                        .ifBlank { navigationProgress.phase.title }
+
+                    Text(
+                        text = title,
+                        style = MaterialTheme.typography.headlineSmall,
+                        textAlign = TextAlign.Center
+                    )
+
+                    val detail = when {
+                        navigationProgress.phaseDetail.isNotBlank() -> navigationProgress.phaseDetail
+                        navigationProgress.message.isNotBlank() -> navigationProgress.message
+                        else -> ""
+                    }
+
+                    if (detail.isNotBlank()) {
+                        Spacer(modifier = Modifier.height(8.dp))
+                        Text(
+                            text = detail,
+                            style = MaterialTheme.typography.bodyMedium,
+                            color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.7f),
+                            textAlign = TextAlign.Center
+                        )
+                    }
+
+                    val percentage = when {
+                        navigationProgress.overallPercentage in 1..100 -> navigationProgress.overallPercentage
+                        navigationProgress.percentage in 1..100 -> navigationProgress.percentage
+                        else -> null
+                    }
+
+                    percentage?.let {
+                        Spacer(modifier = Modifier.height(16.dp))
+                        ProgressBar(
+                            percentage = it,
+                            modifier = Modifier.fillMaxWidth()
+                        )
+                    }
                 }
 
                 is LoadingOperation.Saving -> {
@@ -333,10 +477,19 @@ private fun PhaseIcon(operation: LoadingOperation) {
             SyncPhase.FINALIZING -> Icons.Default.CheckCircle
             else -> Icons.Default.CloudSync // Fallback for all other sync phases
         }
+        is LoadingOperation.Navigation -> when (operation.progress.phase) {
+            LoadingPhase.INITIALIZING -> Icons.Default.Settings
+            LoadingPhase.AUTHENTICATING -> Icons.Default.Lock
+            LoadingPhase.DOWNLOADING_METADATA -> Icons.Default.CloudDownload
+            LoadingPhase.LOADING_DATA,
+            LoadingPhase.PROCESSING,
+            LoadingPhase.PROCESSING_DATA -> Icons.Default.CloudSync
+            LoadingPhase.COMPLETING,
+            LoadingPhase.FINALIZING -> Icons.Default.CheckCircle
+        }
         is LoadingOperation.Saving -> Icons.Default.Save
         is LoadingOperation.BulkOperation -> Icons.Default.DynamicForm
         is LoadingOperation.Completing -> Icons.Default.CheckCircle
-        is LoadingOperation.Navigation -> Icons.Default.Navigation
         else -> Icons.Default.HourglassEmpty
     }
 

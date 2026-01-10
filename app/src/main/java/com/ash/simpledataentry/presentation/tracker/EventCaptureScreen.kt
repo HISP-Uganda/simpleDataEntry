@@ -10,18 +10,25 @@ import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.rememberLazyListState
+import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.Check
+import androidx.compose.material.icons.filled.Event
 import androidx.compose.material.icons.filled.KeyboardArrowDown
 import androidx.compose.material.icons.filled.Save
 import androidx.compose.material.icons.filled.Sync
+import androidx.compose.material.icons.filled.Warning
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.rotate
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.graphics.Brush
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
@@ -44,6 +51,11 @@ import com.ash.simpledataentry.presentation.dataEntry.components.OptionSetDropdo
 import com.ash.simpledataentry.presentation.dataEntry.components.OptionSetRadioGroup
 import com.ash.simpledataentry.domain.model.computeRenderType
 import com.ash.simpledataentry.domain.model.RenderType
+import com.ash.simpledataentry.presentation.core.Section
+import com.ash.simpledataentry.presentation.core.SectionNavigationBar
+import com.ash.simpledataentry.ui.theme.DHIS2Blue
+import com.ash.simpledataentry.ui.theme.DHIS2BlueDark
+import com.ash.simpledataentry.ui.theme.DHIS2BlueLight
 import kotlinx.coroutines.launch
 import java.text.SimpleDateFormat
 import java.util.*
@@ -79,6 +91,7 @@ fun EventCaptureScreen(
     val snackbarHostState = remember { SnackbarHostState() }
     val coroutineScope = rememberCoroutineScope()
     val context = LocalContext.current
+    val listState = rememberLazyListState()
 
     var showSaveDialog by remember { mutableStateOf(false) }
     var showSyncDialog by remember { mutableStateOf(false) }
@@ -218,6 +231,37 @@ fun EventCaptureScreen(
         }
     }
 
+    val sections = remember(state.dataValues) {
+        state.dataValues.groupBy { it.sectionName }
+    }
+    val sectionNames = remember(sections) {
+        sections.keys.toList()
+    }
+    var currentSectionIndex by remember(sectionNames) { mutableStateOf(0) }
+    var expandedSection by remember(sectionNames) { mutableStateOf(sectionNames.firstOrNull()) }
+    if (currentSectionIndex !in sectionNames.indices) {
+        currentSectionIndex = 0
+    }
+    if (expandedSection !in sectionNames) {
+        expandedSection = sectionNames.firstOrNull()
+    }
+    val currentSectionName = sectionNames.getOrNull(currentSectionIndex) ?: "Section"
+
+    val selectSection: (Int) -> Unit = { index ->
+        if (index in sectionNames.indices) {
+            currentSectionIndex = index
+            expandedSection = sectionNames[index]
+        }
+    }
+
+    LaunchedEffect(currentSectionIndex, sectionNames.size) {
+        if (sectionNames.isNotEmpty()) {
+            val sectionStartIndex = 3
+            val targetIndex = sectionStartIndex + currentSectionIndex
+            listState.animateScrollToItem(targetIndex)
+        }
+    }
+
     // Main screen with Material 3 Scaffold (reuse TrackerEnrollment pattern)
     Scaffold(
         topBar = {
@@ -239,27 +283,6 @@ fun EventCaptureScreen(
                 },
                 navigationIcon = navigationIcon,
                 actions = {
-                    // Save button
-                    IconButton(
-                        onClick = { viewModel.saveEvent() },
-                        enabled = state.canSave && !state.saveInProgress
-                    ) {
-                        if (state.saveInProgress) {
-                            CircularProgressIndicator(
-                                color = MaterialTheme.colorScheme.onSurface,
-                                modifier = Modifier.size(24.dp),
-                                strokeWidth = 2.dp
-                            )
-                        } else {
-                            Icon(
-                                imageVector = Icons.Default.Save,
-                                contentDescription = "Save Event",
-                                tint = if (state.canSave) MaterialTheme.colorScheme.onSurface
-                                      else MaterialTheme.colorScheme.onSurface.copy(alpha = 0.4f)
-                            )
-                        }
-                    }
-
                     // Sync button
                     IconButton(
                         onClick = { showSyncDialog = true },
@@ -279,23 +302,6 @@ fun EventCaptureScreen(
                             )
                         }
                     }
-
-                    // Complete button (if applicable)
-                    if (state.isEditMode) {
-                        IconButton(
-                            onClick = {
-                                // Toggle completion status - implement if needed
-                            },
-                            enabled = !state.saveInProgress
-                        ) {
-                            Icon(
-                                imageVector = Icons.Default.Check,
-                                contentDescription = if (state.isCompleted) "Mark Incomplete" else "Mark Complete",
-                                tint = if (state.isCompleted) MaterialTheme.colorScheme.primary
-                                      else MaterialTheme.colorScheme.onSurface
-                            )
-                        }
-                    }
                 }
             )
         },
@@ -311,6 +317,11 @@ fun EventCaptureScreen(
                         modifier = Modifier
                             .fillMaxSize()
                             .padding(paddingValues)
+                            .background(
+                                Brush.verticalGradient(
+                                    colors = listOf(DHIS2Blue, DHIS2BlueDark)
+                                )
+                            )
                             .padding(vertical = 16.dp)
                     ) {
                         repeat(3) {
@@ -327,6 +338,11 @@ fun EventCaptureScreen(
                         modifier = Modifier
                             .fillMaxSize()
                             .padding(paddingValues)
+                            .background(
+                                Brush.verticalGradient(
+                                    colors = listOf(DHIS2Blue, DHIS2BlueDark)
+                                )
+                            )
                             .padding(16.dp),
                         horizontalAlignment = Alignment.CenterHorizontally,
                         verticalArrangement = Arrangement.Center
@@ -344,161 +360,338 @@ fun EventCaptureScreen(
                     }
                 }
                 else -> {
-                    LazyColumn(
+                    val gradientBrush = Brush.verticalGradient(
+                        colors = listOf(DHIS2Blue, DHIS2BlueDark)
+                    )
+
+                    Column(
                         modifier = Modifier
                             .fillMaxSize()
                             .padding(paddingValues)
-                            .background(MaterialTheme.colorScheme.background),
-                        contentPadding = PaddingValues(16.dp),
-                        verticalArrangement = Arrangement.spacedBy(16.dp)
+                            .background(gradientBrush)
+                            .padding(horizontal = 20.dp, vertical = 24.dp)
                     ) {
-                    // Event metadata section
-                    item {
                         Card(
-                            modifier = Modifier.fillMaxWidth(),
-                            colors = CardDefaults.cardColors(
-                                containerColor = MaterialTheme.colorScheme.surfaceVariant
-                            )
+                            modifier = Modifier.fillMaxSize(),
+                            shape = RoundedCornerShape(24.dp),
+                            colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
+                            elevation = CardDefaults.cardElevation(defaultElevation = 8.dp)
                         ) {
                             Column(
-                                modifier = Modifier.padding(16.dp),
-                                verticalArrangement = Arrangement.spacedBy(12.dp)
+                                modifier = Modifier
+                                    .fillMaxSize()
+                                    .padding(16.dp)
                             ) {
-                                Text(
-                                    text = "Event Details",
-                                    style = MaterialTheme.typography.titleMedium,
-                                    fontWeight = FontWeight.Bold
-                                )
+                                Surface(
+                                    color = MaterialTheme.colorScheme.primary
+                                ) {
+                                    Row(
+                                        modifier = Modifier
+                                            .fillMaxWidth()
+                                            .padding(horizontal = 16.dp, vertical = 12.dp),
+                                        horizontalArrangement = Arrangement.spacedBy(12.dp),
+                                        verticalAlignment = Alignment.CenterVertically
+                                    ) {
+                                        androidx.compose.material3.Button(
+                                            onClick = { viewModel.saveEvent() },
+                                            enabled = state.canSave && !state.saveInProgress,
+                                            colors = androidx.compose.material3.ButtonDefaults.buttonColors(
+                                                containerColor = Color.White.copy(alpha = 0.2f),
+                                                contentColor = Color.White
+                                            ),
+                                            modifier = Modifier.weight(1f),
+                                            shape = RoundedCornerShape(16.dp)
+                                        ) {
+                                            Icon(
+                                                imageVector = Icons.Default.Save,
+                                                contentDescription = null,
+                                                modifier = Modifier.size(18.dp)
+                                            )
+                                            Spacer(modifier = Modifier.width(8.dp))
+                                            Text("Save")
+                                        }
 
-                                // Event date picker
-                                OutlinedTextField(
-                                    value = state.eventDate?.let {
-                                        SimpleDateFormat("dd/MM/yyyy", Locale.getDefault()).format(it)
-                                    } ?: "",
-                                    onValueChange = { },
-                                    label = { Text("Event Date *") },
-                                    readOnly = true,
-                                    modifier = Modifier.fillMaxWidth(),
-                                    trailingIcon = {
-                                        TextButton(onClick = { showDatePicker = true }) {
-                                            Text("Select")
+                                        androidx.compose.material3.Button(
+                                            onClick = {
+                                                coroutineScope.launch {
+                                                    val message = if (state.validationErrors.isEmpty()) {
+                                                        "All required fields are filled."
+                                                    } else {
+                                                        state.validationErrors.joinToString("\n")
+                                                    }
+                                                    snackbarHostState.showSnackbar(message)
+                                                }
+                                            },
+                                            enabled = !state.saveInProgress,
+                                            colors = androidx.compose.material3.ButtonDefaults.buttonColors(
+                                                containerColor = Color.White.copy(alpha = 0.2f),
+                                                contentColor = Color.White
+                                            ),
+                                            modifier = Modifier.weight(1f),
+                                            shape = RoundedCornerShape(16.dp)
+                                        ) {
+                                            Icon(
+                                                imageVector = Icons.Default.Warning,
+                                                contentDescription = null,
+                                                modifier = Modifier.size(18.dp)
+                                            )
+                                            Spacer(modifier = Modifier.width(8.dp))
+                                            Text("Validate")
+                                        }
+
+                                        androidx.compose.material3.Button(
+                                            onClick = { viewModel.completeEvent() },
+                                            enabled = state.isEditMode && !state.saveInProgress,
+                                            colors = androidx.compose.material3.ButtonDefaults.buttonColors(
+                                                containerColor = Color.White.copy(alpha = 0.2f),
+                                                contentColor = Color.White
+                                            ),
+                                            modifier = Modifier.weight(1f),
+                                            shape = RoundedCornerShape(16.dp)
+                                        ) {
+                                            Icon(
+                                                imageVector = Icons.Default.Check,
+                                                contentDescription = null,
+                                                modifier = Modifier.size(18.dp)
+                                            )
+                                            Spacer(modifier = Modifier.width(8.dp))
+                                            Text("Complete")
                                         }
                                     }
-                                )
+                                }
 
-                                // Organization unit picker (for standalone events)
-                                if (state.enrollmentId == null && state.availableOrganisationUnits.isNotEmpty()) {
-                                    OutlinedTextField(
-                                        value = state.availableOrganisationUnits.find {
-                                            it.id == state.selectedOrganisationUnitId
-                                        }?.name ?: "",
-                                        onValueChange = { },
-                                        label = { Text("Organisation Unit *") },
-                                        readOnly = true,
-                                        modifier = Modifier.fillMaxWidth(),
-                                        trailingIcon = {
-                                            TextButton(onClick = { showOrgUnitPicker = true }) {
-                                                Text("Select")
+                                if (sectionNames.isNotEmpty()) {
+                                    SectionNavigationBar(
+                                        currentSection = Section(currentSectionName),
+                                        currentSubsection = null,
+                                        sectionIndex = currentSectionIndex.coerceAtLeast(0),
+                                        totalSections = sectionNames.size.coerceAtLeast(1),
+                                        onPreviousSection = {
+                                            selectSection((currentSectionIndex - 1).coerceAtLeast(0))
+                                        },
+                                        onNextSection = {
+                                            selectSection((currentSectionIndex + 1).coerceAtMost(sectionNames.lastIndex))
+                                        },
+                                        onPreviousSubsection = {},
+                                        onNextSubsection = {},
+                                        hasSubsections = false
+                                    )
+                                }
+
+                                LazyColumn(
+                                    state = listState,
+                                    modifier = Modifier.weight(1f),
+                                    contentPadding = PaddingValues(8.dp),
+                                    verticalArrangement = Arrangement.spacedBy(16.dp)
+                                ) {
+                                    item {
+                                        Row(
+                                            verticalAlignment = Alignment.CenterVertically,
+                                            horizontalArrangement = Arrangement.spacedBy(12.dp)
+                                        ) {
+                                            Box(
+                                                modifier = Modifier
+                                                    .size(56.dp)
+                                                    .background(DHIS2BlueLight, CircleShape),
+                                                contentAlignment = Alignment.Center
+                                            ) {
+                                                Icon(
+                                                    imageVector = Icons.Default.Event,
+                                                    contentDescription = null,
+                                                    tint = DHIS2Blue,
+                                                    modifier = Modifier.size(28.dp)
+                                                )
+                                            }
+                                            Column {
+                                                Text(
+                                                    text = state.programStageName.ifBlank { "Event Details" },
+                                                    style = MaterialTheme.typography.titleMedium,
+                                                    fontWeight = FontWeight.SemiBold
+                                                )
+                                                Text(
+                                                    text = state.programName.ifBlank { "Event Capture" },
+                                                    style = MaterialTheme.typography.bodySmall,
+                                                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                                                )
                                             }
                                         }
-                                    )
-                                }
-                            }
-                        }
-                    }
+                                    }
 
-                    // Data values with nested accordion structure
-                    // Level 1: Sections (program stage sections)
-                    // Level 2+: Implied categories (inferred from data element names)
-                    // Leaf: Data value fields
-                    if (state.dataValues.isEmpty()) {
-                        item {
-                            Card(modifier = Modifier.fillMaxWidth()) {
-                                Column(modifier = Modifier.padding(16.dp)) {
-                                    Text(
-                                        text = "Event Data",
-                                        style = MaterialTheme.typography.titleMedium,
-                                        fontWeight = FontWeight.Bold
-                                    )
-                                    Text(
-                                        text = "No data elements found for this event",
-                                        style = MaterialTheme.typography.bodyMedium,
-                                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                        modifier = Modifier.padding(top = 8.dp)
-                                    )
-                                }
-                            }
-                        }
-                    } else {
-                        // Group data values by section
-                        val sections = state.dataValues.groupBy { it.sectionName }
+                                    item {
+                                        Surface(
+                                            color = DHIS2BlueLight.copy(alpha = 0.35f),
+                                            shape = RoundedCornerShape(12.dp)
+                                        ) {
+                                            Text(
+                                                text = "Offline mode supported. Event will sync when connected.",
+                                                style = MaterialTheme.typography.bodySmall,
+                                                color = MaterialTheme.colorScheme.onSurface,
+                                                modifier = Modifier.padding(12.dp)
+                                            )
+                                        }
+                                    }
 
-                        sections.forEach { (sectionName, sectionValues) ->
-                            item {
-                                EventSectionAccordion(
-                                    sectionName = sectionName,
-                                    dataValues = sectionValues,
-                                    impliedCombination = state.impliedCategoriesBySection[sectionName],
-                                    impliedMappings = state.impliedCategoryMappingsBySection[sectionName] ?: emptyList(),
-                                    onValueChange = { value, dataValue ->
-                                        viewModel.updateDataValue(value, dataValue)
-                                    },
-                                    programRuleEffect = state.programRuleEffect
-                                )
-                            }
-                        }
-                    }
+                                    // Event metadata section
+                                    item {
+                                        Column(
+                                            verticalArrangement = Arrangement.spacedBy(12.dp)
+                                        ) {
+                                            Text(
+                                                text = "Event Details",
+                                                style = MaterialTheme.typography.titleMedium,
+                                                fontWeight = FontWeight.Bold
+                                            )
 
-                    // Validation errors
-                    if (state.validationErrors.isNotEmpty()) {
-                        item {
-                            Card(
-                                modifier = Modifier.fillMaxWidth(),
-                                colors = CardDefaults.cardColors(
-                                    containerColor = MaterialTheme.colorScheme.errorContainer
-                                )
-                            ) {
-                                Column(
-                                    modifier = Modifier.padding(16.dp),
-                                    verticalArrangement = Arrangement.spacedBy(4.dp)
-                                ) {
-                                    Text(
-                                        text = "Validation Errors",
-                                        style = MaterialTheme.typography.titleSmall,
-                                        fontWeight = FontWeight.Bold,
-                                        color = MaterialTheme.colorScheme.onErrorContainer
-                                    )
-                                    state.validationErrors.forEach { error ->
-                                        Text(
-                                            text = "• $error",
-                                            style = MaterialTheme.typography.bodySmall,
-                                            color = MaterialTheme.colorScheme.onErrorContainer
-                                        )
+                                            // Event date picker
+                                            OutlinedTextField(
+                                                value = state.eventDate?.let {
+                                                    SimpleDateFormat("dd/MM/yyyy", Locale.getDefault()).format(it)
+                                                } ?: "",
+                                                onValueChange = { },
+                                                label = { Text("Event Date *") },
+                                                readOnly = true,
+                                                modifier = Modifier.fillMaxWidth(),
+                                                trailingIcon = {
+                                                    TextButton(onClick = { showDatePicker = true }) {
+                                                        Text("Select")
+                                                    }
+                                                }
+                                            )
+
+                                            // Organization unit picker (for standalone events)
+                                            if (state.enrollmentId == null && state.availableOrganisationUnits.isNotEmpty()) {
+                                                OutlinedTextField(
+                                                    value = state.availableOrganisationUnits.find {
+                                                        it.id == state.selectedOrganisationUnitId
+                                                    }?.name ?: "",
+                                                    onValueChange = { },
+                                                    label = { Text("Organisation Unit *") },
+                                                    readOnly = true,
+                                                    modifier = Modifier.fillMaxWidth(),
+                                                    trailingIcon = {
+                                                        TextButton(onClick = { showOrgUnitPicker = true }) {
+                                                            Text("Select")
+                                                        }
+                                                    }
+                                                )
+                                            }
+                                        }
+                                    }
+
+                                    // Data values with nested accordion structure
+                                    // Level 1: Sections (program stage sections)
+                                    // Level 2+: Implied categories (inferred from data element names)
+                                    // Leaf: Data value fields
+                                    if (state.dataValues.isEmpty()) {
+                                        item {
+                                            Column {
+                                                Text(
+                                                    text = "Event Data",
+                                                    style = MaterialTheme.typography.titleMedium,
+                                                    fontWeight = FontWeight.Bold
+                                                )
+                                                Text(
+                                                    text = "No data elements found for this event",
+                                                    style = MaterialTheme.typography.bodyMedium,
+                                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                                    modifier = Modifier.padding(top = 8.dp)
+                                                )
+                                            }
+                                        }
+                                    } else {
+                                        sectionNames.forEach { sectionName ->
+                                            val sectionValues = sections[sectionName] ?: emptyList()
+                                            item {
+                                                EventSectionAccordion(
+                                                    sectionName = sectionName,
+                                                    dataValues = sectionValues,
+                                                    impliedCombination = state.impliedCategoriesBySection[sectionName],
+                                                    impliedMappings = state.impliedCategoryMappingsBySection[sectionName] ?: emptyList(),
+                                                    isExpanded = expandedSection == sectionName,
+                                                    onToggle = {
+                                                        expandedSection = if (expandedSection == sectionName) {
+                                                            null
+                                                        } else {
+                                                            selectSection(sectionNames.indexOf(sectionName))
+                                                            sectionName
+                                                        }
+                                                    },
+                                                    onValueChange = { value, dataValue ->
+                                                        viewModel.updateDataValue(value, dataValue)
+                                                    },
+                                                    programRuleEffect = state.programRuleEffect
+                                                )
+                                            }
+                                        }
+                                    }
+
+                                    // Validation errors
+                                    if (state.validationErrors.isNotEmpty()) {
+                                        item {
+                                            Card(
+                                                modifier = Modifier.fillMaxWidth(),
+                                                colors = CardDefaults.cardColors(
+                                                    containerColor = MaterialTheme.colorScheme.errorContainer
+                                                )
+                                            ) {
+                                                Column(
+                                                    modifier = Modifier.padding(16.dp),
+                                                    verticalArrangement = Arrangement.spacedBy(4.dp)
+                                                ) {
+                                                    Text(
+                                                        text = "Validation Errors",
+                                                        style = MaterialTheme.typography.titleSmall,
+                                                        fontWeight = FontWeight.Bold,
+                                                        color = MaterialTheme.colorScheme.onErrorContainer
+                                                    )
+                                                    state.validationErrors.forEach { error ->
+                                                        Text(
+                                                            text = "• $error",
+                                                            style = MaterialTheme.typography.bodySmall,
+                                                            color = MaterialTheme.colorScheme.onErrorContainer
+                                                        )
+                                                    }
+                                                }
+                                            }
+                                        }
+                                    }
+
+                                    // Success message
+                                    state.successMessage?.let { message ->
+                                        item {
+                                            Card(
+                                                modifier = Modifier.fillMaxWidth(),
+                                                colors = CardDefaults.cardColors(
+                                                    containerColor = MaterialTheme.colorScheme.primaryContainer
+                                                )
+                                            ) {
+                                                Text(
+                                                    text = message,
+                                                    style = MaterialTheme.typography.bodyMedium,
+                                                    color = MaterialTheme.colorScheme.onPrimaryContainer,
+                                                    modifier = Modifier.padding(16.dp)
+                                                )
+                                            }
+                                        }
                                     }
                                 }
-                            }
-                        }
-                    }
 
-                    // Success message
-                    state.successMessage?.let { message ->
-                        item {
-                            Card(
-                                modifier = Modifier.fillMaxWidth(),
-                                colors = CardDefaults.cardColors(
-                                    containerColor = MaterialTheme.colorScheme.primaryContainer
-                                )
-                            ) {
-                                Text(
-                                    text = message,
-                                    style = MaterialTheme.typography.bodyMedium,
-                                    color = MaterialTheme.colorScheme.onPrimaryContainer,
-                                    modifier = Modifier.padding(16.dp)
-                                )
+                                TextButton(
+                                    onClick = {
+                                        if (hasUnsavedChanges) {
+                                            showSaveDialog = true
+                                            pendingNavAction.value = { navController.popBackStack() }
+                                        } else {
+                                            navController.popBackStack()
+                                        }
+                                    },
+                                    modifier = Modifier.align(Alignment.CenterHorizontally)
+                                ) {
+                                    Text("Cancel")
+                                }
                             }
                         }
                     }
-                }
                 }
             }
         }
@@ -515,15 +708,17 @@ private fun EventSectionAccordion(
     dataValues: List<DataValue>,
     impliedCombination: com.ash.simpledataentry.domain.model.ImpliedCategoryCombination?,
     impliedMappings: List<com.ash.simpledataentry.domain.model.ImpliedCategoryMapping>,
+    isExpanded: Boolean,
+    onToggle: () -> Unit,
     onValueChange: (String, DataValue) -> Unit,
     programRuleEffect: com.ash.simpledataentry.domain.model.ProgramRuleEffect?
 ) {
-    var isExpanded by remember { mutableStateOf(true) } // Sections expanded by default
-
     val rotationState by animateFloatAsState(
         targetValue = if (isExpanded) 180f else 0f,
         label = "Section rotation"
     )
+    val totalElements = dataValues.size
+    val elementsWithData = dataValues.count { !it.value.isNullOrBlank() }
 
     Column(modifier = Modifier.fillMaxWidth()) {
         // Section header (collapsible)
@@ -531,7 +726,7 @@ private fun EventSectionAccordion(
             modifier = Modifier
                 .fillMaxWidth()
                 .heightIn(min = 56.dp)
-                .clickable { isExpanded = !isExpanded },
+                .clickable { onToggle() },
             color = MaterialTheme.colorScheme.primaryContainer,
             shape = MaterialTheme.shapes.medium
         ) {
@@ -548,13 +743,11 @@ private fun EventSectionAccordion(
                         style = MaterialTheme.typography.titleMedium,
                         fontWeight = FontWeight.Bold
                     )
-                    if (impliedCombination != null) {
-                        Text(
-                            text = "${impliedCombination.categories.size} category levels detected",
-                            style = MaterialTheme.typography.bodySmall,
-                            color = MaterialTheme.colorScheme.onPrimaryContainer.copy(alpha = 0.7f)
-                        )
-                    }
+                    Text(
+                        text = "($elementsWithData/$totalElements elements)",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onPrimaryContainer.copy(alpha = 0.7f)
+                    )
                 }
                 Icon(
                     imageVector = Icons.Default.KeyboardArrowDown,
@@ -834,7 +1027,7 @@ private fun EventDataValueField(
                     trailingIcon = { ExposedDropdownMenuDefaults.TrailingIcon(expanded = expanded) },
                     modifier = Modifier
                         .fillMaxWidth()
-                        .menuAnchor()
+                        .menuAnchor(MenuAnchorType.PrimaryNotEditable, enabled = true)
                 )
 
                 ExposedDropdownMenu(

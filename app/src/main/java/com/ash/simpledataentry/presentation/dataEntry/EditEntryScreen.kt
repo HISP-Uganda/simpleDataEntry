@@ -12,6 +12,7 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.KeyboardArrowDown
 import androidx.compose.material.icons.filled.Save
 import androidx.compose.material3.*
+import androidx.compose.foundation.BorderStroke
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -43,17 +44,20 @@ import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.lazy.rememberLazyListState
-import androidx.compose.material.icons.filled.ArrowBack
+import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.Sync
 import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.CheckCircle
+import androidx.compose.material.icons.filled.Warning
 import androidx.compose.ui.platform.LocalContext
 import com.ash.simpledataentry.presentation.core.CompletionProgressOverlay
 import com.ash.simpledataentry.presentation.core.CompletionAction
 import androidx.compose.foundation.relocation.BringIntoViewRequester
 import androidx.compose.foundation.relocation.bringIntoViewRequester
 import androidx.compose.ui.platform.LocalFocusManager
-import com.ash.simpledataentry.presentation.dataEntry.components.SectionNavigator
+import com.ash.simpledataentry.presentation.core.Section
+import com.ash.simpledataentry.presentation.core.SectionNavigationBar
+import com.ash.simpledataentry.presentation.core.Subsection
 import com.ash.simpledataentry.presentation.core.LoadingOperation
 import com.ash.simpledataentry.presentation.core.LoadingProgress
 import com.ash.simpledataentry.presentation.core.ShimmerFormSection
@@ -338,14 +342,24 @@ fun DataElementAccordion(
 ) {
     val bringIntoViewRequester = remember { BringIntoViewRequester() }
     val coroutineScope = rememberCoroutineScope()
+    LaunchedEffect(expanded) {
+        if (expanded) {
+            coroutineScope.launch {
+                bringIntoViewRequester.bringIntoView()
+            }
+        }
+    }
 
-    Surface(
+    Card(
         modifier = Modifier
             .fillMaxWidth()
-            .padding(vertical = 4.dp),
-        color = MaterialTheme.colorScheme.surface,
-        shape = MaterialTheme.shapes.medium,
-        shadowElevation = 1.dp
+            .padding(vertical = 6.dp),
+        colors = CardDefaults.cardColors(
+            containerColor = MaterialTheme.colorScheme.surface
+        ),
+        border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline.copy(alpha = 0.3f)),
+        elevation = CardDefaults.cardElevation(defaultElevation = 2.dp),
+        shape = RoundedCornerShape(12.dp)
     ) {
         Row(modifier = Modifier.fillMaxWidth()) {
             // Left accent border
@@ -373,7 +387,7 @@ fun DataElementAccordion(
                                 }
                             }
                         }
-                        .padding(horizontal = 12.dp, vertical = 12.dp),
+                        .padding(horizontal = 16.dp, vertical = 14.dp),
                     horizontalArrangement = Arrangement.SpaceBetween,
                     verticalAlignment = Alignment.CenterVertically
                 ) {
@@ -406,7 +420,7 @@ fun DataElementAccordion(
                     Column(
                         modifier = Modifier
                             .fillMaxWidth()
-                            .padding(start = 8.dp, end = 8.dp, bottom = 12.dp)
+                            .padding(start = 12.dp, end = 12.dp, bottom = 16.dp)
                             .bringIntoViewRequester(bringIntoViewRequester)
                     ) {
                         content()
@@ -431,10 +445,10 @@ fun CategoryAccordion(
     val bringIntoViewRequester = remember { BringIntoViewRequester() }
     val coroutineScope = rememberCoroutineScope()
     Column(modifier = Modifier.fillMaxWidth()) {
-        Surface(
+        Card(
             modifier = Modifier
                 .fillMaxWidth()
-                .heightIn(min = 48.dp)
+                .heightIn(min = 44.dp)
                 .clickable {
                     onToggleExpand()
                     if (!expanded) {
@@ -443,19 +457,23 @@ fun CategoryAccordion(
                         }
                     }
                 },
-            color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.7f),
-            shape = MaterialTheme.shapes.small
+            colors = CardDefaults.cardColors(
+                containerColor = MaterialTheme.colorScheme.surface
+            ),
+            border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline.copy(alpha = 0.25f)),
+            elevation = CardDefaults.cardElevation(defaultElevation = 1.dp),
+            shape = RoundedCornerShape(10.dp)
         ) {
             Row(
                 modifier = Modifier
-                    .padding(horizontal = 16.dp, vertical = 12.dp)
+                    .padding(horizontal = 14.dp, vertical = 10.dp)
                     .fillMaxWidth(),
                 horizontalArrangement = Arrangement.SpaceBetween,
                 verticalAlignment = Alignment.CenterVertically
             ) {
                 Text(
                     text = header,
-                    style = MaterialTheme.typography.bodyLarge,
+                    style = MaterialTheme.typography.bodyMedium,
                     fontWeight = FontWeight.Medium,
                     maxLines = 2,
                     overflow = TextOverflow.Ellipsis,
@@ -473,7 +491,7 @@ fun CategoryAccordion(
         AnimatedVisibility(visible = expanded) {
             Column(modifier = Modifier
                 .fillMaxWidth()
-                .padding(start = 8.dp, top = 8.dp)
+                .padding(start = 12.dp, top = 8.dp)
                 .bringIntoViewRequester(bringIntoViewRequester)) {
                 content()
             }
@@ -499,6 +517,20 @@ fun CategoryAccordionRecursive(
     expandedAccordions: Map<List<String>, String?>,
     onToggle: (List<String>, String) -> Unit,
 ) {
+    if (categories.size == 1 &&
+        categories.first().second.size == 1 &&
+        categories.first().second.first().second.equals("default", ignoreCase = true)
+    ) {
+        values.forEach { dataValue ->
+            DataElementRow(
+                dataElementName = dataValue.dataElementName,
+                fields = listOf(dataValue),
+                onValueChange = onValueChange,
+                viewModel = viewModel
+            )
+        }
+        return
+    }
     if (categories.isEmpty()) {
         values.forEach { dataValue ->
             DataElementRow(
@@ -630,14 +662,20 @@ fun EditEntryScreen(
     val focusManager = LocalFocusManager.current
     val listState = rememberLazyListState()
     val syncProgress = state.detailedSyncProgress
+    val navigationProgress = state.navigationProgress
     val overlayUiState: UiState<*> = remember(
         syncProgress,
+        navigationProgress,
         state.saveInProgress,
         state.isEditMode
     ) {
         when {
             syncProgress != null -> UiState.Loading(
                 LoadingOperation.Syncing(syncProgress)
+            )
+            navigationProgress != null -> UiState.Loading(
+                LoadingOperation.Navigation(navigationProgress),
+                LoadingProgress(message = navigationProgress.phaseDetail.ifBlank { navigationProgress.phaseTitle })
             )
             state.saveInProgress -> UiState.Loading(
                 LoadingOperation.Saving(),
@@ -679,7 +717,7 @@ fun EditEntryScreen(
             }
         }) {
             Icon(
-                imageVector = Icons.Default.ArrowBack,
+                        imageVector = Icons.AutoMirrored.Filled.ArrowBack,
                 contentDescription = "Back"
             )
         }
@@ -845,8 +883,8 @@ fun EditEntryScreen(
         }
     }
     
-    LaunchedEffect(state.isLoading, state.dataValues) {
-        if (!state.isLoading && state.dataValues.isNotEmpty()) {
+    LaunchedEffect(state.isLoading) {
+        if (!state.isLoading) {
             delay(300)
             isUIReady = true
         }
@@ -891,9 +929,23 @@ fun EditEntryScreen(
     }
 
     // Resolve attribute option combo display name for the title
-    val attrComboName = state.attributeOptionCombos.find { it.first == attributeOptionCombo }?.second ?: attributeOptionCombo
+    val attrComboName = state.attributeOptionComboName.ifBlank {
+        state.attributeOptionCombos.find { it.first == attributeOptionCombo }?.second.orEmpty()
+    }
+    val showAttrComboName = attrComboName.isNotBlank() &&
+        !attrComboName.equals("default", ignoreCase = true)
+    val entryTitle = buildString {
+        append(java.net.URLDecoder.decode(datasetName, "UTF-8"))
+        append(" - ")
+        append(period.replace("Period(id=", "").replace(")", ""))
+        if (showAttrComboName) {
+            append(" - ")
+            append(attrComboName)
+        }
+    }
     BaseScreen(
-        title = "${java.net.URLDecoder.decode(datasetName, "UTF-8")} - ${period.replace("Period(id=", "").replace(")", "")} - $attrComboName",
+        title = entryTitle,
+        subtitle = "Data entry form",
         navController = navController,
         navigationIcon = baseScreenNavIcon,
         // PHASE 4: Wire up progress indicator for form loading and sync operations
@@ -904,26 +956,7 @@ fun EditEntryScreen(
             p.overallPercentage.toFloat() / 100f
         },
         actions = {
-            // Add save button to header bar
-            IconButton(
-                onClick = { viewModel.saveAllDataValues(context) },
-                enabled = !state.saveInProgress
-            ) {
-                if (state.saveInProgress) {
-                    CircularProgressIndicator(
-                        color = MaterialTheme.colorScheme.onSurface,
-                        modifier = Modifier.size(24.dp),
-                        strokeWidth = 2.dp
-                    )
-                } else {
-                    Icon(
-                        imageVector = Icons.Default.Save,
-                        contentDescription = "Save",
-                        tint = MaterialTheme.colorScheme.onSurface
-                    )
-                }
-            }
-            // Add sync button to top bar
+            // Keep sync button in the top bar
             IconButton(
                 onClick = {
                     showSyncDialog.value = true
@@ -941,27 +974,6 @@ fun EditEntryScreen(
                         imageVector = Icons.Default.Sync,
                         contentDescription = "Sync",
                         tint = MaterialTheme.colorScheme.onSurface
-                    )
-                }
-            }
-            // Complete button with enhanced completion dialog
-            IconButton(
-                onClick = {
-                    showCompleteDialog = true
-                },
-                enabled = !state.isLoading && !state.isValidating && state.completionProgress == null
-            ) {
-                if (state.isValidating || state.completionProgress != null) {
-                    CircularProgressIndicator(
-                        modifier = Modifier.size(24.dp),
-                        strokeWidth = 2.dp,
-                        color = MaterialTheme.colorScheme.primary
-                    )
-                } else {
-                    Icon(
-                        imageVector = if (state.isCompleted) Icons.Default.CheckCircle else Icons.Default.Check,
-                        contentDescription = if (state.isCompleted) "Already Complete" else "Mark Complete",
-                        tint = if (state.isCompleted) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurface
                     )
                 }
             }
@@ -991,203 +1003,339 @@ fun EditEntryScreen(
                         }
                     }
                 } else {
+                    val sectionNames = remember(state.dataElementGroupedSections) {
+                        state.dataElementGroupedSections.keys.toList()
+                    }
+                    val currentSectionName = sectionNames.getOrNull(state.currentSectionIndex) ?: "Section"
+                    val subsectionGroups = remember(state.sectionGroupingStrategies, currentSectionName) {
+                        state.sectionGroupingStrategies[currentSectionName]
+                            ?.filter { it.shouldRenderAsGroup() }
+                            ?.filter { it.groupTitle.isNotBlank() }
+                            ?.filter {
+                                it.groupType != GroupType.RADIO_GROUP &&
+                                    it.groupType != GroupType.CHECKBOX_GROUP
+                            }
+                            ?.filter { !it.groupTitle.equals("related fields", ignoreCase = true) }
+                            ?.distinctBy { it.groupTitle }
+                            ?: emptyList()
+                    }
+                    val subsectionTitles = remember(subsectionGroups) {
+                        subsectionGroups.map { it.groupTitle }
+                    }
+                    var subsectionIndex by remember(currentSectionName, subsectionTitles) { mutableStateOf(0) }
+                    if (subsectionIndex !in subsectionTitles.indices) {
+                        subsectionIndex = 0
+                    }
+                    val focusSubsection: (Int) -> Unit = focusSubsection@{ index ->
+                        val group = subsectionGroups.getOrNull(index) ?: return@focusSubsection
+                        val targetElementId = group.members.firstOrNull()?.dataElement ?: return@focusSubsection
+                        val elementKey = "element_$targetElementId"
+                        expandedAccordions.value = mapOf(emptyList<String>() to elementKey)
+                    }
+                    LaunchedEffect(state.currentSectionIndex, state.dataElementGroupedSections) {
+                        val sectionName = sectionNames.getOrNull(state.currentSectionIndex) ?: return@LaunchedEffect
+                        val elementGroups = state.dataElementGroupedSections[sectionName] ?: return@LaunchedEffect
+                        val firstElementId = elementGroups.keys.firstOrNull() ?: return@LaunchedEffect
+                        val elementKey = "element_$firstElementId"
+                        if (expandedAccordions.value[emptyList()] != elementKey) {
+                            expandedAccordions.value = mapOf(emptyList<String>() to elementKey)
+                        }
+                    }
+
                     Box(modifier = Modifier.fillMaxSize()) {
                         Column(
                             modifier = Modifier
                                 .fillMaxSize()
                                 .background(MaterialTheme.colorScheme.background)
-                                .padding(bottom = 96.dp)
+                                .padding(bottom = 16.dp)
                         ) {
+                            Surface(
+                                color = MaterialTheme.colorScheme.primary
+                            ) {
+                                Row(
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .padding(horizontal = 16.dp, vertical = 12.dp),
+                                    horizontalArrangement = Arrangement.spacedBy(12.dp),
+                                    verticalAlignment = Alignment.CenterVertically
+                                ) {
+                                    androidx.compose.material3.Button(
+                                        onClick = { viewModel.saveAllDataValues(context) },
+                                        enabled = !state.saveInProgress,
+                                        colors = androidx.compose.material3.ButtonDefaults.buttonColors(
+                                            containerColor = Color.White.copy(alpha = 0.2f),
+                                            contentColor = Color.White
+                                        ),
+                                        modifier = Modifier.weight(1f),
+                                        shape = RoundedCornerShape(16.dp)
+                                    ) {
+                                        Icon(
+                                            imageVector = Icons.Default.Save,
+                                            contentDescription = null,
+                                            modifier = Modifier.size(18.dp)
+                                        )
+                                        Spacer(modifier = Modifier.width(8.dp))
+                                        Text("Save")
+                                    }
+
+                                    androidx.compose.material3.Button(
+                                        onClick = { viewModel.startValidationForCompletion() },
+                                        enabled = !state.isValidating && !state.isLoading,
+                                        colors = androidx.compose.material3.ButtonDefaults.buttonColors(
+                                            containerColor = Color.White.copy(alpha = 0.2f),
+                                            contentColor = Color.White
+                                        ),
+                                        modifier = Modifier.weight(1f),
+                                        shape = RoundedCornerShape(16.dp)
+                                    ) {
+                                        Icon(
+                                            imageVector = Icons.Default.Warning,
+                                            contentDescription = null,
+                                            modifier = Modifier.size(18.dp)
+                                        )
+                                        Spacer(modifier = Modifier.width(8.dp))
+                                        Text("Validate")
+                                    }
+
+                                    androidx.compose.material3.Button(
+                                        onClick = { showCompleteDialog = true },
+                                        enabled = !state.isLoading && !state.isValidating && state.completionProgress == null,
+                                        colors = androidx.compose.material3.ButtonDefaults.buttonColors(
+                                            containerColor = Color.White.copy(alpha = 0.2f),
+                                            contentColor = Color.White
+                                        ),
+                                        modifier = Modifier.weight(1f),
+                                        shape = RoundedCornerShape(16.dp)
+                                    ) {
+                                        Icon(
+                                            imageVector = Icons.Default.Check,
+                                            contentDescription = null,
+                                            modifier = Modifier.size(18.dp)
+                                        )
+                                        Spacer(modifier = Modifier.width(8.dp))
+                                        Text("Complete")
+                                    }
+                                }
+                            }
+
+                            SectionNavigationBar(
+                                currentSection = Section(currentSectionName),
+                                currentSubsection = subsectionTitles.getOrNull(subsectionIndex)
+                                    ?.let { Subsection(it) },
+                                sectionIndex = state.currentSectionIndex.coerceAtLeast(0),
+                                totalSections = state.totalSections.coerceAtLeast(1),
+                                onPreviousSection = { viewModel.goToPreviousSection() },
+                                onNextSection = { viewModel.goToNextSection() },
+                                onPreviousSubsection = {
+                                    val nextIndex = (subsectionIndex - 1).coerceAtLeast(0)
+                                    subsectionIndex = nextIndex
+                                    focusSubsection(nextIndex)
+                                },
+                                onNextSubsection = {
+                                    val nextIndex = (subsectionIndex + 1).coerceAtMost(subsectionTitles.lastIndex)
+                                    subsectionIndex = nextIndex
+                                    focusSubsection(nextIndex)
+                                },
+                                hasSubsections = subsectionTitles.isNotEmpty()
+                            )
+
                             if (state.dataValues.isEmpty()) {
                                 Text(
                                     text = "No data elements found for this dataset/period/org unit.",
                                     color = MaterialTheme.colorScheme.error,
                                     modifier = Modifier.align(Alignment.CenterHorizontally)
                                 )
+                                Spacer(modifier = Modifier.height(80.dp))
                             } else {
                                 LazyColumn(
                                     state = listState,
                                     verticalArrangement = Arrangement.spacedBy(8.dp),
                                     modifier = Modifier.weight(1f)
                                 ) {
-                            // Render sections as top-level accordions with proper scrolling integration
-                            itemsIndexed(
-                                items = state.dataElementGroupedSections.entries.toList(),
-                                key = { _, (sectionName, _) -> "section_$sectionName" }
-                            ) { sectionIndex, (sectionName, elementGroups) ->
-                                // PERFORMANCE OPTIMIZATION: Use pre-computed data element ordering from ViewModel state
-                                // This eliminates expensive filtering/grouping/mapping on every render
-                                val dataElementOrder = state.dataElementOrdering[sectionName] ?: emptyMap()
+                                    // Render sections as top-level accordions with proper scrolling integration
+                                    itemsIndexed(
+                                        items = state.dataElementGroupedSections.entries.toList(),
+                                        key = { _, (sectionName, _) -> "section_$sectionName" }
+                                    ) { sectionIndex, (sectionName, elementGroups) ->
+                                        // PERFORMANCE OPTIMIZATION: Use pre-computed data element ordering from ViewModel state
+                                        // This eliminates expensive filtering/grouping/mapping on every render
+                                        val dataElementOrder = state.dataElementOrdering[sectionName] ?: emptyMap()
 
-                                val sectionIsExpanded = sectionIndex == state.currentSectionIndex
-                                // Count data elements that have any data entered (not individual fields)
-                                val elementsWithData = elementGroups.count { (_, dataValues) ->
-                                    dataValues.any { !it.value.isNullOrBlank() }
-                                }
-                                val totalElements = elementGroups.size
-                                val bringIntoViewRequester = remember { BringIntoViewRequester() }
-                                
-                                // Check if ALL data elements in this section have default category combinations
-                                val allElementsHaveDefaultCategories = elementGroups.values.all { dataValues ->
-                                    dataValues.all { dataValue ->
-                                        val structure = state.categoryComboStructures[dataValue.categoryOptionCombo] ?: emptyList()
-                                        structure.isEmpty() || (structure.size == 1 && structure[0].first.lowercase().contains("default"))
-                                    }
-                                }
-                                
-                                // Section Header Accordion
-                                Surface(
-                                    modifier = Modifier
-                                        .fillMaxWidth()
-                                        .heightIn(min = 72.dp, max = 96.dp) // Allow some growth for long titles
-                                        .clickable {
-                                            viewModel.setCurrentSectionIndex(sectionIndex)
-                                            if (!sectionIsExpanded) {
-                                                coroutineScope.launch {
-                                                    bringIntoViewRequester.bringIntoView()
-                                                }
-                                            }
-                                        },
-                                    color = MaterialTheme.colorScheme.primaryContainer,
-                                    shape = MaterialTheme.shapes.medium
-                                ) {
-                                    Row(
-                                        modifier = Modifier
-                                            .padding(16.dp)
-                                            .bringIntoViewRequester(bringIntoViewRequester)
-                                            .fillMaxWidth(),
-                                        horizontalArrangement = Arrangement.SpaceBetween,
-                                        verticalAlignment = Alignment.CenterVertically
-                                    ) {
-                                        Row(
-                                            modifier = Modifier.weight(1f),
-                                            verticalAlignment = Alignment.CenterVertically
-                                        ) {
-                                            Text(
-                                                text = sectionName,
-                                                style = MaterialTheme.typography.titleMedium,
-                                                fontWeight = FontWeight.Bold,
-                                                maxLines = 2,
-                                                overflow = TextOverflow.Ellipsis,
-                                                lineHeight = 20.sp, // Explicit line height for consistency
-                                                modifier = Modifier.weight(1f, fill = false)
-                                            )
-                                            Spacer(modifier = Modifier.width(8.dp))
-                                            Text(
-                                                text = "($elementsWithData/$totalElements elements)",
-                                                style = MaterialTheme.typography.bodyMedium,
-                                                color = MaterialTheme.colorScheme.onPrimaryContainer,
-                                                maxLines = 1
-                                            )
+                                        val sectionIsExpanded = sectionIndex == state.currentSectionIndex
+                                        // Count data elements that have any data entered (not individual fields)
+                                        val elementsWithData = elementGroups.count { (_, dataValues) ->
+                                            dataValues.any { !it.value.isNullOrBlank() }
                                         }
-                                        Icon(
-                                            imageVector = Icons.Default.KeyboardArrowDown,
-                                            contentDescription = "Expand/Collapse Section",
-                                            modifier = Modifier
-                                                .rotate(if (sectionIsExpanded) 180f else 0f)
-                                                .size(24.dp)
-                                        )
-                                    }
-                                }
-                                
-                                // Section Content - Use key to prevent unnecessary recomposition
-                                AnimatedVisibility(
-                                    visible = sectionIsExpanded,
-                                    modifier = Modifier.fillMaxWidth()
-                                ) {
-                                    // Memoize the section content to prevent recomposition on every animation frame
-                                    val sectionContent = remember(sectionName, elementGroups, state.radioButtonGroups) {
-                                        elementGroups
-                                    }
+                                        val totalElements = elementGroups.size
+                                        val bringIntoViewRequester = remember { BringIntoViewRequester() }
 
-                                    Column(
-                                        modifier = Modifier.fillMaxWidth(),
-                                        verticalArrangement = Arrangement.spacedBy(8.dp)
-                                    ) {
-                                        if (allElementsHaveDefaultCategories) {
-                                            // All elements have default categories - render as simple vertical list
-                                            Column(
+                                        // Check if ALL data elements in this section have default category combinations
+                                        val allElementsHaveDefaultCategories = elementGroups.values.all { dataValues ->
+                                            dataValues.all { dataValue ->
+                                                val structure = state.categoryComboStructures[dataValue.categoryOptionCombo] ?: emptyList()
+                                                structure.isEmpty() || (structure.size == 1 && structure[0].first.lowercase().contains("default"))
+                                            }
+                                        }
+
+                                        Card(
+                                            modifier = Modifier
+                                                .fillMaxWidth()
+                                                .bringIntoViewRequester(bringIntoViewRequester),
+                                            colors = CardDefaults.cardColors(
+                                                containerColor = MaterialTheme.colorScheme.surface
+                                            ),
+                                            border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline.copy(alpha = 0.35f)),
+                                            elevation = CardDefaults.cardElevation(defaultElevation = 2.dp),
+                                            shape = RoundedCornerShape(14.dp)
+                                        ) {
+                                            // Section Header Accordion
+                                            Row(
                                                 modifier = Modifier
                                                     .fillMaxWidth()
-                                                    .padding(horizontal = 16.dp),
-                                                verticalArrangement = Arrangement.spacedBy(8.dp)
-                                            ) {
-                                                // Collect all data elements for this section
-                                                val allDataElements = sectionContent.values.flatten()
-
-                                                // Track which fields are part of grouped radio buttons
-                                                val fieldsInGroups = state.radioButtonGroups.values.flatten().toSet()
-
-                                                // Render grouped radio buttons first
-                                                state.radioButtonGroups.forEach { (groupTitle, dataElementIds) ->
-                                                    // Only render groups where at least one field is in this section
-                                                    val groupFields = allDataElements.filter { it.dataElement in dataElementIds }
-                                                    if (groupFields.isNotEmpty()) {
-                                                        // Get optionSet if available, otherwise provide empty one
-                                                        // Note: GroupedRadioButtons doesn't actually use optionSet, it's just for API compatibility
-                                                        val optionSet = groupFields.firstOrNull()?.let { state.optionSets[it.dataElement] }
-                                                            ?: com.ash.simpledataentry.domain.model.OptionSet(id = "", name = "", options = emptyList())
-
-                                                        // Find which field (if any) has value "YES" or "true"
-                                                        val selectedFieldId = groupFields.firstOrNull {
-                                                            it.value?.lowercase() in listOf("yes", "true", "1")
-                                                        }?.dataElement
-
-                                                        com.ash.simpledataentry.presentation.dataEntry.components.GroupedRadioButtons(
-                                                            groupTitle = groupTitle,
-                                                            fields = groupFields,
-                                                            selectedFieldId = selectedFieldId,
-                                                            optionSet = optionSet,
-                                                            enabled = true,
-                                                            onFieldSelected = { selectedDataElementId ->
-                                                                // Set selected field to YES, others to NO
-                                                                groupFields.forEach { field ->
-                                                                    val newValue = if (field.dataElement == selectedDataElementId) "true" else "false"
-                                                                    onValueChange(newValue, field)
-                                                                }
-                                                            },
-                                                            modifier = Modifier.fillMaxWidth()
-                                                        )
-                                                    }
-                                                }
-
-                                                // Then render individual fields (excluding grouped ones)
-                                                // Use remember to prevent recomputation on every recomposition
-                                                val individualFields = remember(sectionContent, fieldsInGroups, dataElementOrder) {
-                                                    sectionContent.entries
-                                                        .sortedBy { dataElementOrder[it.key] ?: Int.MAX_VALUE }
-                                                        .flatMap { (_, dataValues) ->
-                                                            dataValues.filter { it.dataElement !in fieldsInGroups }
+                                                    .heightIn(min = 72.dp, max = 96.dp)
+                                                    .clickable {
+                                                        viewModel.setCurrentSectionIndex(sectionIndex)
+                                                        if (!sectionIsExpanded) {
+                                                            coroutineScope.launch {
+                                                                bringIntoViewRequester.bringIntoView()
+                                                            }
                                                         }
+                                                    }
+                                                    .padding(horizontal = 16.dp, vertical = 14.dp),
+                                                horizontalArrangement = Arrangement.SpaceBetween,
+                                                verticalAlignment = Alignment.CenterVertically
+                                            ) {
+                                                Row(
+                                                    modifier = Modifier.weight(1f),
+                                                    verticalAlignment = Alignment.CenterVertically
+                                                ) {
+                                                    Text(
+                                                        text = sectionName,
+                                                        style = MaterialTheme.typography.titleMedium,
+                                                        fontWeight = FontWeight.Bold,
+                                                        maxLines = 2,
+                                                        overflow = TextOverflow.Ellipsis,
+                                                        lineHeight = 20.sp,
+                                                        modifier = Modifier.weight(1f, fill = false)
+                                                    )
+                                                    Spacer(modifier = Modifier.width(8.dp))
+                                                    Text(
+                                                        text = "($elementsWithData/$totalElements elements)",
+                                                        style = MaterialTheme.typography.bodyMedium,
+                                                        color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.7f),
+                                                        maxLines = 1
+                                                    )
+                                                }
+                                                Icon(
+                                                    imageVector = Icons.Default.KeyboardArrowDown,
+                                                    contentDescription = "Expand/Collapse Section",
+                                                    modifier = Modifier
+                                                        .rotate(if (sectionIsExpanded) 180f else 0f)
+                                                        .size(24.dp)
+                                                )
+                                            }
+
+                                            // Section Content - Use key to prevent unnecessary recomposition
+                                            AnimatedVisibility(
+                                                visible = sectionIsExpanded,
+                                                modifier = Modifier.fillMaxWidth()
+                                            ) {
+                                                // Memoize the section content to prevent recomposition on every animation frame
+                                                val sectionContent = remember(sectionName, elementGroups, state.radioButtonGroups) {
+                                                    elementGroups
                                                 }
 
-                                                individualFields.forEach { dataValue ->
-                                                    key("field_${dataValue.dataElement}_${dataValue.categoryOptionCombo}") {
-                                                        DataValueField(
-                                                            dataValue = dataValue,
-                                                            onValueChange = { value -> onValueChange(value, dataValue) },
-                                                            viewModel = viewModel
+                                                Column(
+                                                    modifier = Modifier
+                                                        .fillMaxWidth()
+                                                        .padding(start = 12.dp, end = 12.dp, bottom = 12.dp),
+                                                    verticalArrangement = Arrangement.spacedBy(8.dp)
+                                                ) {
+                                                    if (allElementsHaveDefaultCategories) {
+                                                        // All elements have default categories - render as simple vertical list
+                                                        Column(
+                                                            modifier = Modifier
+                                                                .fillMaxWidth()
+                                                                .padding(horizontal = 16.dp),
+                                                            verticalArrangement = Arrangement.spacedBy(8.dp)
+                                                        ) {
+                                                            // Collect all data elements for this section
+                                                            val allDataElements = sectionContent.values.flatten()
+
+                                                            // Track which fields are part of grouped radio buttons
+                                                            val fieldsInGroups = state.radioButtonGroups.values.flatten().toSet()
+
+                                                            // Render grouped radio buttons first
+                                                            state.radioButtonGroups.forEach { (groupTitle, dataElementIds) ->
+                                                                // Only render groups where at least one field is in this section
+                                                                val groupFields = allDataElements.filter { it.dataElement in dataElementIds }
+                                                                if (groupFields.isNotEmpty()) {
+                                                                    // Get optionSet if available, otherwise provide empty one
+                                                                    // Note: GroupedRadioButtons doesn't actually use optionSet, it's just for API compatibility
+                                                                    val optionSet = groupFields.firstOrNull()?.let { state.optionSets[it.dataElement] }
+                                                                        ?: com.ash.simpledataentry.domain.model.OptionSet(id = "", name = "", options = emptyList())
+
+                                                                    // Find which field (if any) has value "YES" or "true"
+                                                                    val selectedFieldId = groupFields.firstOrNull {
+                                                                        it.value?.lowercase() in listOf("yes", "true", "1")
+                                                                    }?.dataElement
+
+                                                                    com.ash.simpledataentry.presentation.dataEntry.components.GroupedRadioButtons(
+                                                                        groupTitle = groupTitle,
+                                                                        fields = groupFields,
+                                                                        selectedFieldId = selectedFieldId,
+                                                                        optionSet = optionSet,
+                                                                        enabled = true,
+                                                                        onFieldSelected = { selectedDataElementId ->
+                                                                            // Set selected field to YES, others to NO
+                                                                            groupFields.forEach { field ->
+                                                                                val newValue = if (field.dataElement == selectedDataElementId) "true" else "false"
+                                                                                onValueChange(newValue, field)
+                                                                            }
+                                                                        },
+                                                                        modifier = Modifier.fillMaxWidth()
+                                                                    )
+                                                                }
+                                                            }
+
+                                                            // Then render individual fields (excluding grouped ones)
+                                                            // Use remember to prevent recomputation on every recomposition
+                                                            val individualFields = remember(sectionContent, fieldsInGroups, dataElementOrder) {
+                                                                sectionContent.entries
+                                                                    .sortedBy { dataElementOrder[it.key] ?: Int.MAX_VALUE }
+                                                                    .flatMap { (_, dataValues) ->
+                                                                        dataValues.filter { it.dataElement !in fieldsInGroups }
+                                                                    }
+                                                            }
+
+                                                            individualFields.forEach { dataValue ->
+                                                                key("field_${dataValue.dataElement}_${dataValue.categoryOptionCombo}") {
+                                                                    DataValueField(
+                                                                        dataValue = dataValue,
+                                                                        onValueChange = { value -> onValueChange(value, dataValue) },
+                                                                        viewModel = viewModel
+                                                                    )
+                                                                }
+                                                            }
+                                                        }
+                                                    } else {
+                                                        val sectionValues = sectionContent.values.flatten()
+                                                        SectionContent(
+                                                            sectionName = sectionName,
+                                                            values = sectionValues,
+                                                            categoryComboStructures = state.categoryComboStructures,
+                                                            optionUidsToComboUidByCombo = state.optionUidsToComboUid,
+                                                            onValueChange = onValueChange,
+                                                            viewModel = viewModel,
+                                                            expandedAccordions = expandedAccordions.value,
+                                                            onToggle = onAccordionToggle
                                                         )
                                                     }
                                                 }
                                             }
-                                        } else {
-                                            val sectionValues = sectionContent.values.flatten()
-                                            SectionContent(
-                                                sectionName = sectionName,
-                                                values = sectionValues,
-                                                categoryComboStructures = state.categoryComboStructures,
-                                                optionUidsToComboUidByCombo = state.optionUidsToComboUid,
-                                                onValueChange = onValueChange,
-                                                viewModel = viewModel,
-                                                expandedAccordions = expandedAccordions.value,
-                                                onToggle = onAccordionToggle
-                                            )
                                         }
                                     }
                                 }
-                            }
-                            item {
                                 Spacer(modifier = Modifier.height(80.dp)) // Space for the section navigator
                             }
                         }
@@ -1218,34 +1366,24 @@ fun EditEntryScreen(
 
                 Box(
                     modifier = Modifier
-                        .align(Alignment.BottomCenter)
-                        .background(MaterialTheme.colorScheme.surface)
-                        .padding(vertical = 8.dp, horizontal = 16.dp)
+                        .fillMaxWidth()
+                        .padding(bottom = 8.dp),
+                    contentAlignment = Alignment.BottomCenter
                 ) {
-                    SectionNavigator(
-                        onPreviousClick = { viewModel.goToPreviousSection() },
-                        onNextClick = { viewModel.goToNextSection() },
-                        currentSectionIndex = state.currentSectionIndex,
-                        totalSections = state.totalSections
+                    SnackbarHost(
+                        hostState = snackbarHostState,
+                        snackbar = { data ->
+                            Snackbar(
+                                containerColor = MaterialTheme.colorScheme.surface,
+                                contentColor = Color.White
+                            ) {
+                                Text(
+                                    data.visuals.message,
+                                    style = MaterialTheme.typography.bodyLarge
+                                )
+                            }
+                        }
                     )
                 }
-
-                SnackbarHost(
-                    hostState = snackbarHostState,
-                    modifier = Modifier
-                        .align(Alignment.BottomCenter)
-                        .padding(bottom = 8.dp),
-                    snackbar = { data ->
-                        Snackbar(
-                            containerColor = MaterialTheme.colorScheme.surface,
-                            contentColor = Color.White
-                        ) {
-                            Text(
-                                data.visuals.message,
-                                style = MaterialTheme.typography.bodyLarge
-                            )
-                        }
-                    }
-                )
             }
-        }}}}}
+        }}}

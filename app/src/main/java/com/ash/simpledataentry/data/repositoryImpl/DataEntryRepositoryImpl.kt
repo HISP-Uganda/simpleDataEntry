@@ -512,9 +512,11 @@ class DataEntryRepositoryImpl @Inject constructor(
     override suspend fun getDefaultAttributeOptionCombo(): String {
         return withContext(Dispatchers.IO) {
             d2.categoryModule().categoryOptionCombos()
-                .byCategoryComboUid().eq("default")
+                .byDisplayName().eq("default")
+                .one()
                 .blockingGet()
-                .firstOrNull()?.uid() ?: "default"
+                ?.uid()
+                ?: "HllvX50cXC0"
         }
     }
 

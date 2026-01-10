@@ -1,6 +1,7 @@
 package com.ash.simpledataentry.presentation.core
 
 import com.ash.simpledataentry.data.sync.DetailedSyncProgress
+import kotlinx.coroutines.flow.MutableStateFlow
 
 /**
  * Unified UI state pattern for all ViewModels
@@ -158,6 +159,7 @@ data class NavigationProgress(
     val phase: LoadingPhase = LoadingPhase.LOADING_DATA,
     val message: String = "",
     val percentage: Int = 0,
+    val loadingType: StepLoadingType? = null,
     // Additional fields for backward compatibility
     val title: String = message, // Alias for message
     val overallPercentage: Int = percentage,
@@ -191,6 +193,51 @@ enum class LoadingPhase(val title: String, val error: String = "") {
     COMPLETING("Completing", "Completion failed"),
     AUTHENTICATING("Authenticating", "Authentication failed"),
     DOWNLOADING_METADATA("Downloading Metadata", "Metadata download failed")
+}
+
+/**
+ * Helpers for working with UiState flows
+ */
+fun <T> UiState<T>.dataOr(default: () -> T): T = when (this) {
+    is UiState.Success -> data
+    is UiState.Error -> previousData ?: default()
+    is UiState.Loading -> default()
+}
+
+fun <T> UiState<T>.dataOrNull(): T? = when (this) {
+    is UiState.Success -> data
+    is UiState.Error -> previousData
+    is UiState.Loading -> null
+}
+
+fun <T> MutableStateFlow<UiState<T>>.emitLoading(operation: LoadingOperation = LoadingOperation.Initial) {
+    value = UiState.Loading(operation)
+}
+
+fun <T> MutableStateFlow<UiState<T>>.emitSuccess(data: T, backgroundOperation: BackgroundOperation? = null) {
+    value = UiState.Success(data, backgroundOperation)
+}
+
+fun <T> MutableStateFlow<UiState<T>>.emitError(
+    error: UiError,
+    previousData: T? = value.dataOrNull()
+) {
+    value = UiState.Error(error, previousData)
+}
+
+fun <T> MutableStateFlow<UiState<T>>.clearError(default: () -> T) {
+    val previousData = (value as? UiState.Error)?.previousData
+    value = UiState.Success(previousData ?: default())
+}
+
+fun <T> MutableStateFlow<UiState<T>>.updateSuccess(
+    default: () -> T,
+    backgroundOperation: BackgroundOperation? = null,
+    update: (T) -> T
+) {
+    val currentData = value.dataOr(default)
+    val currentBackground = (value as? UiState.Success)?.backgroundOperation
+    value = UiState.Success(update(currentData), backgroundOperation ?: currentBackground)
 }
 
 /**

@@ -7,6 +7,7 @@ import com.ash.simpledataentry.domain.model.*
 import com.ash.simpledataentry.domain.useCase.FilterDatasetsUseCase
 import com.ash.simpledataentry.data.sync.BackgroundSyncManager
 import com.ash.simpledataentry.data.sync.DetailedSyncProgress
+import com.ash.simpledataentry.data.sync.SyncStatusController
 import com.ash.simpledataentry.data.sync.SyncQueueManager
 import com.ash.simpledataentry.domain.useCase.GetDatasetsUseCase
 import com.ash.simpledataentry.domain.useCase.LogoutUseCase
@@ -19,6 +20,10 @@ import com.ash.simpledataentry.presentation.core.UiState
 import com.ash.simpledataentry.presentation.core.UiError
 import com.ash.simpledataentry.presentation.core.LoadingOperation
 import com.ash.simpledataentry.presentation.core.BackgroundOperation
+import com.ash.simpledataentry.presentation.core.emitSuccess
+import com.ash.simpledataentry.presentation.core.emitError
+import com.ash.simpledataentry.presentation.core.emitLoading
+import com.ash.simpledataentry.presentation.core.dataOr
 import com.ash.simpledataentry.util.toUiError
 import dagger.hilt.android.lifecycle.HiltViewModel
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -52,6 +57,7 @@ class DatasetsViewModel @Inject constructor(
     private val sessionManager: SessionManager,
     private val savedAccountRepository: SavedAccountRepository,
     private val syncQueueManager: SyncQueueManager,
+    private val syncStatusController: SyncStatusController,
     private val databaseProvider: com.ash.simpledataentry.data.DatabaseProvider
 ) : ViewModel() {
 
@@ -59,6 +65,7 @@ class DatasetsViewModel @Inject constructor(
         UiState.Success(DatasetsData())
     )
     val uiState: StateFlow<UiState<DatasetsData>> = _uiState.asStateFlow()
+    val syncController: SyncStatusController = syncStatusController
 
     init {
         // Account change observer - MUST come first
@@ -86,18 +93,14 @@ class DatasetsViewModel @Inject constructor(
     }
 
     private fun resetToInitialState() {
-        _uiState.value = UiState.Success(DatasetsData())
+        _uiState.emitSuccess(DatasetsData())
     }
 
     /**
      * Helper to get current data from UiState
      */
     private fun getCurrentData(): DatasetsData {
-        return when (val current = _uiState.value) {
-            is UiState.Success -> current.data
-            is UiState.Error -> current.previousData ?: DatasetsData()
-            is UiState.Loading -> DatasetsData()
-        }
+        return _uiState.value.dataOr { DatasetsData() }
     }
 
     fun refreshPrograms() {
@@ -109,12 +112,12 @@ class DatasetsViewModel @Inject constructor(
 
     fun loadPrograms() {
         viewModelScope.launch {
-            _uiState.value = UiState.Loading(LoadingOperation.Initial)
+            _uiState.emitLoading(LoadingOperation.Initial)
 
             datasetsRepository.getAllPrograms()
                 .catch { exception ->
                     val uiError = exception.toUiError()
-                    _uiState.value = UiState.Error(uiError, getCurrentData())
+                    _uiState.emitError(uiError)
                 }
                 .collect { programs ->
                     // Room Flow automatically re-emits when database changes
@@ -141,7 +144,7 @@ class DatasetsViewModel @Inject constructor(
                         currentUiState.backgroundOperation
                     } else null
 
-                    _uiState.value = UiState.Success(newData, backgroundOperation = backgroundOp)
+                    _uiState.emitSuccess(newData, backgroundOperation = backgroundOp)
                 }
         }
     }
@@ -161,9 +164,7 @@ class DatasetsViewModel @Inject constructor(
                     val progressJob = launch {
                         syncQueueManager.detailedProgress.collect { progress ->
                             if (progress != null) {
-                                _uiState.value = UiState.Loading(
-                                    operation = LoadingOperation.Syncing(progress)
-                                )
+                                _uiState.emitLoading(LoadingOperation.Syncing(progress))
                             }
                         }
                     }
@@ -186,7 +187,7 @@ class DatasetsViewModel @Inject constructor(
                             // Update data with success message
                             val currentData = getCurrentData()
                             val newData = currentData.copy(syncMessage = message)
-                            _uiState.value = UiState.Success(newData)
+                            _uiState.emitSuccess(newData)
 
                             // Reload all data after sync - this will preserve syncMessage and show updated counts
                             loadPrograms()
@@ -194,13 +195,13 @@ class DatasetsViewModel @Inject constructor(
                         onFailure = { error ->
                             Log.e("DatasetsViewModel", "Enhanced sync failed", error)
                             val uiError = error.toUiError()
-                            _uiState.value = UiState.Error(uiError, getCurrentData())
+                            _uiState.emitError(uiError)
                         }
                     )
                 } catch (e: Exception) {
                     Log.e("DatasetsViewModel", "Enhanced sync failed", e)
                     val uiError = e.toUiError()
-                    _uiState.value = UiState.Error(uiError, getCurrentData())
+                    _uiState.emitError(uiError)
                 }
             }
         } else {
@@ -215,10 +216,7 @@ class DatasetsViewModel @Inject constructor(
             try {
                 // Show background operation indicator
                 val currentData = getCurrentData()
-                _uiState.value = UiState.Success(
-                    data = currentData,
-                    backgroundOperation = BackgroundOperation.Syncing
-                )
+                _uiState.emitSuccess(currentData, BackgroundOperation.Syncing)
 
                 val syncResult = syncQueueManager.startDownloadOnlySync()
                 syncResult.fold(
@@ -228,7 +226,7 @@ class DatasetsViewModel @Inject constructor(
 
                         // Update data with success message
                         val updatedData = getCurrentData().copy(syncMessage = "Latest data downloaded successfully")
-                        _uiState.value = UiState.Success(updatedData)
+                        _uiState.emitSuccess(updatedData)
 
                         // Reload programs
                         loadPrograms()
@@ -236,13 +234,13 @@ class DatasetsViewModel @Inject constructor(
                     onFailure = { error ->
                         Log.e("DatasetsViewModel", "Download-only sync failed", error)
                         val uiError = error.toUiError()
-                        _uiState.value = UiState.Error(uiError, getCurrentData())
+                        _uiState.emitError(uiError)
                     }
                 )
             } catch (e: Exception) {
                 Log.e("DatasetsViewModel", "Download-only sync failed", e)
                 val uiError = e.toUiError()
-                _uiState.value = UiState.Error(uiError, getCurrentData())
+                _uiState.emitError(uiError)
             }
         }
     }
@@ -254,7 +252,7 @@ class DatasetsViewModel @Inject constructor(
             filteredPrograms = filteredPrograms,
             currentFilter = filterState
         )
-        _uiState.value = UiState.Success(newData)
+        _uiState.emitSuccess(newData)
     }
 
     fun filterByProgramType(programType: ProgramType) {
@@ -264,7 +262,7 @@ class DatasetsViewModel @Inject constructor(
             filteredPrograms = filteredPrograms,
             currentProgramType = programType
         )
-        _uiState.value = UiState.Success(newData)
+        _uiState.emitSuccess(newData)
     }
 
     private fun filterPrograms(programs: List<ProgramItem>, filterState: FilterState, programType: ProgramType): List<ProgramItem> {
@@ -322,13 +320,13 @@ class DatasetsViewModel @Inject constructor(
             currentFilter = FilterState(),
             currentProgramType = ProgramType.ALL
         )
-        _uiState.value = UiState.Success(newData)
+        _uiState.emitSuccess(newData)
     }
 
     fun clearSyncMessage() {
         val currentData = getCurrentData()
         val newData = currentData.copy(syncMessage = null)
-        _uiState.value = UiState.Success(newData)
+        _uiState.emitSuccess(newData)
     }
 
     fun dismissSyncOverlay() {
@@ -337,15 +335,15 @@ class DatasetsViewModel @Inject constructor(
 
         // Convert back to success state
         val currentUiState = _uiState.value
-        if (currentUiState is UiState.Loading || currentUiState is UiState.Error) {
-            val data = when (currentUiState) {
-                is UiState.Loading -> getCurrentData()
-                is UiState.Error -> currentUiState.previousData ?: DatasetsData()
-                else -> getCurrentData()
+            if (currentUiState is UiState.Loading || currentUiState is UiState.Error) {
+                val data = when (currentUiState) {
+                    is UiState.Loading -> getCurrentData()
+                    is UiState.Error -> currentUiState.previousData ?: DatasetsData()
+                    else -> getCurrentData()
+                }
+                _uiState.emitSuccess(data)
             }
-            _uiState.value = UiState.Success(data)
         }
-    }
 
 
     fun logout() {
@@ -356,7 +354,7 @@ class DatasetsViewModel @Inject constructor(
                 logoutUseCase()
             } catch (e: Exception) {
                 val uiError = e.toUiError()
-                _uiState.value = UiState.Error(uiError, getCurrentData())
+                _uiState.emitError(uiError)
             }
         }
     }
@@ -377,7 +375,7 @@ class DatasetsViewModel @Inject constructor(
                 logoutUseCase()
             } catch (e: Exception) {
                 val uiError = e.toUiError()
-                _uiState.value = UiState.Error(uiError, getCurrentData())
+                _uiState.emitError(uiError)
             }
         }
     }

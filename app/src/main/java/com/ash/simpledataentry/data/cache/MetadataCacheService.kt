@@ -153,12 +153,35 @@ class MetadataCacheService @Inject constructor(
                 .withDataElements()
                 .byDataSetUid().eq(datasetId)
                 .blockingGet()
-                
-            sections.map { section ->
-                SectionInfo(
-                    name = section.displayName() ?: "Unassigned",
-                    dataElementUids = section.dataElements()?.map { it.uid() } ?: emptyList()
-                )
+
+            if (sections.isEmpty()) {
+                val dataSet = d2.dataSetModule().dataSets()
+                    .withDataSetElements()
+                    .uid(datasetId)
+                    .blockingGet()
+
+                val dataElementUids = dataSet?.dataSetElements()
+                    ?.mapNotNull { it.dataElement()?.uid() }
+                    ?.distinct()
+                    .orEmpty()
+
+                if (dataElementUids.isEmpty()) {
+                    emptyList()
+                } else {
+                    listOf(
+                        SectionInfo(
+                            name = "Default Section",
+                            dataElementUids = dataElementUids
+                        )
+                    )
+                }
+            } else {
+                sections.map { section ->
+                    SectionInfo(
+                        name = section.displayName() ?: "Unassigned",
+                        dataElementUids = section.dataElements()?.map { it.uid() } ?: emptyList()
+                    )
+                }
             }
         }
     }

@@ -341,6 +341,24 @@ App Launch
 
 ### Previous Work (2025-12-11)
 
+**Design System Bug Fixes** (2026-01-09):
+- Replaced BrandGreen gradients/accents with DHIS2Blue across login/loading/create entry/tracker screens
+- Added missing LOADING_DATA and PROCESSING_DATA progress phases in login flow
+- Fixed dataset instance status badges to show "Up to date" for synced items
+- Build verified with `./gradlew assembleDebug`
+
+**Entry Combo Defaults** (2026-01-09):
+- Entry form hides "default" attribute/category combinations from the title and category accordion
+- Create entry attribute option combo dropdown is disabled when only "default" exists
+
+**Entry Form UX Polish** (2026-01-09):
+- Step-based loading screens wired for entry and sync overlays
+- Entry shimmer cards now use surfaceVariant (no pink tint)
+- Section/subsection navigation now opens nested accordions and auto-expands the first nested accordion per section
+- Section/subsection navigation arrows repositioned closer to titles for clarity
+- Subsection navigation suppressed for radio/checkbox groups and generic “Related fields” groups
+- Section accordion visuals updated to a nested card layout (top-level card with deeper padding for nested levels)
+
 **Dataset Race Condition Fix** (simpleDataEntry-19):
 - Changed `SessionManager.kt`: `.apply()` → `.commit()` for synchronous SharedPreferences write
 - Fixed cache validation clearing datasets from Room database

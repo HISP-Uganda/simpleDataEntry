@@ -2,8 +2,8 @@ package com.ash.simpledataentry.presentation.dataEntry.components
 
 import androidx.compose.foundation.layout.*
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.filled.ArrowBack
-import androidx.compose.material.icons.filled.ArrowForward
+import androidx.compose.material.icons.automirrored.filled.ArrowBack
+import androidx.compose.material.icons.automirrored.filled.ArrowForward
 import androidx.compose.material3.Button
 import androidx.compose.material3.Icon
 import androidx.compose.material3.Text
@@ -30,7 +30,7 @@ fun SectionNavigator(
             enabled = currentSectionIndex > 0,
             modifier = Modifier.weight(1f)
         ) {
-            Icon(Icons.Default.ArrowBack, contentDescription = "Previous Section")
+            Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Previous Section")
         }
 
         Spacer(Modifier.width(16.dp))
@@ -49,7 +49,7 @@ fun SectionNavigator(
             enabled = currentSectionIndex < totalSections - 1,
             modifier = Modifier.weight(1f)
         ) {
-            Icon(Icons.Default.ArrowForward, contentDescription = "Next Section")
+            Icon(Icons.AutoMirrored.Filled.ArrowForward, contentDescription = "Next Section")
         }
     }
 }

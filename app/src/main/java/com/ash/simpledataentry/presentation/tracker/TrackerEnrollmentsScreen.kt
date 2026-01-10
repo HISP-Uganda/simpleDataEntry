@@ -7,9 +7,14 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Add
+import androidx.compose.material.icons.filled.Check
+import androidx.compose.material.icons.filled.ChevronRight
 import androidx.compose.material.icons.filled.FilterList
+import androidx.compose.material.icons.filled.Person
+import androidx.compose.material.icons.filled.Search
 import androidx.compose.material.icons.filled.Sync
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
@@ -20,12 +25,17 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.navigation.NavController
-import com.ash.simpledataentry.domain.model.CompletionStatus
 import com.ash.simpledataentry.domain.model.SyncStatus
+import com.ash.simpledataentry.domain.model.TrackedEntityAttributeValue
 import com.ash.simpledataentry.presentation.core.BaseScreen
 import com.ash.simpledataentry.presentation.core.AdaptiveLoadingOverlay
 import com.ash.simpledataentry.presentation.core.UiState
-import com.ash.simpledataentry.ui.theme.DHIS2BlueDeep
+import com.ash.simpledataentry.ui.theme.StatusCompleted
+import com.ash.simpledataentry.ui.theme.StatusCompletedLight
+import com.ash.simpledataentry.ui.theme.StatusDraft
+import com.ash.simpledataentry.ui.theme.StatusDraftLight
+import com.ash.simpledataentry.ui.theme.StatusSynced
+import com.ash.simpledataentry.ui.theme.StatusSyncedLight
 import org.hisp.dhis.mobile.ui.designsystem.theme.TextColor
 import java.net.URLEncoder
 import java.text.SimpleDateFormat
@@ -48,6 +58,7 @@ fun TrackerEnrollmentsScreen(
     val snackbarHostState = remember { SnackbarHostState() }
     val uiState by viewModel.uiState.collectAsState()
     var showSyncDialog by remember { mutableStateOf(false) }
+    var searchQuery by remember { mutableStateOf("") }
 
     // Initialize with program ID
     LaunchedEffect(programId) {
@@ -65,6 +76,17 @@ fun TrackerEnrollmentsScreen(
         is UiState.Error -> state.previousData ?: com.ash.simpledataentry.presentation.tracker.TrackerEnrollmentsData()
         is UiState.Loading -> com.ash.simpledataentry.presentation.tracker.TrackerEnrollmentsData()
     }
+    val filteredEnrollments = if (searchQuery.isBlank()) {
+        data.enrollments
+    } else {
+        val query = searchQuery.trim().lowercase(Locale.getDefault())
+        data.enrollments.filter { enrollment ->
+            enrollment.organisationUnit.name.lowercase(Locale.getDefault()).contains(query) ||
+                enrollment.state.name.lowercase(Locale.getDefault()).contains(query) ||
+                enrollment.syncStatus.name.lowercase(Locale.getDefault()).contains(query)
+        }
+    }
+    val subtitle = if (filteredEnrollments.size == 1) "1 enrollment" else "${filteredEnrollments.size} enrollments"
 
     // Show success messages via snackbar
     LaunchedEffect(data.syncMessage) {
@@ -78,6 +100,7 @@ fun TrackerEnrollmentsScreen(
 
     BaseScreen(
         title = programName,
+        subtitle = subtitle,
         navController = navController,
         actions = {
             // Sync button
@@ -129,9 +152,53 @@ fun TrackerEnrollmentsScreen(
                 uiState = uiState,
                 modifier = Modifier.fillMaxSize()
             ) {
+                Column(modifier = Modifier.fillMaxSize()) {
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(horizontal = 16.dp, vertical = 12.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(12.dp)
+                    ) {
+                        OutlinedTextField(
+                            value = searchQuery,
+                            onValueChange = { searchQuery = it },
+                            modifier = Modifier.weight(1f),
+                            singleLine = true,
+                            placeholder = { Text("Search enrollments...") },
+                            leadingIcon = {
+                                Icon(
+                                    imageVector = Icons.Default.Search,
+                                    contentDescription = null
+                                )
+                            }
+                        )
+
+                        IconButton(
+                            onClick = { },
+                            enabled = false
+                        ) {
+                            Icon(
+                                imageVector = Icons.Default.FilterList,
+                                contentDescription = "Filter",
+                                tint = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                        }
+
+                        IconButton(
+                            onClick = { },
+                            enabled = false
+                        ) {
+                            Icon(
+                                imageVector = Icons.Default.Check,
+                                contentDescription = "Bulk",
+                                tint = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                        }
+                    }
                 // Content with data
                 when {
-                    data.enrollments.isEmpty() -> {
+                    filteredEnrollments.isEmpty() -> {
                         Column(
                             modifier = Modifier
                                 .fillMaxSize()
@@ -150,6 +217,16 @@ fun TrackerEnrollmentsScreen(
                                 style = MaterialTheme.typography.bodyMedium,
                                 color = MaterialTheme.colorScheme.onSurfaceVariant
                             )
+                            Text(
+                                text = "If enrollments are missing, sync to refresh.",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                            Button(
+                                onClick = { viewModel.syncEnrollments() }
+                            ) {
+                                Text("Sync now")
+                            }
                         }
                     }
                     else -> {
@@ -159,7 +236,7 @@ fun TrackerEnrollmentsScreen(
                                 .padding(horizontal = 16.dp, vertical = 8.dp),
                             verticalArrangement = Arrangement.spacedBy(8.dp)
                         ) {
-                            items(data.enrollments) { enrollment ->
+                            items(filteredEnrollments) { enrollment ->
                                 EnrollmentCard(
                                     enrollment = enrollment,
                                     onClick = {
@@ -173,6 +250,7 @@ fun TrackerEnrollmentsScreen(
                             }
                         }
                     }
+                }
                 }
             }
 
@@ -218,6 +296,15 @@ private fun EnrollmentCard(
 ) {
     val dateFormatter = remember { SimpleDateFormat("MMM dd, yyyy", Locale.getDefault()) }
     val enrollmentDate = enrollment.enrollmentDate?.let { dateFormatter.format(it) } ?: "No date"
+    val displayName = remember(enrollment.attributes, enrollment.trackedEntityInstance) {
+        resolveTrackedEntityName(enrollment.attributes, enrollment.trackedEntityInstance)
+    }
+    val idValue = remember(enrollment.attributes) {
+        resolveAttributeValue(enrollment.attributes, listOf("id", "identifier", "national"))
+    }
+    val phoneValue = remember(enrollment.attributes) {
+        resolveAttributeValue(enrollment.attributes, listOf("phone", "mobile", "tel"))
+    }
 
     Card(
         modifier = Modifier.fillMaxWidth(),
@@ -233,22 +320,86 @@ private fun EnrollmentCard(
         Column(
             modifier = Modifier.padding(16.dp)
         ) {
-            // Title row with date
+            // Title row with tracked entity name
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(12.dp),
+                verticalAlignment = Alignment.Top
+            ) {
+                Box(
+                    modifier = Modifier
+                        .size(40.dp)
+                        .background(MaterialTheme.colorScheme.secondaryContainer, CircleShape),
+                    contentAlignment = Alignment.Center
+                ) {
+                    Icon(
+                        imageVector = Icons.Default.Person,
+                        contentDescription = null,
+                        tint = MaterialTheme.colorScheme.onSecondaryContainer
+                    )
+                }
+                Column(
+                    modifier = Modifier.weight(1f),
+                    verticalArrangement = Arrangement.spacedBy(4.dp)
+                ) {
+                    Text(
+                        text = displayName,
+                        style = MaterialTheme.typography.titleMedium,
+                        color = MaterialTheme.colorScheme.onSurface,
+                        maxLines = 1
+                    )
+                    if (!idValue.isNullOrBlank()) {
+                        Text(
+                            text = idValue,
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            maxLines = 1
+                        )
+                    }
+                    if (!phoneValue.isNullOrBlank()) {
+                        Text(
+                            text = phoneValue,
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            maxLines = 1
+                        )
+                    }
+                }
+                Icon(
+                    imageVector = Icons.Default.ChevronRight,
+                    contentDescription = null,
+                    tint = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+            }
+
+            Spacer(modifier = Modifier.height(8.dp))
             Row(
                 modifier = Modifier.fillMaxWidth(),
                 horizontalArrangement = Arrangement.SpaceBetween,
                 verticalAlignment = Alignment.CenterVertically
             ) {
                 Text(
-                    text = "${enrollment.organisationUnit.name}",
-                    style = MaterialTheme.typography.titleMedium,
-                    color = MaterialTheme.colorScheme.onSurface,
+                    text = enrollment.organisationUnit.name,
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
                     modifier = Modifier.weight(1f)
                 )
                 Text(
-                    text = enrollmentDate,
+                    text = "Enrolled $enrollmentDate",
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+            }
+
+            if (enrollment.syncStatus == SyncStatus.NOT_SYNCED &&
+                enrollment.state != com.ash.simpledataentry.domain.model.ProgramInstanceState.COMPLETED) {
+                Spacer(modifier = Modifier.height(8.dp))
+                LinearProgressIndicator(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .height(4.dp),
+                    color = StatusDraft,
+                    trackColor = StatusDraftLight
                 )
             }
 
@@ -260,21 +411,26 @@ private fun EnrollmentCard(
                 // Enrollment status
                 StatusChip(
                     text = enrollment.state.name,
-                    color = when (enrollment.state) {
-                        com.ash.simpledataentry.domain.model.ProgramInstanceState.COMPLETED -> Color(0xFF4CAF50)
-                        com.ash.simpledataentry.domain.model.ProgramInstanceState.ACTIVE -> Color(0xFFFFA726)
-                        com.ash.simpledataentry.domain.model.ProgramInstanceState.CANCELLED -> Color(0xFFEF5350)
-                        else -> Color(0xFF9E9E9E)
+                    containerColor = when (enrollment.state) {
+                        com.ash.simpledataentry.domain.model.ProgramInstanceState.COMPLETED -> StatusCompletedLight
+                        else -> StatusDraftLight
+                    },
+                    contentColor = when (enrollment.state) {
+                        com.ash.simpledataentry.domain.model.ProgramInstanceState.COMPLETED -> StatusCompleted
+                        else -> StatusDraft
                     }
                 )
 
                 // Sync status
                 StatusChip(
                     text = enrollment.syncStatus.name,
-                    color = when (enrollment.syncStatus) {
-                        SyncStatus.SYNCED -> DHIS2BlueDeep
-                        SyncStatus.NOT_SYNCED -> Color(0xFFFFA726)
-                        else -> Color(0xFF9E9E9E)
+                    containerColor = when (enrollment.syncStatus) {
+                        SyncStatus.SYNCED -> StatusSyncedLight
+                        else -> StatusDraftLight
+                    },
+                    contentColor = when (enrollment.syncStatus) {
+                        SyncStatus.SYNCED -> StatusSynced
+                        else -> StatusDraft
                     }
                 )
             }
@@ -282,20 +438,59 @@ private fun EnrollmentCard(
     }
 }
 
+private fun resolveTrackedEntityName(
+    attributes: List<TrackedEntityAttributeValue>,
+    fallbackId: String
+): String {
+    val nonEmpty = attributes.filter { !it.value.isNullOrBlank() }
+    if (nonEmpty.isEmpty()) {
+        return fallbackId.ifBlank { "Tracked Entity" }
+    }
+
+    val firstName = nonEmpty.firstOrNull { matchesAttribute(it.displayName, listOf("first", "given")) }?.value
+    val lastName = nonEmpty.firstOrNull { matchesAttribute(it.displayName, listOf("last", "surname", "family")) }?.value
+    val fullName = listOfNotNull(firstName, lastName).joinToString(" ").trim()
+    if (fullName.isNotBlank()) {
+        return fullName
+    }
+
+    val nameValue = nonEmpty.firstOrNull { matchesAttribute(it.displayName, listOf("name")) }?.value
+    if (!nameValue.isNullOrBlank()) {
+        return nameValue
+    }
+
+    return nonEmpty.firstOrNull()?.value ?: fallbackId.ifBlank { "Tracked Entity" }
+}
+
+private fun resolveAttributeValue(
+    attributes: List<TrackedEntityAttributeValue>,
+    keywords: List<String>
+): String? {
+    return attributes.firstOrNull { attribute ->
+        !attribute.value.isNullOrBlank() && matchesAttribute(attribute.displayName, keywords)
+    }?.value
+}
+
+private fun matchesAttribute(label: String, keywords: List<String>): Boolean {
+    val key = label.lowercase(Locale.getDefault())
+    return keywords.any { key.contains(it) }
+}
+
 @Composable
 private fun StatusChip(
     text: String,
-    color: Color
+    containerColor: Color,
+    contentColor: Color
 ) {
     Surface(
-        color = color.copy(alpha = 0.1f),
+        color = containerColor,
         shape = MaterialTheme.shapes.small,
         modifier = Modifier.padding(0.dp)
     ) {
         Text(
             text = text,
             style = MaterialTheme.typography.labelSmall,
-            color = color,
+            color = contentColor,
             modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp)
         )
     }

@@ -20,6 +20,25 @@ import org.hisp.dhis.android.core.D2
 import java.util.*
 import javax.inject.Inject
 
+/**
+ * Data class for event table columns used in compact table display
+ */
+data class EventTableColumn(
+    val id: String,
+    val displayName: String,
+    val sortable: Boolean = false
+)
+
+/**
+ * Data class for event table rows used in compact table display
+ */
+data class EventTableRow(
+    val id: String,
+    val programStageId: String,
+    val enrollmentId: String?,
+    val cells: Map<String, String>
+)
+
 data class TrackerDashboardUiState(
     val isLoading: Boolean = false,
     val error: String? = null,

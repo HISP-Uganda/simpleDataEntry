@@ -17,6 +17,7 @@ import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material.icons.filled.Notifications
 import androidx.compose.material.icons.filled.CheckCircle
 import androidx.compose.material3.*
+import androidx.compose.material3.MenuAnchorType
 import androidx.compose.ui.hapticfeedback.HapticFeedbackType
 import androidx.compose.ui.platform.LocalHapticFeedback
 import androidx.compose.ui.text.style.TextAlign
@@ -53,6 +54,7 @@ fun SettingsScreen(
 
     BaseScreen(
         title = "Settings",
+        subtitle = "Preferences and accounts",
         navController = navController
     ) {
         LazyColumn(
@@ -65,6 +67,7 @@ fun SettingsScreen(
             item {
                 SettingsSection(
                     title = "Sync Configuration",
+                    description = "Control how often metadata is refreshed.",
                     icon = Icons.Default.Settings
                 ) {
                     Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
@@ -82,6 +85,7 @@ fun SettingsScreen(
             item {
                 SettingsSection(
                     title = "Data Management",
+                    description = "Export data for backup or clear local storage.",
                     icon = Icons.Default.Security
                 ) {
                     Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
@@ -107,6 +111,7 @@ fun SettingsScreen(
             item {
                 SettingsSection(
                     title = "App Updates",
+                    description = "Check for new versions and release notes.",
                     icon = Icons.Default.Settings
                 ) {
                     Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
@@ -125,6 +130,7 @@ fun SettingsScreen(
             item {
                 SettingsSection(
                     title = "Account Management",
+                    description = "Manage saved accounts and security settings.",
                     icon = Icons.Default.Person
                 ) {
                     // Content is in the next items
@@ -615,6 +621,7 @@ private fun EditAccountDialog(
 @Composable
 private fun SettingsSection(
     title: String,
+    description: String? = null,
     icon: androidx.compose.ui.graphics.vector.ImageVector,
     content: @Composable ColumnScope.() -> Unit
 ) {
@@ -624,26 +631,44 @@ private fun SettingsSection(
             containerColor = MaterialTheme.colorScheme.surface
         )
     ) {
-        Column(
-            modifier = Modifier.padding(16.dp),
-            verticalArrangement = Arrangement.spacedBy(12.dp)
-        ) {
-            Row(
-                verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.spacedBy(8.dp)
+        Column {
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .background(MaterialTheme.colorScheme.surfaceVariant)
+                    .padding(16.dp),
+                verticalArrangement = Arrangement.spacedBy(4.dp)
             ) {
-                Icon(
-                    imageVector = icon,
-                    contentDescription = null,
-                    tint = MaterialTheme.colorScheme.primary
-                )
-                Text(
-                    text = title,
-                    style = MaterialTheme.typography.titleMedium,
-                    fontWeight = FontWeight.Bold
-                )
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    Icon(
+                        imageVector = icon,
+                        contentDescription = null,
+                        tint = MaterialTheme.colorScheme.primary
+                    )
+                    Text(
+                        text = title,
+                        style = MaterialTheme.typography.titleMedium,
+                        fontWeight = FontWeight.SemiBold,
+                        color = MaterialTheme.colorScheme.onSurface
+                    )
+                }
+                if (!description.isNullOrBlank()) {
+                    Text(
+                        text = description,
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
             }
-            content()
+
+            Column(
+                modifier = Modifier.padding(16.dp),
+                verticalArrangement = Arrangement.spacedBy(12.dp),
+                content = content
+            )
         }
     }
 }
@@ -678,7 +703,7 @@ private fun SyncFrequencySelector(
                 },
                 enabled = enabled,
                 modifier = Modifier
-                    .menuAnchor()
+                    .menuAnchor(MenuAnchorType.PrimaryNotEditable, enabled = enabled)
                     .fillMaxWidth()
             )
             

@@ -1,15 +1,18 @@
 package com.ash.simpledataentry.presentation.core
 
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.RowScope
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.padding
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.filled.ArrowBack
+import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.FabPosition
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
+import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.Text
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.TopAppBarColors
 import androidx.compose.runtime.Composable
@@ -31,15 +34,17 @@ import org.hisp.dhis.mobile.ui.designsystem.theme.TextColor
 @Composable
 fun BaseScreen(
     title: String,
+    subtitle: String? = null,
     navController: NavController,
     navigationIcon: @Composable (() -> Unit)? = {
         IconButton(onClick = { navController.popBackStack() }) {
             Icon(
-                imageVector = Icons.Default.ArrowBack,
+                imageVector = Icons.AutoMirrored.Filled.ArrowBack,
                 contentDescription = "Back"
             )
         }
     },
+    statusIndicator: (@Composable () -> Unit)? = null,
     actions: @Composable (RowScope.() -> Unit) = {},
     floatingActionButton: @Composable (() -> Unit)? = null,
     // PHASE 4: Top bar progress indicator
@@ -55,15 +60,31 @@ fun BaseScreen(
 
     val effectiveShowProgress = showProgress || syncShowProgress
     val effectiveProgress = progress ?: syncProgressValue
+    val titleContentColor = MaterialTheme.colorScheme.onPrimary
+    val subtitleColor = titleContentColor.copy(alpha = 0.75f)
 
     Scaffold(
         topBar = {
             Box {
                 TopBar(
-                    title = { Title(text = title, textColor = TextColor.OnPrimary) },
+                    title = {
+                        Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                            Title(text = title, textColor = TextColor.OnPrimary)
+                            if (!subtitle.isNullOrBlank()) {
+                                Text(
+                                    text = subtitle,
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = subtitleColor
+                                )
+                            }
+                        }
+                    },
                     type = TopBarType.CENTERED,
                     navigationIcon = navigationIcon!!,
-                    actions = actions,
+                    actions = {
+                        statusIndicator?.invoke()
+                        actions()
+                    },
                     colors = TopAppBarColors(
                         containerColor = SurfaceColor.Primary,
                         titleContentColor = TextColor.OnSurface,

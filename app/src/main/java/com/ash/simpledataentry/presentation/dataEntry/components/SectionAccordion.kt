@@ -112,11 +112,7 @@ fun DataElementSectionAccordion(
     modifier: Modifier = Modifier,
     content: @Composable ColumnScope.() -> Unit
 ) {
-    val subtitle = if (filledElementCount > 0) {
-        "$filledElementCount of $dataElementCount data elements completed"
-    } else {
-        "$dataElementCount data elements"
-    }
+    val subtitle = "$filledElementCount/$dataElementCount completed"
     
     SectionAccordion(
         title = title,

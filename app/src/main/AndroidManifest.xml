@@ -1,11 +1,13 @@
 <?xml version="1.0" encoding="utf-8"?>
 <manifest xmlns:android="http://schemas.android.com/apk/res/android"
-    xmlns:tools="http://schemas.android.com.ash/tools">
+    xmlns:tools="http://schemas.android.com/tools">
     <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
     <uses-permission android:name="android.permission.INTERNET" />
 
     <!-- Foreground service permission (required for Android 9+) -->
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+    <!-- Specific foreground service type permission (required for Android 14+) -->
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_DATA_SYNC" />
 
     <!-- Post notifications permission (required for Android 13+) -->
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />

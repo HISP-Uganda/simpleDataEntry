@@ -421,6 +421,20 @@ class SessionManager @Inject constructor(
                 }
             ))
 
+            onProgress(NavigationProgress(
+                phase = LoadingPhase.LOADING_DATA,
+                overallPercentage = 85,
+                phaseTitle = LoadingPhase.LOADING_DATA.title,
+                phaseDetail = "Preparing data sync..."
+            ))
+
+            onProgress(NavigationProgress(
+                phase = LoadingPhase.PROCESSING_DATA,
+                overallPercentage = 90,
+                phaseTitle = LoadingPhase.PROCESSING_DATA.title,
+                phaseDetail = "Setting up background processing..."
+            ))
+
             // Step 4: Finalization (90-100%) - UI UNLOCKED AFTER THIS
             onProgress(NavigationProgress(
                 phase = LoadingPhase.FINALIZING,

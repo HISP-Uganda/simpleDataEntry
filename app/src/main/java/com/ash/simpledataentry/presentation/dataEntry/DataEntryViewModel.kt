@@ -199,7 +199,8 @@ class DataEntryViewModel @Inject constructor(
                     phase = com.ash.simpledataentry.presentation.core.LoadingPhase.INITIALIZING,
                     overallPercentage = 10,
                     phaseTitle = com.ash.simpledataentry.presentation.core.LoadingPhase.INITIALIZING.title,
-                    phaseDetail = "Preparing form..."
+                    phaseDetail = "Preparing form...",
+                    loadingType = com.ash.simpledataentry.presentation.core.StepLoadingType.ENTRY
                 )
                 updateState { currentState ->
                     currentState.copy(
@@ -226,7 +227,8 @@ class DataEntryViewModel @Inject constructor(
                             phase = com.ash.simpledataentry.presentation.core.LoadingPhase.LOADING_DATA,
                             overallPercentage = 25,
                             phaseTitle = com.ash.simpledataentry.presentation.core.LoadingPhase.LOADING_DATA.title,
-                            phaseDetail = "Loading draft data..."
+                            phaseDetail = "Loading draft data...",
+                            loadingType = com.ash.simpledataentry.presentation.core.StepLoadingType.ENTRY
                         )
                     )
                 }
@@ -247,7 +249,8 @@ class DataEntryViewModel @Inject constructor(
                             phase = com.ash.simpledataentry.presentation.core.LoadingPhase.LOADING_DATA,
                             overallPercentage = 40,
                             phaseTitle = com.ash.simpledataentry.presentation.core.LoadingPhase.LOADING_DATA.title,
-                            phaseDetail = "Loading form data..."
+                            phaseDetail = "Loading form data...",
+                            loadingType = com.ash.simpledataentry.presentation.core.StepLoadingType.ENTRY
                         )
                     )
                 }
@@ -261,7 +264,8 @@ class DataEntryViewModel @Inject constructor(
                                 phase = com.ash.simpledataentry.presentation.core.LoadingPhase.PROCESSING_DATA,
                                 overallPercentage = 60,
                                 phaseTitle = com.ash.simpledataentry.presentation.core.LoadingPhase.PROCESSING_DATA.title,
-                                phaseDetail = "Processing categories..."
+                                phaseDetail = "Processing categories...",
+                                loadingType = com.ash.simpledataentry.presentation.core.StepLoadingType.ENTRY
                             )
                         )
                     }
@@ -338,7 +342,8 @@ class DataEntryViewModel @Inject constructor(
                                 phase = com.ash.simpledataentry.presentation.core.LoadingPhase.PROCESSING_DATA,
                                 overallPercentage = 70,
                                 phaseTitle = com.ash.simpledataentry.presentation.core.LoadingPhase.PROCESSING_DATA.title,
-                                phaseDetail = "Loading option sets..."
+                                phaseDetail = "Loading option sets...",
+                                loadingType = com.ash.simpledataentry.presentation.core.StepLoadingType.ENTRY
                             )
                         )
                     }
@@ -363,7 +368,8 @@ class DataEntryViewModel @Inject constructor(
                                 phase = com.ash.simpledataentry.presentation.core.LoadingPhase.PROCESSING_DATA,
                                 overallPercentage = 80,
                                 phaseTitle = com.ash.simpledataentry.presentation.core.LoadingPhase.PROCESSING_DATA.title,
-                                phaseDetail = "Analyzing data grouping..."
+                                phaseDetail = "Analyzing data grouping...",
+                                loadingType = com.ash.simpledataentry.presentation.core.StepLoadingType.ENTRY
                             )
                         )
                     }
@@ -426,7 +432,8 @@ class DataEntryViewModel @Inject constructor(
                                 phase = com.ash.simpledataentry.presentation.core.LoadingPhase.COMPLETING,
                                 overallPercentage = 90,
                                 phaseTitle = com.ash.simpledataentry.presentation.core.LoadingPhase.COMPLETING.title,
-                                phaseDetail = "Setting up form..."
+                                phaseDetail = "Setting up form...",
+                                loadingType = com.ash.simpledataentry.presentation.core.StepLoadingType.ENTRY
                             )
                         )
                     }

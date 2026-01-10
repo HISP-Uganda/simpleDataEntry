@@ -185,7 +185,8 @@ private var isShowingSyncOverlay = false
                     phase = com.ash.simpledataentry.presentation.core.LoadingPhase.LOADING_DATA,
                     overallPercentage = 10,
                     phaseTitle = "Loading event",
-                    phaseDetail = "Preparing event form..."
+                    phaseDetail = "Preparing event form...",
+                    loadingType = com.ash.simpledataentry.presentation.core.StepLoadingType.ENTRY
                 )
                 setUiLoading(
                     operation = LoadingOperation.Navigation(navigationProgress),
@@ -199,11 +200,18 @@ private var isShowingSyncOverlay = false
                     .uid(programId).blockingGet()
                     ?: throw Exception("Program not found")
 
-                val stageId = programStageId ?: run {
+                val existingEvent = if (eventId != null) {
+                    d2Instance.eventModule().events().uid(eventId).blockingGet()
+                        ?: throw Exception("Event not found")
+                } else null
+
+                val stageId = programStageId
+                    ?: existingEvent?.programStage()
+                    ?: run {
                     val stages = d2Instance.programModule().programStages()
                         .byProgramUid().eq(programId).blockingGet()
                     stages.firstOrNull()?.uid() ?: throw Exception("No program stage found")
-                }
+                    }
 
                 val programStage = d2Instance.programModule().programStages()
                     .uid(stageId).blockingGet()
@@ -334,12 +342,11 @@ private var isShowingSyncOverlay = false
                 } else emptyList()
 
                 // Load existing event details if editing
-                val (eventDate, orgUnitId, completed) = if (eventId != null) {
-                    val event = d2Instance.eventModule().events().uid(eventId).blockingGet()
+                val (eventDate, orgUnitId, completed) = if (existingEvent != null) {
                     Triple(
-                        event?.eventDate() ?: Date(),
-                        event?.organisationUnit(),
-                        event?.status()?.name == "COMPLETED"
+                        existingEvent.eventDate() ?: Date(),
+                        existingEvent.organisationUnit(),
+                        existingEvent.status()?.name == "COMPLETED"
                     )
                 } else {
                     Triple(Date(), null, false)
@@ -510,6 +517,42 @@ private var isShowingSyncOverlay = false
                         saveInProgress = false,
                         saveResult = Result.failure(e),
                         error = "Failed to save event: ${e.message}"
+                    )
+                }
+                emitSuccessState()
+            }
+        }
+    }
+
+    fun completeEvent() {
+        viewModelScope.launch {
+            try {
+                val eventId = _state.value.eventId ?: return@launch
+                updateState { it.copy(saveInProgress = true, error = null) }
+                val completionProgress = LoadingProgress(message = "Completing event...")
+                setUiLoading(
+                    operation = LoadingOperation.Saving(),
+                    progress = completionProgress
+                )
+
+                val result = repository.completeEvent(eventId)
+                if (result.isFailure) {
+                    throw result.exceptionOrNull() ?: Exception("Failed to complete event")
+                }
+
+                updateState {
+                    it.copy(
+                        saveInProgress = false,
+                        isCompleted = true,
+                        successMessage = "Event marked complete"
+                    )
+                }
+                emitSuccessState()
+            } catch (e: Exception) {
+                updateState {
+                    it.copy(
+                        saveInProgress = false,
+                        error = "Failed to complete event: ${e.message}"
                     )
                 }
                 emitSuccessState()

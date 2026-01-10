@@ -14,6 +14,11 @@ import com.ash.simpledataentry.presentation.core.UiError
 import com.ash.simpledataentry.presentation.core.LoadingOperation
 import com.ash.simpledataentry.presentation.core.BackgroundOperation
 import com.ash.simpledataentry.presentation.core.LoadingProgress
+import com.ash.simpledataentry.presentation.core.emitSuccess
+import com.ash.simpledataentry.presentation.core.emitError
+import com.ash.simpledataentry.presentation.core.emitLoading
+import com.ash.simpledataentry.presentation.core.dataOr
+import com.ash.simpledataentry.presentation.core.clearError
 import com.ash.simpledataentry.util.toUiError
 import dagger.hilt.android.lifecycle.HiltViewModel
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -97,7 +102,7 @@ class SettingsViewModel @Inject constructor(
         viewModelScope.launch {
             // Update both states for backward compatibility
             _state.value = _state.value.copy(isLoading = true, error = null)
-            _uiState.value = UiState.Loading(LoadingOperation.Initial)
+            _uiState.emitLoading(LoadingOperation.Initial)
 
             try {
                 val accounts = savedAccountRepository.getAllSavedAccounts()
@@ -105,7 +110,7 @@ class SettingsViewModel @Inject constructor(
                 val newData = currentData.copy(accounts = accounts)
 
                 // Update new state
-                _uiState.value = UiState.Success(newData)
+                _uiState.emitSuccess(newData)
 
                 // Update old state for backward compatibility
                 _state.value = _state.value.copy(
@@ -116,7 +121,7 @@ class SettingsViewModel @Inject constructor(
                 val uiError = e.toUiError()
 
                 // Update new state
-                _uiState.value = UiState.Error(uiError, getCurrentData())
+                _uiState.emitError(uiError)
 
                 // Update old state for backward compatibility
                 _state.value = _state.value.copy(
@@ -136,11 +141,7 @@ class SettingsViewModel @Inject constructor(
      * Helper to get current data from UiState
      */
     private fun getCurrentData(): SettingsData {
-        return when (val current = _uiState.value) {
-            is UiState.Success -> current.data
-            is UiState.Error -> current.previousData ?: SettingsData()
-            is UiState.Loading -> SettingsData()
-        }
+        return _uiState.value.dataOr { SettingsData() }
     }
     
     fun deleteAccount(accountId: String) {
@@ -153,14 +154,14 @@ class SettingsViewModel @Inject constructor(
                 } else {
                     val error = result.exceptionOrNull()?.toUiError()
                         ?: UiError.Local("Failed to delete account")
-                    _uiState.value = UiState.Error(error, getCurrentData())
+                    _uiState.emitError(error)
                     _state.value = _state.value.copy(
                         error = "Failed to delete account: ${result.exceptionOrNull()?.message}"
                     )
                 }
             } catch (e: Exception) {
                 val uiError = e.toUiError()
-                _uiState.value = UiState.Error(uiError, getCurrentData())
+                _uiState.emitError(uiError)
                 _state.value = _state.value.copy(
                     error = "Failed to delete account: ${e.message}"
                 )
@@ -178,14 +179,14 @@ class SettingsViewModel @Inject constructor(
                 } else {
                     val error = result.exceptionOrNull()?.toUiError()
                         ?: UiError.Local("Failed to delete all accounts")
-                    _uiState.value = UiState.Error(error, getCurrentData())
+                    _uiState.emitError(error)
                     _state.value = _state.value.copy(
                         error = "Failed to delete all accounts: ${result.exceptionOrNull()?.message}"
                     )
                 }
             } catch (e: Exception) {
                 val uiError = e.toUiError()
-                _uiState.value = UiState.Error(uiError, getCurrentData())
+                _uiState.emitError(uiError)
                 _state.value = _state.value.copy(
                     error = "Failed to delete all accounts: ${e.message}"
                 )
@@ -203,14 +204,14 @@ class SettingsViewModel @Inject constructor(
                 } else {
                     val error = result.exceptionOrNull()?.toUiError()
                         ?: UiError.Local("Failed to update account")
-                    _uiState.value = UiState.Error(error, getCurrentData())
+                    _uiState.emitError(error)
                     _state.value = _state.value.copy(
                         error = "Failed to update account: ${result.exceptionOrNull()?.message}"
                     )
                 }
             } catch (e: Exception) {
                 val uiError = e.toUiError()
-                _uiState.value = UiState.Error(uiError, getCurrentData())
+                _uiState.emitError(uiError)
                 _state.value = _state.value.copy(
                     error = "Failed to update account: ${e.message}"
                 )
@@ -225,11 +226,11 @@ class SettingsViewModel @Inject constructor(
                 val currentData = getCurrentData()
                 val newData = currentData.copy(isEncryptionAvailable = isAvailable)
 
-                _uiState.value = UiState.Success(newData)
+                _uiState.emitSuccess(newData)
                 _state.value = _state.value.copy(isEncryptionAvailable = isAvailable)
             } catch (e: Exception) {
                 val uiError = e.toUiError()
-                _uiState.value = UiState.Error(uiError, getCurrentData())
+                _uiState.emitError(uiError)
                 _state.value = _state.value.copy(
                     isEncryptionAvailable = false,
                     error = "Failed to check encryption availability: ${e.message}"
@@ -240,10 +241,7 @@ class SettingsViewModel @Inject constructor(
 
     fun clearError() {
         // Convert error state back to success with previous data
-        val current = _uiState.value
-        if (current is UiState.Error) {
-            _uiState.value = UiState.Success(current.previousData ?: SettingsData())
-        }
+        _uiState.clearError { SettingsData() }
         _state.value = _state.value.copy(error = null)
     }
     
@@ -258,7 +256,7 @@ class SettingsViewModel @Inject constructor(
                 // Update UI state
                 val currentData = getCurrentData()
                 val newData = currentData.copy(syncFrequency = frequency)
-                _uiState.value = UiState.Success(newData)
+                _uiState.emitSuccess(newData)
                 _state.value = _state.value.copy(syncFrequency = frequency)
 
                 // Configure background sync with WorkManager
@@ -266,7 +264,7 @@ class SettingsViewModel @Inject constructor(
 
             } catch (e: Exception) {
                 val uiError = e.toUiError()
-                _uiState.value = UiState.Error(uiError, getCurrentData())
+                _uiState.emitError(uiError)
                 _state.value = _state.value.copy(
                     error = "Failed to save sync frequency: ${e.message}"
                 )
@@ -281,14 +279,14 @@ class SettingsViewModel @Inject constructor(
                 val currentData = getCurrentData()
                 val newData = currentData.copy(syncFrequency = savedFrequency)
 
-                _uiState.value = UiState.Success(newData)
+                _uiState.emitSuccess(newData)
                 _state.value = _state.value.copy(syncFrequency = savedFrequency)
             } catch (e: Exception) {
                 // Use default frequency if loading fails - not an error state
                 val currentData = getCurrentData()
                 val newData = currentData.copy(syncFrequency = SyncFrequency.DAILY)
 
-                _uiState.value = UiState.Success(newData)
+                _uiState.emitSuccess(newData)
                 _state.value = _state.value.copy(syncFrequency = SyncFrequency.DAILY)
             }
         }
@@ -299,10 +297,7 @@ class SettingsViewModel @Inject constructor(
             try {
                 // Show background operation indicator
                 val currentData = getCurrentData()
-                _uiState.value = UiState.Success(
-                    data = currentData,
-                    backgroundOperation = BackgroundOperation.Exporting
-                )
+                _uiState.emitSuccess(currentData, BackgroundOperation.Exporting)
                 _state.value = _state.value.copy(
                     isExporting = true,
                     exportProgress = 0f,
@@ -323,14 +318,14 @@ class SettingsViewModel @Inject constructor(
                 // 4. Save to external storage or share via intent
 
                 // Clear background operation
-                _uiState.value = UiState.Success(currentData)
+                _uiState.emitSuccess(currentData)
                 _state.value = _state.value.copy(
                     isExporting = false,
                     exportProgress = 0f
                 )
             } catch (e: Exception) {
                 val uiError = e.toUiError()
-                _uiState.value = UiState.Error(uiError, getCurrentData())
+                _uiState.emitError(uiError)
                 _state.value = _state.value.copy(
                     isExporting = false,
                     exportProgress = 0f,
@@ -345,10 +340,7 @@ class SettingsViewModel @Inject constructor(
             try {
                 // Show background operation indicator
                 val currentData = getCurrentData()
-                _uiState.value = UiState.Success(
-                    data = currentData,
-                    backgroundOperation = BackgroundOperation.Deleting
-                )
+                _uiState.emitSuccess(currentData, BackgroundOperation.Deleting)
                 _state.value = _state.value.copy(
                     isDeleting = true,
                     error = null
@@ -389,7 +381,7 @@ class SettingsViewModel @Inject constructor(
                     accounts = emptyList(),
                     syncFrequency = SyncFrequency.DAILY
                 )
-                _uiState.value = UiState.Success(cleanData)
+                _uiState.emitSuccess(cleanData)
                 _state.value = _state.value.copy(
                     isDeleting = false,
                     accounts = emptyList(),
@@ -398,7 +390,7 @@ class SettingsViewModel @Inject constructor(
 
             } catch (e: Exception) {
                 val uiError = e.toUiError()
-                _uiState.value = UiState.Error(uiError, getCurrentData())
+                _uiState.emitError(uiError)
                 _state.value = _state.value.copy(
                     isDeleting = false,
                     error = "Failed to delete data: ${e.message}"
@@ -411,7 +403,7 @@ class SettingsViewModel @Inject constructor(
         viewModelScope.launch {
             try {
                 // Show loading state
-                _uiState.value = UiState.Loading(LoadingOperation.Initial)
+                _uiState.emitLoading(LoadingOperation.Initial)
                 _state.value = _state.value.copy(
                     updateCheckInProgress = true,
                     error = null
@@ -431,7 +423,7 @@ class SettingsViewModel @Inject constructor(
                     latestVersion = if (updateAvailable) latestVersion else null
                 )
 
-                _uiState.value = UiState.Success(newData)
+                _uiState.emitSuccess(newData)
                 _state.value = _state.value.copy(
                     updateCheckInProgress = false,
                     updateAvailable = updateAvailable,
@@ -439,7 +431,7 @@ class SettingsViewModel @Inject constructor(
                 )
             } catch (e: Exception) {
                 val uiError = e.toUiError()
-                _uiState.value = UiState.Error(uiError, getCurrentData())
+                _uiState.emitError(uiError)
                 _state.value = _state.value.copy(
                     updateCheckInProgress = false,
                     error = "Failed to check for updates: ${e.message}"

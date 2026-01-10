@@ -79,7 +79,7 @@ fun AppNavigation(
             )
         }
 
-        // Route for tracker program enrollments (TRACKER program type) - TABLE VIEW
+        // Route for tracker program enrollments (TRACKER program type) - CARD VIEW
         composable(
             route = "TrackerEnrollments/{programId}/{programName}",
             arguments = listOf(
@@ -89,31 +89,14 @@ fun AppNavigation(
         ) { backStackEntry ->
             val programId = backStackEntry.arguments?.getString("programId") ?: ""
             val programName = backStackEntry.arguments?.getString("programName") ?: ""
-            com.ash.simpledataentry.presentation.tracker.TrackerEnrollmentTableScreen(
+            com.ash.simpledataentry.presentation.tracker.TrackerEnrollmentsScreen(
                 navController = navController,
                 programId = programId,
                 programName = programName
             )
         }
 
-        // Route for event program instances (EVENT program type) - TABLE VIEW
-        composable(
-            route = "EventsTable/{programId}/{programName}",
-            arguments = listOf(
-                navArgument("programId") { type = NavType.StringType },
-                navArgument("programName") { type = NavType.StringType }
-            )
-        ) { backStackEntry ->
-            val programId = backStackEntry.arguments?.getString("programId") ?: ""
-            val programName = backStackEntry.arguments?.getString("programName") ?: ""
-            com.ash.simpledataentry.presentation.tracker.EventsTableScreen(
-                navController = navController,
-                programId = programId,
-                programName = programName
-            )
-        }
-
-        // Route for event program instances (EVENT program type)
+        // Route for event program instances (EVENT program type) - CARD VIEW
         composable(
             route = "EventInstances/{programId}/{programName}",
             arguments = listOf(

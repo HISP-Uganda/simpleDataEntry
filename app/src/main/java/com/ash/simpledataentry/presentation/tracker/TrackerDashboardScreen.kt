@@ -8,15 +8,22 @@ import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.filled.Label
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.ArrowDropDown
 import androidx.compose.material.icons.filled.DateRange
 import androidx.compose.material.icons.filled.Edit
 import androidx.compose.material.icons.filled.Event
+import androidx.compose.material.icons.filled.LocationOn
+import androidx.compose.material.icons.filled.Phone
+import androidx.compose.material.icons.filled.Tag
+import androidx.compose.material.icons.filled.CalendarMonth
 import androidx.compose.material.icons.filled.Person
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.rotate
@@ -24,13 +31,17 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.navigation.NavController
 import com.ash.simpledataentry.presentation.core.BaseScreen
 import com.ash.simpledataentry.domain.model.Event
 import com.ash.simpledataentry.domain.model.TrackedEntityAttributeValue
+import com.ash.simpledataentry.ui.theme.TrackerAccent
+import com.ash.simpledataentry.ui.theme.TrackerAccentLight
 import java.text.SimpleDateFormat
 import java.util.*
+import java.net.URLDecoder
 
 /**
  * Dashboard screen showing enrollment details and associated events
@@ -45,16 +56,32 @@ fun TrackerDashboardScreen(
     viewModel: TrackerDashboardViewModel = hiltViewModel()
 ) {
     val uiState by viewModel.uiState.collectAsState()
+    var selectedTab by rememberSaveable { mutableStateOf(1) }
 
     // Initialize the view model
     LaunchedEffect(enrollmentId) {
         viewModel.loadEnrollmentDashboard(enrollmentId)
     }
 
+    val decodedProgramName = remember(programName) { URLDecoder.decode(programName, "UTF-8") }
+
     BaseScreen(
         title = "Tracker Dashboard",
+        subtitle = decodedProgramName,
         navController = navController,
         actions = {
+            if (selectedTab == 0) {
+                IconButton(
+                    onClick = {
+                        navController.navigate("EditEnrollment/$programId/$programName/$enrollmentId")
+                    }
+                ) {
+                    Icon(
+                        imageVector = Icons.Default.Edit,
+                        contentDescription = "Edit profile"
+                    )
+                }
+            }
             // Add new event action
             if (uiState.canAddEvents) {
                 IconButton(
@@ -104,28 +131,44 @@ fun TrackerDashboardScreen(
                     )
                 }
                 else -> {
-                    DashboardContent(
-                        uiState = uiState,
-                        onEditEnrollment = {
-                            navController.navigate("EditEnrollment/$programId/$programName/$enrollmentId")
-                        },
-                        onEditEvent = { eventId ->
-                            navController.navigate("EditEvent/$programId/$programName/$eventId/$enrollmentId")
-                        },
-                        onAddEvent = {
-                            // If a stage is selected in dropdown, navigate with that stage
-                            if (uiState.selectedStageId != null) {
-                                navController.navigate("CreateEvent/$programId/$programName/${uiState.selectedStageId}/$enrollmentId")
-                            } else {
-                                // Otherwise show stage selection dialog
-                                viewModel.showStageSelectionDialog()
+                    val eventsCount = uiState.events.size
+                    Column(modifier = Modifier.fillMaxSize()) {
+                        TabRow(selectedTabIndex = selectedTab) {
+                            Tab(
+                                selected = selectedTab == 0,
+                                onClick = { selectedTab = 0 },
+                                text = { Text("Profile") }
+                            )
+                            Tab(
+                                selected = selectedTab == 1,
+                                onClick = { selectedTab = 1 },
+                                text = { Text("Events ($eventsCount)") }
+                            )
+                        }
+
+                        when (selectedTab) {
+                            0 -> {
+                                ProfileTabContent(
+                                    uiState = uiState,
+                                    onEditEnrollment = {
+                                        navController.navigate("EditEnrollment/$programId/$programName/$enrollmentId")
+                                    }
+                                )
                             }
-                        },
-                        onAddEventForStage = { stageId ->
-                            navController.navigate("CreateEvent/$programId/$programName/$stageId/$enrollmentId")
-                        },
-                        viewModel = viewModel
-                    )
+                            else -> {
+                                EventsTabContent(
+                                    uiState = uiState,
+                                    onEditEvent = { eventId ->
+                                        navController.navigate("EditEvent/$programId/$programName/$eventId/$enrollmentId")
+                                    },
+                                    onAddEventForStage = { stageId ->
+                                        navController.navigate("CreateEvent/$programId/$programName/$stageId/$enrollmentId")
+                                    },
+                                    viewModel = viewModel
+                                )
+                            }
+                        }
+                    }
 
                     // Program Stage Selection Dialog
                     if (uiState.showStageSelectionDialog) {
@@ -148,11 +191,100 @@ fun TrackerDashboardScreen(
 }
 
 @Composable
-private fun DashboardContent(
+private fun ProfileTabContent(
     uiState: TrackerDashboardUiState,
-    onEditEnrollment: () -> Unit,
+    onEditEnrollment: () -> Unit
+) {
+    LazyColumn(
+        modifier = Modifier.fillMaxSize(),
+        contentPadding = PaddingValues(16.dp),
+        verticalArrangement = Arrangement.spacedBy(16.dp)
+    ) {
+        item {
+            val displayName = uiState.trackedEntityAttributes.firstOrNull { attribute ->
+                attribute.displayName.contains("name", ignoreCase = true) && !attribute.value.isNullOrBlank()
+            }?.value ?: "Tracked Entity"
+
+            Card(modifier = Modifier.fillMaxWidth()) {
+                Column(
+                    modifier = Modifier.padding(16.dp),
+                    verticalArrangement = Arrangement.spacedBy(12.dp)
+                ) {
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(12.dp)
+                    ) {
+                        Box(
+                            modifier = Modifier
+                                .size(64.dp)
+                                .background(TrackerAccentLight, shape = CircleShape),
+                            contentAlignment = Alignment.Center
+                        ) {
+                            Icon(
+                                imageVector = Icons.Default.Person,
+                                contentDescription = null,
+                                tint = TrackerAccent,
+                                modifier = Modifier.size(32.dp)
+                            )
+                        }
+
+                        Column(modifier = Modifier.weight(1f)) {
+                            Text(
+                                text = displayName,
+                                style = MaterialTheme.typography.titleMedium,
+                                fontWeight = FontWeight.SemiBold
+                            )
+                        }
+
+                        EnrollmentStatusChip(status = uiState.enrollmentStatus)
+                    }
+
+                    if (uiState.trackedEntityAttributes.any { !it.value.isNullOrBlank() }) {
+                        HorizontalDivider(modifier = Modifier.padding(vertical = 12.dp))
+                        uiState.trackedEntityAttributes
+                            .filter { !it.value.isNullOrBlank() }
+                            .forEach { attribute ->
+                                Row(
+                                    modifier = Modifier.fillMaxWidth(),
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                                ) {
+                                    Icon(
+                                        imageVector = attributeIcon(attribute.displayName),
+                                        contentDescription = null,
+                                        tint = MaterialTheme.colorScheme.onSurfaceVariant
+                                    )
+                                    Column(modifier = Modifier.weight(1f)) {
+                                        Text(
+                                            text = attribute.displayName,
+                                            style = MaterialTheme.typography.bodySmall,
+                                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                                        )
+                                        Text(
+                                            text = attribute.value ?: "N/A",
+                                            style = MaterialTheme.typography.bodyMedium
+                                        )
+                                    }
+                                }
+                            }
+                    }
+                }
+            }
+        }
+
+        item {
+            EnrollmentInfoCard(
+                uiState = uiState,
+                onEditEnrollment = onEditEnrollment
+            )
+        }
+    }
+}
+
+@Composable
+private fun EventsTabContent(
+    uiState: TrackerDashboardUiState,
     onEditEvent: (String) -> Unit,
-    onAddEvent: () -> Unit,
     onAddEventForStage: (String) -> Unit,
     viewModel: TrackerDashboardViewModel
 ) {
@@ -161,29 +293,9 @@ private fun DashboardContent(
         contentPadding = PaddingValues(16.dp),
         verticalArrangement = Arrangement.spacedBy(16.dp)
     ) {
-        // Enrollment Information Card (with collapsible attributes)
-        item {
-            EnrollmentInfoCard(
-                uiState = uiState,
-                onEditEnrollment = onEditEnrollment
-            )
-        }
-
-        // Events Section Header
-        item {
-            Text(
-                text = "Events",
-                style = MaterialTheme.typography.titleLarge,
-                fontWeight = FontWeight.Bold
-            )
-        }
-
-        // Stage-based Event Listing
         if (uiState.programStages.isEmpty()) {
             item {
-                Card(
-                    modifier = Modifier.fillMaxWidth()
-                ) {
+                Card(modifier = Modifier.fillMaxWidth()) {
                     Column(
                         modifier = Modifier
                             .fillMaxWidth()
@@ -206,7 +318,6 @@ private fun DashboardContent(
                 }
             }
         } else {
-            // List each stage with its events
             items(uiState.programStages) { stage ->
                 StageEventListCard(
                     stage = stage,
@@ -822,7 +933,7 @@ private fun StageFilterDropdown(
             },
             modifier = Modifier
                 .fillMaxWidth()
-                .menuAnchor(),
+                .menuAnchor(MenuAnchorType.PrimaryNotEditable, enabled = true),
             colors = OutlinedTextFieldDefaults.colors()
         )
 
@@ -881,6 +992,17 @@ private fun StageFilterDropdown(
                 )
             }
         }
+    }
+}
+
+private fun attributeIcon(label: String): ImageVector {
+    val key = label.lowercase(Locale.getDefault())
+    return when {
+        key.contains("id") || key.contains("identifier") || key.contains("national") -> Icons.Default.Tag
+        key.contains("phone") || key.contains("mobile") || key.contains("tel") -> Icons.Default.Phone
+        key.contains("birth") || key.contains("dob") || key.contains("date") -> Icons.Default.CalendarMonth
+        key.contains("address") || key.contains("location") || key.contains("village") || key.contains("ward") -> Icons.Default.LocationOn
+        else -> Icons.AutoMirrored.Filled.Label
     }
 }
 

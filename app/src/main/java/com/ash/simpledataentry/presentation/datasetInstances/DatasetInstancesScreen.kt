@@ -10,7 +10,9 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.ArrowDropDown
 import androidx.compose.material.icons.filled.Check
+import androidx.compose.material.icons.filled.ChevronRight
 import androidx.compose.material.icons.filled.FilterList
+import androidx.compose.material.icons.filled.Search
 import androidx.compose.material.icons.filled.Sync
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
@@ -35,20 +37,25 @@ import com.ash.simpledataentry.presentation.core.UiError
 import com.ash.simpledataentry.presentation.core.UiState
 import com.ash.simpledataentry.presentation.core.LoadingOperation
 import com.ash.simpledataentry.ui.theme.DHIS2BlueDeep
+import com.ash.simpledataentry.ui.theme.StatusCompleted
+import com.ash.simpledataentry.ui.theme.StatusCompletedLight
+import com.ash.simpledataentry.ui.theme.StatusDraft
+import com.ash.simpledataentry.ui.theme.StatusDraftLight
+import com.ash.simpledataentry.ui.theme.StatusSynced
+import com.ash.simpledataentry.ui.theme.StatusSyncedLight
 import org.hisp.dhis.mobile.ui.designsystem.theme.TextColor
 import androidx.compose.ui.graphics.Color
-import androidx.compose.material.icons.filled.CheckCircle
 import androidx.compose.material.icons.filled.Edit
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.slideInVertically
 import androidx.compose.animation.slideOutVertically
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
+import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.foundation.shape.CircleShape
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -62,7 +69,6 @@ fun DatasetInstancesPullDownFilter(
             .padding(16.dp),
         verticalArrangement = Arrangement.spacedBy(12.dp)
     ) {
-        var searchQuery by remember { mutableStateOf(currentFilter.searchQuery) }
         var syncStatus by remember { mutableStateOf(currentFilter.syncStatus) }
         var completionStatus by remember { mutableStateOf(currentFilter.completionStatus) }
         var sortBy by remember { mutableStateOf(currentFilter.sortBy) }
@@ -72,27 +78,6 @@ fun DatasetInstancesPullDownFilter(
         var showCompletionDropdown by remember { mutableStateOf(false) }
         var showSortByDropdown by remember { mutableStateOf(false) }
         var showSortOrderDropdown by remember { mutableStateOf(false) }
-
-        // Search field
-        OutlinedTextField(
-            value = searchQuery,
-            onValueChange = {
-                searchQuery = it
-                onApplyFilter(
-                    currentFilter.copy(
-                        searchQuery = searchQuery,
-                        sortBy = sortBy,
-                        sortOrder = sortOrder
-                    )
-                )
-            },
-            label = { Text("Search dataset instances") },
-            placeholder = { Text("Enter org unit, period...") },
-            modifier = Modifier.fillMaxWidth(),
-            leadingIcon = {
-                Icon(Icons.Default.FilterList, contentDescription = null)
-            }
-        )
 
         // Sort Controls Row
         Row(
@@ -257,11 +242,10 @@ fun DatasetInstancesPullDownFilter(
         }
 
         // Clear button
-        if (searchQuery.isNotBlank() || syncStatus != SyncStatus.ALL || completionStatus != CompletionStatus.ALL ||
+        if (currentFilter.searchQuery.isNotBlank() || syncStatus != SyncStatus.ALL || completionStatus != CompletionStatus.ALL ||
             sortBy != InstanceSortBy.PERIOD || sortOrder != SortOrder.DESCENDING) {
             OutlinedButton(
                 onClick = {
-                    searchQuery = ""
                     syncStatus = SyncStatus.ALL
                     completionStatus = CompletionStatus.ALL
                     sortBy = InstanceSortBy.PERIOD
@@ -292,12 +276,42 @@ private fun DatasetInstancesContent(
     viewModel: DatasetInstancesViewModel
 ) {
     val listContent: @Composable () -> Unit = {
-        LazyColumn(
-            modifier = Modifier.fillMaxSize(),
-            contentPadding = PaddingValues(16.dp),
-            verticalArrangement = Arrangement.spacedBy(8.dp)
-        ) {
-            items(filteredInstances) { instance ->
+        if (filteredInstances.isEmpty()) {
+            Box(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .padding(24.dp),
+                contentAlignment = Alignment.Center
+            ) {
+                Column(
+                    horizontalAlignment = Alignment.CenterHorizontally,
+                    verticalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    Text(
+                        text = "No entries found",
+                        style = MaterialTheme.typography.titleMedium,
+                        color = MaterialTheme.colorScheme.onSurface
+                    )
+                    Text(
+                        text = "Try syncing or adjust your filters.",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                    Button(
+                        onClick = { viewModel.syncDatasetInstances() },
+                        enabled = !isBlockingOperation
+                    ) {
+                        Text("Sync now")
+                    }
+                }
+            }
+        } else {
+            LazyColumn(
+                modifier = Modifier.fillMaxSize(),
+                contentPadding = PaddingValues(16.dp),
+                verticalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                items(filteredInstances) { instance ->
                 val formattedDate = try {
                     instance.lastUpdated?.let { date ->
                         val outputFormat = SimpleDateFormat("dd/MM/yyyy", Locale.ENGLISH)
@@ -329,6 +343,7 @@ private fun DatasetInstancesContent(
                     else -> false
                 }
                 val isComplete = instance.state == com.ash.simpledataentry.domain.model.ProgramInstanceState.COMPLETED
+                val isSynced = instance.syncStatus == SyncStatus.SYNCED
 
                 val instanceKey = when (instance) {
                     is com.ash.simpledataentry.domain.model.ProgramInstance.DatasetInstance ->
@@ -418,16 +433,37 @@ private fun DatasetInstancesContent(
                                         modifier = Modifier.weight(1f)
                                     )
 
-                                    if (dateForTopRight != null) {
-                                        Text(
-                                            text = dateForTopRight,
-                                            style = MaterialTheme.typography.bodySmall,
-                                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                                    Row(
+                                        verticalAlignment = Alignment.CenterVertically,
+                                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+                                    ) {
+                                        if (dateForTopRight != null) {
+                                            Text(
+                                                text = dateForTopRight,
+                                                style = MaterialTheme.typography.bodySmall,
+                                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                                            )
+                                        }
+                                        Icon(
+                                            imageVector = Icons.Default.ChevronRight,
+                                            contentDescription = null,
+                                            tint = MaterialTheme.colorScheme.onSurfaceVariant
                                         )
                                     }
                                 }
 
-                                if (showAttrCombo || hasLocalChanges || isComplete) {
+                                if (hasLocalChanges && !isComplete) {
+                                    Spacer(modifier = Modifier.height(8.dp))
+                                    LinearProgressIndicator(
+                                        modifier = Modifier
+                                            .fillMaxWidth()
+                                            .height(4.dp),
+                                        color = StatusDraft,
+                                        trackColor = StatusDraftLight
+                                    )
+                                }
+
+                                if (showAttrCombo || hasLocalChanges || isComplete || isSynced) {
                                     Spacer(modifier = Modifier.height(4.dp))
                                     Row(
                                         modifier = Modifier.fillMaxWidth(),
@@ -445,32 +481,32 @@ private fun DatasetInstancesContent(
                                             Spacer(modifier = Modifier.weight(1f))
                                         }
 
-                                        if ((hasLocalChanges || isComplete) && !bulkMode) {
+                                        if ((hasLocalChanges || isComplete || isSynced) && !bulkMode) {
                                             Row(
                                                 horizontalArrangement = Arrangement.spacedBy(8.dp),
                                                 verticalAlignment = Alignment.CenterVertically
                                             ) {
                                                 if (hasLocalChanges) {
-                                                    Icon(
-                                                        imageVector = Icons.Default.Sync,
-                                                        contentDescription = "Not synced",
-                                                        tint = MaterialTheme.colorScheme.onSecondaryContainer,
-                                                        modifier = Modifier
-                                                            .size(20.dp)
-                                                            .background(
-                                                                MaterialTheme.colorScheme.secondaryContainer,
-                                                                CircleShape
-                                                            )
-                                                            .padding(4.dp)
+                                                    StatusChip(
+                                                        label = "Unsynced",
+                                                        containerColor = StatusDraftLight,
+                                                        contentColor = StatusDraft
                                                     )
                                                 }
 
                                                 if (isComplete) {
-                                                    Icon(
-                                                        imageVector = Icons.Default.CheckCircle,
-                                                        contentDescription = "Complete",
-                                                        tint = MaterialTheme.colorScheme.primary,
-                                                        modifier = Modifier.size(20.dp)
+                                                    StatusChip(
+                                                        label = "Complete",
+                                                        containerColor = StatusCompletedLight,
+                                                        contentColor = StatusCompleted
+                                                    )
+                                                }
+
+                                                if (!hasLocalChanges && !isComplete && isSynced) {
+                                                    StatusChip(
+                                                        label = "Up to date",
+                                                        containerColor = StatusSyncedLight,
+                                                        contentColor = StatusSynced
                                                     )
                                                 }
                                             }
@@ -480,6 +516,7 @@ private fun DatasetInstancesContent(
                             }
                         }
                     }
+                }
                 }
             }
         }
@@ -494,6 +531,25 @@ private fun DatasetInstancesContent(
         }
     } else {
         listContent()
+    }
+}
+
+@Composable
+private fun StatusChip(
+    label: String,
+    containerColor: Color,
+    contentColor: Color
+) {
+    Surface(
+        color = containerColor,
+        contentColor = contentColor,
+        shape = RoundedCornerShape(12.dp)
+    ) {
+        Text(
+            text = label,
+            style = MaterialTheme.typography.labelSmall,
+            modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp)
+        )
     }
 }
 
@@ -545,6 +601,15 @@ fun DatasetInstancesScreen(
     val isSyncInProgress = currentUiState is UiState.Loading &&
         currentUiState.operation is LoadingOperation.Syncing
 
+    val subtitle = currentData?.let { data ->
+        when (data.programType) {
+            com.ash.simpledataentry.domain.model.ProgramType.DATASET -> "Data entries"
+            com.ash.simpledataentry.domain.model.ProgramType.TRACKER -> "Enrollments"
+            com.ash.simpledataentry.domain.model.ProgramType.EVENT -> "Events"
+            else -> null
+        }
+    }
+
     LaunchedEffect(currentUiState) {
         if (currentUiState is UiState.Error) {
             val message = when (val error = currentUiState.error) {
@@ -572,21 +637,10 @@ fun DatasetInstancesScreen(
 
     BaseScreen(
         title = datasetName,
+        subtitle = subtitle,
         navController = navController,
         syncStatusController = viewModel.syncController,
         actions = {
-            // Keep icons visible during loading - just disable them
-            IconButton(
-                onClick = { showFilterSection = !showFilterSection },
-                enabled = !isBlockingOperation && !bulkMode && currentData != null
-            ) {
-                Icon(
-                    imageVector = Icons.Default.FilterList,
-                    contentDescription = "Filter",
-                    tint = if (filterState.hasActiveFilters() || showFilterSection) Color.White else TextColor.OnSurface,
-                    modifier = Modifier.size(24.dp)
-                )
-            }
             IconButton(
                 onClick = {
                     if (!isBlockingOperation && currentData != null) {
@@ -609,17 +663,6 @@ fun DatasetInstancesScreen(
                         modifier = Modifier.size(24.dp)
                     )
                 }
-            }
-            IconButton(
-                onClick = { viewModel.toggleBulkCompletionMode() },
-                enabled = !isBlockingOperation && currentData != null
-            ) {
-                Icon(
-                    imageVector = Icons.Default.Check,
-                    contentDescription = if (bulkMode) "Exit Bulk Complete" else "Bulk Complete",
-                    tint = if (bulkMode) MaterialTheme.colorScheme.primary else TextColor.OnSurface,
-                    modifier = Modifier.size(24.dp)
-                )
             }
         },
         floatingActionButton = if (!bulkMode && currentData != null) {
@@ -681,6 +724,56 @@ fun DatasetInstancesScreen(
     ) {
         Box(modifier = Modifier.fillMaxSize()) {
             Column {
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = 16.dp, vertical = 12.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(12.dp)
+                ) {
+                    OutlinedTextField(
+                        value = filterState.searchQuery,
+                        onValueChange = { query ->
+                            viewModel.updateFilterState(filterState.copy(searchQuery = query))
+                        },
+                        modifier = Modifier.weight(1f),
+                        singleLine = true,
+                        placeholder = { Text("Search instances...") },
+                        leadingIcon = {
+                            Icon(
+                                imageVector = Icons.Default.Search,
+                                contentDescription = null
+                            )
+                        }
+                    )
+
+                    IconButton(
+                        onClick = { showFilterSection = !showFilterSection },
+                        enabled = !isBlockingOperation && !bulkMode && currentData != null
+                    ) {
+                        Icon(
+                            imageVector = Icons.Default.FilterList,
+                            contentDescription = "Filter",
+                            tint = if (filterState.hasActiveFilters() || showFilterSection) {
+                                MaterialTheme.colorScheme.primary
+                            } else {
+                                MaterialTheme.colorScheme.onSurfaceVariant
+                            }
+                        )
+                    }
+
+                    IconButton(
+                        onClick = { viewModel.toggleBulkCompletionMode() },
+                        enabled = !isBlockingOperation && currentData != null
+                    ) {
+                        Icon(
+                            imageVector = Icons.Default.Check,
+                            contentDescription = if (bulkMode) "Exit Bulk Complete" else "Bulk Complete",
+                            tint = if (bulkMode) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    }
+                }
+
                 // Pull-down filter section
                 AnimatedVisibility(
                     visible = showFilterSection,
