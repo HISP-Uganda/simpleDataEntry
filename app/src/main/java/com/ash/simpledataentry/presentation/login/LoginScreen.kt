@@ -59,11 +59,14 @@ import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.layout.onGloballyPositioned
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.text.input.VisualTransformation
+import androidx.compose.ui.unit.IntSize
 import androidx.compose.ui.unit.dp
 import androidx.compose.foundation.layout.imePadding
 import androidx.compose.foundation.layout.Row
@@ -75,6 +78,7 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.animation.core.*
 import androidx.compose.foundation.BorderStroke
+import androidx.compose.foundation.layout.width
 import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.navigation.NavController
 import com.ash.simpledataentry.R
@@ -358,6 +362,9 @@ fun LoginScreen(
                                 style = MaterialTheme.typography.titleMedium
                             )
 
+                            var serverUrlFieldSize by remember { mutableStateOf(IntSize.Zero) }
+                            val density = LocalDensity.current
+
                             Box {
                                 OutlinedTextField(
                                     value = serverUrl,
@@ -368,6 +375,9 @@ fun LoginScreen(
                                     label = { Text("Server URL") },
                                     modifier = Modifier
                                         .fillMaxWidth()
+                                        .onGloballyPositioned { coordinates ->
+                                            serverUrlFieldSize = coordinates.size
+                                        }
                                         .onFocusChanged { focusState ->
                                             if (!focusState.isFocused) {
                                                 viewModel.clearUrlSuggestions()
@@ -403,7 +413,10 @@ fun LoginScreen(
 
                                 DropdownMenu(
                                     expanded = showUrlDropdown,
-                                    onDismissRequest = { showUrlDropdown = false }
+                                    onDismissRequest = { showUrlDropdown = false },
+                                    modifier = Modifier.width(
+                                        with(density) { serverUrlFieldSize.width.toDp() }
+                                    )
                                 ) {
                                     loginData.cachedUrls.take(5).forEach { cachedUrl ->
                                         val isSelected = cachedUrl.url == serverUrl

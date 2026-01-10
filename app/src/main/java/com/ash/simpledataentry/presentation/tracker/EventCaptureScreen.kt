@@ -245,27 +245,31 @@ fun EventCaptureScreen(
     }
     var currentSectionIndex by remember(sectionNames) { mutableStateOf(0) }
     var expandedSection by remember(sectionNames) { mutableStateOf(sectionNames.firstOrNull()) }
+    var pendingScrollIndex by remember { mutableStateOf<Int?>(null) }
     if (currentSectionIndex !in sectionNames.indices) {
         currentSectionIndex = 0
     }
     if (expandedSection !in sectionNames) {
         expandedSection = sectionNames.firstOrNull()
     }
+    if (pendingScrollIndex != null && pendingScrollIndex !in sectionNames.indices) {
+        pendingScrollIndex = null
+    }
     val currentSectionName = sectionNames.getOrNull(currentSectionIndex) ?: "Section"
 
-    val selectSection: (Int) -> Unit = { index ->
+    val selectSection: (Int, Boolean) -> Unit = { index, shouldScroll ->
         if (index in sectionNames.indices) {
             currentSectionIndex = index
             expandedSection = sectionNames[index]
+            pendingScrollIndex = if (shouldScroll) index else null
         }
     }
 
-    LaunchedEffect(currentSectionIndex, sectionNames.size) {
-        if (sectionNames.isNotEmpty()) {
-            val sectionStartIndex = 1
-            val targetIndex = sectionStartIndex + currentSectionIndex
-            listState.animateScrollToItem(index = targetIndex)
-        }
+    LaunchedEffect(pendingScrollIndex, sectionNames.size) {
+        val target = pendingScrollIndex ?: return@LaunchedEffect
+        val sectionStartIndex = 1
+        listState.animateScrollToItem(index = sectionStartIndex + target)
+        pendingScrollIndex = null
     }
 
     // Main screen with Material 3 Scaffold (reuse TrackerEnrollment pattern)
@@ -398,10 +402,10 @@ fun EventCaptureScreen(
                                         sectionIndex = currentSectionIndex.coerceAtLeast(0),
                                         totalSections = sectionNames.size.coerceAtLeast(1),
                                         onPreviousSection = {
-                                            selectSection((currentSectionIndex - 1).coerceAtLeast(0))
+                                            selectSection((currentSectionIndex - 1).coerceAtLeast(0), true)
                                         },
                                         onNextSection = {
-                                            selectSection((currentSectionIndex + 1).coerceAtMost(sectionNames.lastIndex))
+                                            selectSection((currentSectionIndex + 1).coerceAtMost(sectionNames.lastIndex), true)
                                         },
                                         onPreviousSubsection = {},
                                         onNextSubsection = {},
@@ -557,7 +561,7 @@ fun EventCaptureScreen(
                                                         expandedSection = if (expandedSection == sectionName) {
                                                             null
                                                         } else {
-                                                            selectSection(sectionNames.indexOf(sectionName))
+                                                            selectSection(sectionNames.indexOf(sectionName), false)
                                                             sectionName
                                                         }
                                                     },
@@ -664,6 +668,25 @@ private fun EventSectionAccordion(
                 programRuleEffect = programRuleEffect,
                 level = 0
             )
+            val mappedIds = remember(impliedMappings) {
+                impliedMappings.map { it.dataElementId }.toSet()
+            }
+            val unmappedValues = remember(dataValues, mappedIds) {
+                dataValues.filterNot { it.dataElement in mappedIds }
+            }
+            if (unmappedValues.isNotEmpty()) {
+                Spacer(modifier = Modifier.height(8.dp))
+                unmappedValues.forEach { dataValue ->
+                    key(dataValue.dataElement) {
+                        EventDataValueField(
+                            dataValue = dataValue,
+                            onValueChange = { value -> onValueChange(value, dataValue) },
+                            programRuleEffect = programRuleEffect,
+                            modifier = Modifier.padding(vertical = 4.dp)
+                        )
+                    }
+                }
+            }
         } else {
             // No implied categories - render flat list
             dataValues.forEach { dataValue ->
@@ -691,14 +714,6 @@ private fun EventDataElementAccordion(
 ) {
     val bringIntoViewRequester = remember { BringIntoViewRequester() }
     val coroutineScope = rememberCoroutineScope()
-
-    LaunchedEffect(expanded) {
-        if (expanded) {
-            coroutineScope.launch {
-                bringIntoViewRequester.bringIntoView()
-            }
-        }
-    }
 
     Card(
         modifier = Modifier
@@ -736,6 +751,7 @@ private fun EventDataElementAccordion(
                                 }
                             }
                         }
+                        .bringIntoViewRequester(bringIntoViewRequester)
                         .padding(horizontal = 16.dp, vertical = 14.dp),
                     horizontalArrangement = Arrangement.SpaceBetween,
                     verticalAlignment = Alignment.CenterVertically
@@ -769,7 +785,6 @@ private fun EventDataElementAccordion(
                         modifier = Modifier
                             .fillMaxWidth()
                             .padding(start = 12.dp, end = 12.dp, bottom = 16.dp)
-                            .bringIntoViewRequester(bringIntoViewRequester)
                     ) {
                         content()
                     }
@@ -816,6 +831,7 @@ private fun ImpliedCategoryGroupRecursive(
             option to mapping
         }
         .groupBy({ it.first }, { it.second })
+    val unmappedAtCurrentLevel = mappings.filter { it.categoryOptionsByLevel[currentCategory.level] == null }
 
     if (groupedByCurrentLevel.isEmpty()) {
         mappings.forEach { mapping ->
@@ -828,6 +844,40 @@ private fun ImpliedCategoryGroupRecursive(
                         programRuleEffect = programRuleEffect,
                         modifier = Modifier.padding(vertical = 4.dp)
                     )
+                }
+            }
+        }
+        return
+    }
+
+    if (level == categories.lastIndex && groupedByCurrentLevel.size <= 3) {
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(vertical = 8.dp),
+            horizontalArrangement = Arrangement.spacedBy(12.dp)
+        ) {
+            groupedByCurrentLevel.forEach { (optionName, submappings) ->
+                Column(modifier = Modifier.weight(1f)) {
+                    Text(
+                        text = optionName,
+                        style = MaterialTheme.typography.labelLarge,
+                        fontWeight = FontWeight.SemiBold,
+                        modifier = Modifier.padding(bottom = 4.dp)
+                    )
+                    submappings.forEach { mapping ->
+                        val dataValue = dataValues.find { it.dataElement == mapping.dataElementId }
+                        if (dataValue != null) {
+                            key(dataValue.dataElement) {
+                                EventDataValueField(
+                                    dataValue = dataValue,
+                                    onValueChange = { value -> onValueChange(value, dataValue) },
+                                    programRuleEffect = programRuleEffect,
+                                    modifier = Modifier.padding(vertical = 4.dp)
+                                )
+                            }
+                        }
+                    }
                 }
             }
         }
@@ -850,6 +900,23 @@ private fun ImpliedCategoryGroupRecursive(
                     programRuleEffect = programRuleEffect,
                     level = level + 1
                 )
+            }
+        }
+    }
+
+    if (unmappedAtCurrentLevel.isNotEmpty()) {
+        Spacer(modifier = Modifier.height(8.dp))
+        unmappedAtCurrentLevel.forEach { mapping ->
+            val dataValue = dataValues.find { it.dataElement == mapping.dataElementId }
+            if (dataValue != null) {
+                key("unmapped_${level}_${dataValue.dataElement}") {
+                    EventDataValueField(
+                        dataValue = dataValue,
+                        onValueChange = { value -> onValueChange(value, dataValue) },
+                        programRuleEffect = programRuleEffect,
+                        modifier = Modifier.padding(vertical = 4.dp)
+                    )
+                }
             }
         }
     }

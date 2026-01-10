@@ -17,13 +17,30 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.catch
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
 import javax.inject.Inject
+
+data class EventTableColumn(
+    val id: String,
+    val displayName: String,
+    val sortable: Boolean = false
+)
+
+data class EventTableRow(
+    val id: String,
+    val cells: Map<String, String>
+)
 
 // Pure data model (no UI state like isLoading)
 data class EventInstancesData(
     val events: List<ProgramInstance.EventInstance> = emptyList(),
     val program: com.ash.simpledataentry.domain.model.Program? = null,
-    val syncMessage: String? = null
+    val syncMessage: String? = null,
+    val lineListColumns: List<EventTableColumn> = emptyList(),
+    val lineListRows: List<EventTableRow> = emptyList(),
+    val lineListLoading: Boolean = false,
+    val lineListEventIds: List<String> = emptyList()
 )
 
 @HiltViewModel
@@ -39,6 +56,9 @@ class EventInstancesViewModel @Inject constructor(
         UiState.Success(EventInstancesData())
     )
     val uiState: StateFlow<UiState<EventInstancesData>> = _uiState.asStateFlow()
+
+    private val d2 = sessionManager.getD2()
+    private val dataElementNameCache = mutableMapOf<String, String>()
 
     init {
         // Account change observer
@@ -105,7 +125,15 @@ class EventInstancesViewModel @Inject constructor(
                         val events = instances.filterIsInstance<ProgramInstance.EventInstance>()
                         Log.d(TAG, "Loaded ${events.size} event instances")
 
-                        val data = EventInstancesData(events = events)
+                        val currentData = getCurrentData()
+                        val data = currentData.copy(
+                            events = events,
+                            syncMessage = null,
+                            lineListColumns = emptyList(),
+                            lineListRows = emptyList(),
+                            lineListLoading = false,
+                            lineListEventIds = emptyList()
+                        )
                         _uiState.value = UiState.Success(data)
                     }
             } catch (exception: Exception) {
@@ -154,6 +182,99 @@ class EventInstancesViewModel @Inject constructor(
                 _uiState.value = UiState.Error(uiError, getCurrentData())
             }
         }
+    }
+
+    fun loadLineList(events: List<ProgramInstance.EventInstance>) {
+        val currentData = getCurrentData()
+        val eventIds = events.map { it.id }
+        if (eventIds == currentData.lineListEventIds && currentData.lineListColumns.isNotEmpty()) {
+            return
+        }
+
+        _uiState.value = UiState.Success(currentData.copy(lineListLoading = true))
+        viewModelScope.launch {
+            val (columns, rows) = withContext(Dispatchers.IO) {
+                buildEventTableData(events)
+            }
+            val updatedData = getCurrentData().copy(
+                lineListColumns = columns,
+                lineListRows = rows,
+                lineListLoading = false,
+                lineListEventIds = eventIds
+            )
+            _uiState.value = UiState.Success(updatedData)
+        }
+    }
+
+    fun buildEventTableData(
+        events: List<ProgramInstance.EventInstance>
+    ): Pair<List<EventTableColumn>, List<EventTableRow>> {
+        val d2Instance = d2 ?: return Pair(emptyList(), emptyList())
+        if (events.isEmpty()) return Pair(emptyList(), emptyList())
+
+        val stageIds = events.mapNotNull { it.programStage }.filter { it.isNotBlank() }.distinct()
+        val stageId = if (stageIds.size == 1) stageIds.first() else null
+
+        val columns = mutableListOf<EventTableColumn>()
+        columns.add(EventTableColumn("eventDate", "Date", sortable = false))
+        columns.add(EventTableColumn("status", "Status", sortable = false))
+
+        if (stageId != null) {
+            try {
+                val programStageDataElements = d2Instance.programModule()
+                    .programStageDataElements()
+                    .byProgramStage().eq(stageId)
+                    .blockingGet()
+
+                programStageDataElements.forEach { psde ->
+                    val dataElementId = psde.dataElement()?.uid() ?: return@forEach
+                    val dataElementName = dataElementNameCache.getOrPut(dataElementId) {
+                        try {
+                            val de = d2Instance.dataElementModule().dataElements()
+                                .uid(dataElementId)
+                                .blockingGet()
+                            de?.displayName() ?: de?.name() ?: dataElementId
+                        } catch (e: Exception) {
+                            Log.w(TAG, "Failed to load data element name: ${e.message}")
+                            dataElementId
+                        }
+                    }
+
+                    columns.add(EventTableColumn(dataElementId, dataElementName, sortable = false))
+                }
+            } catch (e: Exception) {
+                Log.e(TAG, "Failed to build event line list columns: ${e.message}")
+            }
+        }
+
+        val dateFormatter = java.text.SimpleDateFormat("dd/MM/yyyy", java.util.Locale.getDefault())
+        val rows = events.map { event ->
+            val cells = mutableMapOf<String, String>()
+            cells["eventDate"] = event.eventDate?.let { dateFormatter.format(it) } ?: "No date"
+            cells["status"] = event.state.name
+
+            if (stageId != null) {
+                try {
+                    val dataValues = d2Instance.trackedEntityModule()
+                        .trackedEntityDataValues()
+                        .byEvent().eq(event.id)
+                        .blockingGet()
+                    dataValues.forEach { dataValue ->
+                        val dataElementId = dataValue.dataElement() ?: return@forEach
+                        cells[dataElementId] = dataValue.value() ?: ""
+                    }
+                } catch (e: Exception) {
+                    Log.w(TAG, "Failed to load data values for event ${event.id}: ${e.message}")
+                }
+            }
+
+            EventTableRow(
+                id = event.id,
+                cells = cells
+            )
+        }
+
+        return columns to rows
     }
 
     companion object {

@@ -33,6 +33,7 @@ enum class CategoryPattern {
     PREFIX_GROUPED,    // "Prefix: Field1", "Prefix: Field2"
     UNDERSCORE_DELIM,  // "Category1_Category2_Field"
     PIPE_DELIM,        // "Category1 | Category2 | Field"
+    PARENTHETICAL,     // "Field Name (Option)"
     FLAT              // No detectable structure
 }
 

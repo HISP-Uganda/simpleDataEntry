@@ -21,7 +21,11 @@ class ImpliedCategoryInferenceService @Inject constructor() {
         private const val TAG = "ImpliedCategoryInference"
         private const val MIN_CONFIDENCE = 0.6  // Minimum confidence to accept pattern
         private const val MIN_STRUCTURED_RATIO = 0.7  // At least 70% of elements must fit pattern
+        private const val MIN_PAREN_STRUCTURED_RATIO = 0.5  // Allow mixed sections for parenthetical suffixes
+        private const val MIN_PAREN_GENDER_RATIO = 0.25  // Allow sparse gender suffixes
         private val SEPARATORS = listOf(" - ", " | ", "_", " / ", ": ")
+        private const val PAREN_SUFFIX = "__PAREN_SUFFIX__"
+        private val PAREN_SUFFIX_REGEX = Regex("^(.*)\\(([^)]+)\\)\\s*$")
     }
 
     /**
@@ -54,6 +58,15 @@ class ImpliedCategoryInferenceService @Inject constructor() {
                     bestScore = score
                     bestResult = result
                 }
+            }
+        }
+
+        val parentheticalResult = tryInferWithParentheticalSuffix(dataElements, sectionName)
+        if (parentheticalResult != null) {
+            val score = parentheticalResult.confidence + (parentheticalResult.categories.size * 0.1)
+            if (score > bestScore) {
+                bestScore = score
+                bestResult = parentheticalResult
             }
         }
 
@@ -99,6 +112,10 @@ class ImpliedCategoryInferenceService @Inject constructor() {
             Log.d(TAG, "  Separator '$separator': no valid categories found")
             return null
         }
+        if (reinferredCategories.none { it.options.size > 1 }) {
+            Log.d(TAG, "  Separator '$separator': no multi-option categories found")
+            return null
+        }
 
         // Calculate confidence based on:
         // 1. Ratio of structured elements
@@ -129,6 +146,111 @@ class ImpliedCategoryInferenceService @Inject constructor() {
             totalDataElements = dataElements.size,
             structuredDataElements = parsedNames.size
         )
+    }
+
+    private fun tryInferWithParentheticalSuffix(
+        dataElements: List<DataValue>,
+        sectionName: String
+    ): ImpliedCategoryCombination? {
+        val parsed = dataElements.mapNotNull { element ->
+            val match = PAREN_SUFFIX_REGEX.find(element.dataElementName) ?: return@mapNotNull null
+            val baseName = match.groupValues[1].trim()
+            val option = match.groupValues[2].trim()
+            if (baseName.isBlank() || option.isBlank()) return@mapNotNull null
+            element to (baseName to option)
+        }
+
+        val structuredRatio = parsed.size.toDouble() / dataElements.size
+        val rawBaseNames = parsed.map { it.second.first }
+        val suffixOptions = parsed.map { it.second.second }
+        val distinctSuffixOptions = linkedSetOf<String>().apply {
+            suffixOptions.forEach { add(it) }
+        }.toList()
+
+        val genderOptions = distinctSuffixOptions.filter { isGenderOption(it) }
+        val requiredRatio = if (genderOptions.size >= 2) MIN_PAREN_GENDER_RATIO else MIN_PAREN_STRUCTURED_RATIO
+        if (structuredRatio < requiredRatio) {
+            Log.d(
+                TAG,
+                "  Parenthetical: only ${(structuredRatio * 100).toInt()}% fit (need ${(requiredRatio * 100).toInt()}%)"
+            )
+            return null
+        }
+
+        if (distinctSuffixOptions.size <= 1) {
+            Log.d(TAG, "  Parenthetical: only one suffix option detected")
+            return null
+        }
+
+        val normalizedBaseNames = normalizeParentheticalBaseNames(rawBaseNames)
+        val baseNamesWithSuffix = parsed.map { (_, pair) ->
+            val baseName = pair.first
+            val option = pair.second
+            if (genderOptions.size >= 2 && !isGenderOption(option)) {
+                "$baseName (${option.trim()})"
+            } else {
+                baseName
+            }
+        }
+        val normalizedWithSuffix = normalizeParentheticalBaseNames(baseNamesWithSuffix)
+        val distinctBaseNames = linkedSetOf<String>().apply {
+            normalizedWithSuffix.forEach { add(it) }
+        }.toList()
+
+        val confidence = (structuredRatio * 0.6) + (minOf(distinctSuffixOptions.size / 4.0, 1.0) * 0.4)
+        Log.d(
+            TAG,
+            "  Parenthetical: ${distinctBaseNames.size} base names, ${distinctSuffixOptions.size} suffix options, confidence=$confidence"
+        )
+
+        val categories = mutableListOf(
+            ImpliedCategory(
+                name = "Indicator",
+                options = distinctBaseNames,
+                level = 0,
+                separator = PAREN_SUFFIX
+            )
+        )
+        if (genderOptions.size >= 2) {
+            categories.add(
+                ImpliedCategory(
+                    name = "Gender",
+                    options = genderOptions,
+                    level = 1,
+                    separator = PAREN_SUFFIX
+                )
+            )
+        } else {
+            categories.add(
+                ImpliedCategory(
+                    name = inferCategoryName(distinctSuffixOptions, 1),
+                    options = distinctSuffixOptions,
+                    level = 1,
+                    separator = PAREN_SUFFIX
+                )
+            )
+        }
+
+        return ImpliedCategoryCombination(
+            categories = categories,
+            confidence = confidence,
+            pattern = CategoryPattern.PARENTHETICAL,
+            totalDataElements = dataElements.size,
+            structuredDataElements = parsed.size
+        )
+    }
+
+    private fun normalizeParentheticalBaseNames(baseNames: List<String>): List<String> {
+        if (baseNames.isEmpty()) return baseNames
+        val commonPrefix = baseNames.first().substringBefore(" - ", missingDelimiterValue = "")
+        val hasCommonPrefix = commonPrefix.isNotBlank() && baseNames.all {
+            it.startsWith("$commonPrefix - ")
+        }
+        return if (hasCommonPrefix) {
+            baseNames.map { it.removePrefix("$commonPrefix - ").trim() }
+        } else {
+            baseNames.map { it.trim() }
+        }
     }
 
     private fun buildCategoriesWithFallback(
@@ -231,6 +353,38 @@ class ImpliedCategoryInferenceService @Inject constructor() {
     ): List<ImpliedCategoryMapping> {
 
         val separator = combination.categories.firstOrNull()?.separator ?: return emptyList()
+        if (separator == PAREN_SUFFIX) {
+            val baseOptions = combination.categories.firstOrNull()?.options ?: emptyList()
+            val genderOptions = combination.categories
+                .firstOrNull { it.name.equals("Gender", ignoreCase = true) }
+                ?.options
+                ?: emptyList()
+            return dataElements.mapNotNull { element ->
+                val match = PAREN_SUFFIX_REGEX.find(element.dataElementName) ?: return@mapNotNull null
+                val baseNameRaw = match.groupValues[1].trim()
+                val option = match.groupValues[2].trim()
+                if (baseNameRaw.isBlank() || option.isBlank()) return@mapNotNull null
+
+                val normalizedBase = if (genderOptions.isNotEmpty() && !isGenderOption(option)) {
+                    resolveParentheticalBaseName("$baseNameRaw (${option.trim()})", baseOptions)
+                } else {
+                    resolveParentheticalBaseName(baseNameRaw, baseOptions)
+                }
+                val level1Option = if (genderOptions.isNotEmpty() && isGenderOption(option)) option else null
+
+                ImpliedCategoryMapping(
+                    dataElementId = element.dataElement,
+                    dataElementName = element.dataElementName,
+                    categoryOptionsByLevel = buildMap {
+                        put(0, normalizedBase)
+                        if (level1Option != null) {
+                            put(1, level1Option)
+                        }
+                    },
+                    fieldName = normalizedBase
+                )
+            }
+        }
 
         return dataElements.mapNotNull { element ->
             val parts = element.dataElementName.split(separator)
@@ -258,6 +412,26 @@ class ImpliedCategoryInferenceService @Inject constructor() {
                 )
             }
         }
+    }
+
+    private fun resolveParentheticalBaseName(baseNameRaw: String, options: List<String>): String {
+        val trimmed = baseNameRaw.trim()
+        val exactMatch = options.firstOrNull { it.equals(trimmed, ignoreCase = true) }
+        if (exactMatch != null) {
+            return exactMatch
+        }
+        val suffixMatch = options.firstOrNull { option ->
+            trimmed.endsWith(" - $option", ignoreCase = true)
+        }
+        if (suffixMatch != null) {
+            return suffixMatch
+        }
+        return trimmed
+    }
+
+    private fun isGenderOption(option: String): Boolean {
+        val normalized = option.trim().lowercase(Locale.ENGLISH)
+        return normalized in setOf("male", "female", "man", "woman", "boy", "girl", "m", "f")
     }
 
     /**

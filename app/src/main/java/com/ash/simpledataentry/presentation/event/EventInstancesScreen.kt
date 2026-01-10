@@ -1,12 +1,12 @@
 package com.ash.simpledataentry.presentation.event
 
-import android.annotation.SuppressLint
-import android.text.format.DateFormat
-import android.util.Log
 import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
+import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.Check
@@ -14,12 +14,17 @@ import androidx.compose.material.icons.filled.ChevronRight
 import androidx.compose.material.icons.filled.FilterList
 import androidx.compose.material.icons.filled.Search
 import androidx.compose.material.icons.filled.Sync
+import androidx.compose.material.icons.filled.ViewList
+import androidx.compose.material.icons.filled.ViewModule
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextAlign
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.navigation.NavController
@@ -56,6 +61,7 @@ fun EventInstancesScreen(
     val uiState by viewModel.uiState.collectAsState()
     var showSyncDialog by remember { mutableStateOf(false) }
     var searchQuery by remember { mutableStateOf("") }
+    var useCardView by rememberSaveable { mutableStateOf(true) }
 
     // Initialize with program ID
     LaunchedEffect(programId) {
@@ -192,6 +198,16 @@ fun EventInstancesScreen(
                                 tint = MaterialTheme.colorScheme.onSurfaceVariant
                             )
                         }
+
+                        IconButton(
+                            onClick = { useCardView = !useCardView }
+                        ) {
+                            Icon(
+                                imageVector = if (useCardView) Icons.Default.ViewList else Icons.Default.ViewModule,
+                                contentDescription = "Toggle list view",
+                                tint = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                        }
                     }
                 // Content with data
                 when {
@@ -227,22 +243,60 @@ fun EventInstancesScreen(
                         }
                     }
                     else -> {
-                        LazyColumn(
-                            modifier = Modifier
-                                .fillMaxSize()
-                                .padding(horizontal = 16.dp, vertical = 8.dp),
-                            verticalArrangement = Arrangement.spacedBy(8.dp)
-                        ) {
-                            items(filteredEvents) { event ->
-                                EventCard(
-                                    event = event,
-                                    onClick = {
+                        if (useCardView) {
+                            LazyColumn(
+                                modifier = Modifier
+                                    .fillMaxSize()
+                                    .padding(horizontal = 16.dp, vertical = 8.dp),
+                                verticalArrangement = Arrangement.spacedBy(8.dp)
+                            ) {
+                                items(filteredEvents) { event ->
+                                    EventCard(
+                                        event = event,
+                                        onClick = {
+                                            val encodedProgramId = URLEncoder.encode(programId, "UTF-8")
+                                            val encodedProgramName = URLEncoder.encode(programName, "UTF-8")
+                                            navController.navigate("EditStandaloneEvent/$encodedProgramId/$encodedProgramName/${event.id}") {
+                                                launchSingleTop = true
+                                            }
+                                        }
+                                    )
+                                }
+                            }
+                        } else {
+                            LaunchedEffect(filteredEvents, useCardView) {
+                                if (!useCardView) {
+                                    viewModel.loadLineList(filteredEvents)
+                                }
+                            }
+                            if (data.lineListLoading) {
+                                LinearProgressIndicator(
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .padding(horizontal = 16.dp, vertical = 8.dp)
+                                )
+                            }
+                            if (data.lineListColumns.isNotEmpty() && data.lineListRows.isNotEmpty()) {
+                                CompactEventTable(
+                                    columns = data.lineListColumns,
+                                    rows = data.lineListRows,
+                                    onRowClick = { row ->
                                         val encodedProgramId = URLEncoder.encode(programId, "UTF-8")
                                         val encodedProgramName = URLEncoder.encode(programName, "UTF-8")
-                                        navController.navigate("EditStandaloneEvent/$encodedProgramId/$encodedProgramName/${event.id}") {
+                                        navController.navigate("EditStandaloneEvent/$encodedProgramId/$encodedProgramName/${row.id}") {
                                             launchSingleTop = true
                                         }
-                                    }
+                                    },
+                                    modifier = Modifier
+                                        .fillMaxSize()
+                                        .padding(horizontal = 16.dp, vertical = 8.dp)
+                                )
+                            } else if (!data.lineListLoading) {
+                                Text(
+                                    text = "No line list data available",
+                                    style = MaterialTheme.typography.bodyMedium,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                    modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp)
                                 )
                             }
                         }
@@ -378,6 +432,117 @@ private fun EventCard(
                 )
             }
         }
+    }
+}
+
+@Composable
+private fun CompactEventTable(
+    columns: List<com.ash.simpledataentry.presentation.event.EventTableColumn>,
+    rows: List<com.ash.simpledataentry.presentation.event.EventTableRow>,
+    onRowClick: (com.ash.simpledataentry.presentation.event.EventTableRow) -> Unit,
+    modifier: Modifier = Modifier
+) {
+    val scrollState = rememberScrollState()
+    Column(modifier = modifier.fillMaxWidth()) {
+        CompactTableHeaderRow(columns = columns, scrollState = scrollState)
+        rows.forEach { row ->
+            CompactTableDataRow(
+                row = row,
+                columns = columns,
+                scrollState = scrollState,
+                onClick = { onRowClick(row) }
+            )
+            if (row != rows.last()) {
+                HorizontalDivider()
+            }
+        }
+    }
+}
+
+@Composable
+private fun CompactTableHeaderRow(
+    columns: List<com.ash.simpledataentry.presentation.event.EventTableColumn>,
+    scrollState: androidx.compose.foundation.ScrollState
+) {
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .background(MaterialTheme.colorScheme.surfaceVariant)
+            .horizontalScroll(scrollState)
+            .padding(vertical = 8.dp)
+    ) {
+        columns.forEach { column ->
+            CompactTableHeaderCell(column = column)
+        }
+    }
+}
+
+@Composable
+private fun CompactTableHeaderCell(
+    column: com.ash.simpledataentry.presentation.event.EventTableColumn
+) {
+    Box(
+        modifier = Modifier
+            .width(120.dp)
+            .padding(horizontal = 6.dp),
+        contentAlignment = Alignment.CenterStart
+    ) {
+        Text(
+            text = column.displayName,
+            style = MaterialTheme.typography.labelMedium,
+            fontWeight = FontWeight.Bold,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+            maxLines = 2,
+            overflow = TextOverflow.Ellipsis
+        )
+    }
+}
+
+@Composable
+private fun CompactTableDataRow(
+    row: com.ash.simpledataentry.presentation.event.EventTableRow,
+    columns: List<com.ash.simpledataentry.presentation.event.EventTableColumn>,
+    scrollState: androidx.compose.foundation.ScrollState,
+    onClick: () -> Unit
+) {
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clickable { onClick() }
+            .horizontalScroll(scrollState)
+            .padding(vertical = 8.dp)
+    ) {
+        columns.forEach { column ->
+            CompactTableDataCell(
+                value = row.cells[column.id] ?: "",
+                columnId = column.id
+            )
+        }
+    }
+}
+
+@Composable
+private fun CompactTableDataCell(
+    value: String,
+    columnId: String
+) {
+    Box(
+        modifier = Modifier
+            .width(120.dp)
+            .padding(horizontal = 6.dp),
+        contentAlignment = Alignment.CenterStart
+    ) {
+        Text(
+            text = value,
+            style = MaterialTheme.typography.bodySmall,
+            maxLines = 2,
+            overflow = TextOverflow.Ellipsis,
+            textAlign = if (columnId == "status") {
+                TextAlign.Center
+            } else {
+                TextAlign.Start
+            }
+        )
     }
 }
 
