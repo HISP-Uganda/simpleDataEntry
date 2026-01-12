@@ -17,6 +17,7 @@ import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material.icons.filled.Notifications
 import androidx.compose.material.icons.filled.CheckCircle
 import androidx.compose.material3.*
+import androidx.compose.material3.MenuAnchorType
 import androidx.compose.ui.hapticfeedback.HapticFeedbackType
 import androidx.compose.ui.platform.LocalHapticFeedback
 import androidx.compose.ui.text.style.TextAlign
@@ -40,7 +41,16 @@ fun SettingsScreen(
     navController: NavController,
     viewModel: SettingsViewModel = hiltViewModel()
 ) {
-    val state by viewModel.state.collectAsState()
+    val uiState by viewModel.uiState.collectAsState()
+    var lastData by remember { mutableStateOf(SettingsData()) }
+    val state = when (val current = uiState) {
+        is com.ash.simpledataentry.presentation.core.UiState.Success -> {
+            lastData = current.data
+            current.data
+        }
+        is com.ash.simpledataentry.presentation.core.UiState.Error -> current.previousData ?: lastData
+        is com.ash.simpledataentry.presentation.core.UiState.Loading -> lastData
+    }
     val dateFormatter = remember { SimpleDateFormat("MMM dd, yyyy", Locale.getDefault()) }
     val haptic = LocalHapticFeedback.current
     var showDeleteAllConfirmation by remember { mutableStateOf(false) }
@@ -53,6 +63,7 @@ fun SettingsScreen(
 
     BaseScreen(
         title = "Settings",
+        subtitle = "Preferences and accounts",
         navController = navController
     ) {
         LazyColumn(
@@ -65,6 +76,7 @@ fun SettingsScreen(
             item {
                 SettingsSection(
                     title = "Sync Configuration",
+                    description = "Control how often metadata is refreshed.",
                     icon = Icons.Default.Settings
                 ) {
                     Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
@@ -73,7 +85,28 @@ fun SettingsScreen(
                             onFrequencyChanged = viewModel::setSyncFrequency,
                             enabled = true // ENABLED: Now has persistence
                         )
-                        
+                        Button(
+                            onClick = { viewModel.syncMetadataNow() },
+                            enabled = !state.isMetadataSyncing,
+                            modifier = Modifier.fillMaxWidth()
+                        ) {
+                            if (state.isMetadataSyncing) {
+                                CircularProgressIndicator(
+                                    modifier = Modifier.size(18.dp),
+                                    strokeWidth = 2.dp,
+                                    color = MaterialTheme.colorScheme.onPrimary
+                                )
+                                Spacer(modifier = Modifier.width(8.dp))
+                            }
+                            Text("Sync metadata now")
+                        }
+                        state.metadataSyncMessage?.let { message ->
+                            Text(
+                                text = message,
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                        }
                     }
                 }
             }
@@ -82,6 +115,7 @@ fun SettingsScreen(
             item {
                 SettingsSection(
                     title = "Data Management",
+                    description = "Export data for backup or clear local storage.",
                     icon = Icons.Default.Security
                 ) {
                     Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
@@ -107,6 +141,7 @@ fun SettingsScreen(
             item {
                 SettingsSection(
                     title = "App Updates",
+                    description = "Check for new versions and release notes.",
                     icon = Icons.Default.Settings
                 ) {
                     Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
@@ -125,6 +160,7 @@ fun SettingsScreen(
             item {
                 SettingsSection(
                     title = "Account Management",
+                    description = "Manage saved accounts and security settings.",
                     icon = Icons.Default.Person
                 ) {
                     // Content is in the next items
@@ -160,7 +196,7 @@ fun SettingsScreen(
                                 color = MaterialTheme.colorScheme.onSurfaceVariant
                             )
                         }
-                        Divider(
+                        HorizontalDivider(
                             modifier = Modifier
                                 .height(48.dp)
                                 .width(1.dp)
@@ -402,7 +438,7 @@ fun SettingsScreen(
     }
 
     // Error Snackbar
-    state.error?.let { error ->
+    (uiState as? com.ash.simpledataentry.presentation.core.UiState.Error)?.error?.let { error ->
         LaunchedEffect(error) {
             // Handle error display
         }
@@ -615,6 +651,7 @@ private fun EditAccountDialog(
 @Composable
 private fun SettingsSection(
     title: String,
+    description: String? = null,
     icon: androidx.compose.ui.graphics.vector.ImageVector,
     content: @Composable ColumnScope.() -> Unit
 ) {
@@ -624,26 +661,44 @@ private fun SettingsSection(
             containerColor = MaterialTheme.colorScheme.surface
         )
     ) {
-        Column(
-            modifier = Modifier.padding(16.dp),
-            verticalArrangement = Arrangement.spacedBy(12.dp)
-        ) {
-            Row(
-                verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.spacedBy(8.dp)
+        Column {
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .background(MaterialTheme.colorScheme.surfaceVariant)
+                    .padding(16.dp),
+                verticalArrangement = Arrangement.spacedBy(4.dp)
             ) {
-                Icon(
-                    imageVector = icon,
-                    contentDescription = null,
-                    tint = MaterialTheme.colorScheme.primary
-                )
-                Text(
-                    text = title,
-                    style = MaterialTheme.typography.titleMedium,
-                    fontWeight = FontWeight.Bold
-                )
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    Icon(
+                        imageVector = icon,
+                        contentDescription = null,
+                        tint = MaterialTheme.colorScheme.primary
+                    )
+                    Text(
+                        text = title,
+                        style = MaterialTheme.typography.titleMedium,
+                        fontWeight = FontWeight.SemiBold,
+                        color = MaterialTheme.colorScheme.onSurface
+                    )
+                }
+                if (!description.isNullOrBlank()) {
+                    Text(
+                        text = description,
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
             }
-            content()
+
+            Column(
+                modifier = Modifier.padding(16.dp),
+                verticalArrangement = Arrangement.spacedBy(12.dp),
+                content = content
+            )
         }
     }
 }
@@ -678,7 +733,7 @@ private fun SyncFrequencySelector(
                 },
                 enabled = enabled,
                 modifier = Modifier
-                    .menuAnchor()
+                    .menuAnchor(MenuAnchorType.PrimaryNotEditable, enabled = enabled)
                     .fillMaxWidth()
             )
             
@@ -736,7 +791,7 @@ private fun DataManagementActions(
         
         if (isExporting) {
             LinearProgressIndicator(
-                progress = exportProgress,
+                progress = { exportProgress },
                 modifier = Modifier.fillMaxWidth()
             )
         }

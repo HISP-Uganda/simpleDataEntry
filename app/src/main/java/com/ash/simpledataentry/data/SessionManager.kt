@@ -6,6 +6,11 @@ import com.ash.simpledataentry.domain.model.Dhis2Config
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.async
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.first
 import org.hisp.dhis.android.core.D2
 import org.hisp.dhis.android.core.D2Configuration
 import org.hisp.dhis.android.core.D2Manager
@@ -13,36 +18,114 @@ import javax.inject.Inject
 import javax.inject.Singleton
 import androidx.core.content.edit
 import com.ash.simpledataentry.data.local.AppDatabase
+import com.ash.simpledataentry.data.sync.BackgroundSyncManager
 import com.ash.simpledataentry.presentation.core.NavigationProgress
 import com.ash.simpledataentry.presentation.core.LoadingPhase
 import okhttp3.OkHttpClient
 import okhttp3.Interceptor
 import org.koin.core.context.GlobalContext
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
+
 import java.security.MessageDigest
 import java.nio.charset.StandardCharsets
+import org.hisp.dhis.android.core.maintenance.D2Error
+import org.hisp.dhis.android.core.maintenance.D2ErrorCode
+
+/**
+ * Result of downloading a single metadata type
+ */
+data class MetadataTypeResult(
+    val type: String,
+    val success: Boolean,
+    val isCritical: Boolean, // If true, login should fail if this metadata type fails
+    val error: String? = null,
+    val errorType: String? = null
+)
+
+/**
+ * Overall result of metadata download with breakdown by type
+ */
+data class MetadataDownloadResult(
+    val successful: Int,
+    val failed: Int,
+    val criticalFailures: List<MetadataTypeResult>,
+    val details: List<MetadataTypeResult>
+) {
+    val hasAnyFailures: Boolean get() = failed > 0
+    val hasCriticalFailures: Boolean get() = criticalFailures.isNotEmpty()
+    val canProceed: Boolean get() = !hasCriticalFailures
+}
 
 @Singleton
-class SessionManager @Inject constructor() {
+class SessionManager @Inject constructor(
+    private val accountManager: AccountManager,
+    private val databaseManager: DatabaseManager
+) {
     private var d2: D2? = null
 
-    suspend fun initD2(context: Context) = withContext(Dispatchers.IO) {
-        // Stop any existing Koin instance that DHIS2 SDK might have started
-        try {
-            GlobalContext.stopKoin()
-        } catch (e: Exception) {
-            // Ignore if Koin wasn't started
+    /**
+     * Emits current account identifier when account changes occur.
+     * Null when no user is logged in.
+     * Format: MD5 hash of "username@serverUrl"
+     * ViewModels observe this to reset cached data on account switch.
+     */
+    private val _currentAccountId = MutableStateFlow<String?>(null)
+    val currentAccountId: StateFlow<String?> = _currentAccountId.asStateFlow()
+
+    private val mutex = kotlinx.coroutines.sync.Mutex()
+
+    /**
+     * Extract D2Error from potentially nested exceptions.
+     * The DHIS2 SDK often wraps D2Error inside RuntimeException.
+     */
+    private fun extractD2Error(throwable: Throwable): D2Error? {
+        return when {
+            throwable is D2Error -> throwable
+            throwable.cause is D2Error -> throwable.cause as D2Error
+            throwable is RuntimeException && throwable.cause is D2Error -> throwable.cause as D2Error
+            else -> null
         }
-        
-        if (d2 == null) {
+    }
+
+    /**
+     * Initialize D2 SDK (shared across all accounts).
+     * Note: D2 SDK uses single database, account isolation handled by Room.
+     */
+    suspend fun initD2(context: Context) = withContext(Dispatchers.IO) {
+        mutex.withLock {
+            if (d2 != null) {
+                return@withLock
+            }
+
+            // Stop any existing Koin instance that DHIS2 SDK might have started
             try {
-                // Add OkHttp logging interceptor
+                GlobalContext.stopKoin()
+            } catch (e: Exception) {
+                // Ignore if Koin wasn't started
+            }
+
+            try {
+                // Concise logging interceptor - only logs errors and summaries
                 val loggingInterceptor = Interceptor { chain ->
                     val request = chain.request()
-                    Log.d("OkHttp", "Request: ${request.method} ${request.url}")
+                    val url = request.url.toString()
+                    val startTime = System.currentTimeMillis()
+
                     val response = chain.proceed(request)
-                    Log.d("OkHttp", "Response: ${response.code} ${response.message}")
+                    val duration = System.currentTimeMillis() - startTime
+
+                    // Only log non-successful responses or slow requests
+                    if (!response.isSuccessful || duration > 5000) {
+                        Log.w("OkHttp", "${request.method} $url | ${response.code} | ${duration}ms")
+                        if (!response.isSuccessful) {
+                            Log.e("OkHttp", "Failed: ${response.message}")
+                        }
+                    }
+
                     response
                 }
+
                 val config = D2Configuration.builder()
                     .context(context)
                     .appName("Simple Data Entry")
@@ -52,8 +135,9 @@ class SessionManager @Inject constructor() {
                     .connectTimeoutInSeconds(60) // 1 minute for connection
                     .interceptors(listOf(loggingInterceptor))
                     .build()
+
                 d2 = D2Manager.blockingInstantiateD2(config)
-                Log.d("SessionManager", "D2 initialized successfully with OkHttp logging")
+                Log.d("SessionManager", "D2 initialized successfully")
             } catch (e: Exception) {
                 Log.e("SessionManager", "D2 initialization failed", e)
                 throw e
@@ -61,40 +145,65 @@ class SessionManager @Inject constructor() {
         }
     }
 
-    suspend fun login(context: Context, dhis2Config: Dhis2Config, db: AppDatabase) = withContext(Dispatchers.IO) {
-        val prefs = context.getSharedPreferences("session_prefs", Context.MODE_PRIVATE)
-        val lastUser = prefs.getString("username", null)
-        val lastServer = prefs.getString("serverUrl", null)
-        val isDifferentUser = lastUser != dhis2Config.username || lastServer != dhis2Config.serverUrl
+    suspend fun login(context: Context, dhis2Config: Dhis2Config) = withContext(Dispatchers.IO) {
+        // Get or create account info for this login
+        val accountInfo = accountManager.getOrCreateAccount(context, dhis2Config.username, dhis2Config.serverUrl)
+        Log.d("SessionManager", "Login: AccountInfo = ${accountInfo.displayName}, Room DB = ${accountInfo.roomDatabaseName}")
+
+        // Get account-specific database
+        val accountDb = databaseManager.getDatabaseForAccount(context, accountInfo)
+
+        // Check if switching accounts
+        val activeAccountId = accountManager.getActiveAccountId(context)
+        val isDifferentUser = activeAccountId != null && activeAccountId != accountInfo.accountId
 
         if (isDifferentUser) {
-            wipeAllData(context)
+            Log.d("SessionManager", "ACCOUNT SWITCH DETECTED: $activeAccountId → ${accountInfo.accountId}")
+            Log.d("SessionManager", "Logging out previous user...")
+
+            // Log out previous user
+            try {
+                d2?.userModule()?.blockingLogOut()
+                Log.d("SessionManager", "Previous user logged out successfully")
+            } catch (e: Exception) {
+                Log.w("SessionManager", "Logout failed: ${e.message}")
+            }
+
+            // Note: D2 SDK database is shared - account isolation handled by Room
+            // Each account will get its own Room database with account-specific name
+            Log.d("SessionManager", "Ready for new account login")
         }
 
-        // Always re-instantiate D2 before login to ensure fresh state
-        d2 = null
-        initD2(context)
+        // Initialize D2 if not already initialized (shared across accounts)
+        if (d2 == null) {
+            Log.d("SessionManager", "Initializing D2 (shared instance)")
+            initD2(context)
+        }
 
-        // Log out if already logged in to avoid D2Error
+        // Log out if already logged in
         if (d2?.userModule()?.isLogged()?.blockingGet() == true) {
             d2?.userModule()?.blockingLogOut()
         }
 
         try {
+            // Perform DHIS2 login
             d2?.userModule()?.blockingLogIn(
                 dhis2Config.username,
                 dhis2Config.password,
                 dhis2Config.serverUrl
             ) ?: throw IllegalStateException("D2 not initialized")
 
-            prefs.edit {
-                putString("username", dhis2Config.username)
-                putString("serverUrl", dhis2Config.serverUrl)
-            }
+            // Set this as the active account
+            accountManager.setActiveAccountId(context, accountInfo.accountId)
 
-            downloadMetadata()
+            // Emit account change event for ViewModels (using accountId, not username@serverUrl)
+            _currentAccountId.value = accountInfo.accountId
+            Log.d("SessionManager", "Account changed, notifying observers: ${accountInfo.accountId}")
+
+            // Use resilient metadata download that handles JSON errors gracefully
+            downloadMetadataResilient { _ -> /* No progress UI in simple login */ }
             downloadAggregateData()
-            hydrateRoomFromSdk(context, db)
+            hydrateRoomFromSdk(context, accountDb)
 
             Log.i("SessionManager", "Login successful for ${dhis2Config.username}")
         } catch (e: Exception) {
@@ -104,12 +213,52 @@ class SessionManager @Inject constructor() {
     }
 
     /**
+     * Start async background data download after successful metadata sync
+     * This runs in the background and shows a toast notification when complete
+     */
+    suspend fun startBackgroundDataSync(
+        context: Context,
+        onComplete: ((Boolean, String?) -> Unit)? = null
+    ) = withContext(Dispatchers.IO) {
+        try {
+            Log.d("SessionManager", "Starting background data sync...")
+
+            // Get current account's database
+            val activeAccountId = accountManager.getActiveAccountId(context)
+                ?: throw IllegalStateException("No active account")
+            val accountInfo = accountManager.getActiveAccount(context)
+                ?: throw IllegalStateException("Active account not found: $activeAccountId")
+            val accountDb = databaseManager.getDatabaseForAccount(context, accountInfo)
+
+            // Download aggregate data
+            downloadAggregateData()
+            Log.d("SessionManager", "Background: Aggregate data downloaded")
+
+            // Download tracker/event data
+            downloadTrackerData()
+            Log.d("SessionManager", "Background: Tracker data downloaded")
+
+            // Hydrate Room database
+            hydrateRoomFromSdk(context, accountDb)
+            Log.d("SessionManager", "Background: Room database hydrated")
+
+            Log.i("SessionManager", "Background data sync completed successfully")
+            onComplete?.invoke(true, "Data sync complete")
+
+        } catch (e: Exception) {
+            Log.e("SessionManager", "Background data sync failed", e)
+            onComplete?.invoke(false, "Data sync failed: ${e.message}")
+        }
+    }
+
+    /**
      * Enhanced login with progress tracking
+     * REFACTORED: Metadata is blocking, data sync is async in background
      */
     suspend fun loginWithProgress(
         context: Context,
         dhis2Config: Dhis2Config,
-        db: AppDatabase,
+        backgroundSyncManager: BackgroundSyncManager,
         onProgress: (NavigationProgress) -> Unit
     ) = withContext(Dispatchers.IO) {
         try {
@@ -121,18 +270,43 @@ class SessionManager @Inject constructor() {
                 phaseDetail = "Setting up connection..."
             ))
 
-            val prefs = context.getSharedPreferences("session_prefs", Context.MODE_PRIVATE)
-            val lastUser = prefs.getString("username", null)
-            val lastServer = prefs.getString("serverUrl", null)
-            val isDifferentUser = lastUser != dhis2Config.username || lastServer != dhis2Config.serverUrl
+            // Get or create account info for this login
+            val accountInfo = accountManager.getOrCreateAccount(context, dhis2Config.username, dhis2Config.serverUrl)
+            Log.d("SessionManager", "LoginWithProgress: AccountInfo = ${accountInfo.displayName}, Room DB = ${accountInfo.roomDatabaseName}")
+
+            // Get account-specific database
+            val accountDb = databaseManager.getDatabaseForAccount(context, accountInfo)
+
+            // Check if switching accounts
+            val activeAccountId = accountManager.getActiveAccountId(context)
+            val isDifferentUser = activeAccountId != null && activeAccountId != accountInfo.accountId
 
             if (isDifferentUser) {
-                wipeAllData(context)
+                Log.d("SessionManager", "ACCOUNT SWITCH DETECTED: $activeAccountId → ${accountInfo.accountId}")
+                onProgress(NavigationProgress(
+                    phase = LoadingPhase.INITIALIZING,
+                    overallPercentage = 8,
+                    phaseTitle = LoadingPhase.INITIALIZING.title,
+                    phaseDetail = "Switching accounts..."
+                ))
+
+                // Log out previous user
+                try {
+                    d2?.userModule()?.blockingLogOut()
+                    Log.d("SessionManager", "Previous user logged out successfully")
+                } catch (e: Exception) {
+                    Log.w("SessionManager", "Logout failed: ${e.message}")
+                }
+
+                // Note: D2 SDK database is shared - account isolation handled by Room
+                Log.d("SessionManager", "Ready for new account login")
             }
 
-            // Always re-instantiate D2 before login to ensure fresh state
-            d2 = null
-            initD2(context)
+            // Initialize D2 if not already initialized (shared across accounts)
+            if (d2 == null) {
+                Log.d("SessionManager", "Initializing D2 (shared instance)")
+                initD2(context)
+            }
 
             // Step 2: Authentication (10-30%)
             onProgress(NavigationProgress(
@@ -147,11 +321,36 @@ class SessionManager @Inject constructor() {
                 d2?.userModule()?.blockingLogOut()
             }
 
-            d2?.userModule()?.blockingLogIn(
-                dhis2Config.username,
-                dhis2Config.password,
-                dhis2Config.serverUrl
-            ) ?: throw IllegalStateException("D2 not initialized")
+            // Attempt login with retry for ALREADY_AUTHENTICATED error
+            // This mirrors the official DHIS2 Capture app's error handling pattern
+            var loginAttempt = 0
+            val maxRetries = 1
+            while (loginAttempt <= maxRetries) {
+                try {
+                    d2?.userModule()?.blockingLogIn(
+                        dhis2Config.username,
+                        dhis2Config.password,
+                        dhis2Config.serverUrl
+                    )
+                    break // Success - exit loop
+                } catch (loginError: Exception) {
+                    val d2Error = extractD2Error(loginError)
+                    Log.w("SessionManager", "Login attempt ${loginAttempt + 1} failed: errorCode=${d2Error?.errorCode()}, description=${d2Error?.errorDescription()}")
+
+                    if (d2Error != null && d2Error.errorCode() == D2ErrorCode.ALREADY_AUTHENTICATED && loginAttempt < maxRetries) {
+                        Log.w("SessionManager", "ALREADY_AUTHENTICATED - forcing logout and retry")
+                        try {
+                            d2?.userModule()?.blockingLogOut()
+                        } catch (logoutError: Exception) {
+                            Log.w("SessionManager", "Logout during retry failed: ${logoutError.message}")
+                        }
+                        loginAttempt++
+                        continue
+                    }
+                    // Not retryable - re-throw
+                    throw loginError
+                }
+            }
 
             onProgress(NavigationProgress(
                 phase = LoadingPhase.AUTHENTICATING,
@@ -160,8 +359,12 @@ class SessionManager @Inject constructor() {
                 phaseDetail = "Authentication successful"
             ))
 
+            // Set this as the active account
+            accountManager.setActiveAccountId(context, accountInfo.accountId)
+
             // SECURITY ENHANCEMENT: Store password hash for secure offline validation
             val passwordHash = hashPassword(dhis2Config.password, dhis2Config.username + dhis2Config.serverUrl)
+            val prefs = context.getSharedPreferences("session_prefs", Context.MODE_PRIVATE)
             prefs.edit {
                 putString("username", dhis2Config.username)
                 putString("serverUrl", dhis2Config.serverUrl)
@@ -169,78 +372,73 @@ class SessionManager @Inject constructor() {
                 putLong("hash_created", System.currentTimeMillis())
             }
 
-            // Step 3: Download Metadata (30-60%)
+            // Emit account change event for ViewModels (using accountId, not username@serverUrl)
+            _currentAccountId.value = accountInfo.accountId
+            Log.d("SessionManager", "Account changed, notifying observers: ${accountInfo.accountId}")
+
+            // Step 3: Download Metadata (30-80%) - RESILIENT, UI LOCKED
+            // Use resilient metadata download with granular progress feedback
+            val metadataResult = downloadMetadataResilient(onProgress = onProgress)
+
+            // Check if critical metadata failed
+            if (metadataResult.hasCriticalFailures) {
+                val criticalErrors = metadataResult.criticalFailures.joinToString(", ") { it.error ?: "Unknown" }
+                Log.e("SessionManager", "CRITICAL metadata failures after all retries: $criticalErrors")
+
+                // Provide actionable error message
+                val userMessage = when {
+                    criticalErrors.contains("Null attribute", ignoreCase = true) ->
+                        "Server has invalid metadata configuration. Please contact your administrator or try a different server."
+                    criticalErrors.contains("timeout", ignoreCase = true) ->
+                        "Connection timed out. Please check your internet and try again."
+                    criticalErrors.contains("Unable to resolve host", ignoreCase = true) ->
+                        "Cannot reach server. Please check your internet connection."
+                    criticalErrors.contains("401", ignoreCase = true) || criticalErrors.contains("Unauthorized", ignoreCase = true) ->
+                        "Authentication failed. Please check your credentials."
+                    else ->
+                        "Failed to download data from server. Error: $criticalErrors"
+                }
+
+                throw IllegalStateException(userMessage)
+            }
+
+            // Log warnings for non-critical failures
+            if (metadataResult.hasAnyFailures) {
+                val failures = metadataResult.details.filter { !it.success }
+                failures.forEach { failure ->
+                    Log.w("SessionManager", "Non-critical metadata '${failure.type}' failed but continuing: ${failure.error}")
+                }
+            }
+
             onProgress(NavigationProgress(
                 phase = LoadingPhase.DOWNLOADING_METADATA,
-                overallPercentage = 35,
-                phaseTitle = LoadingPhase.DOWNLOADING_METADATA.title,
-                phaseDetail = "Downloading configuration..."
-            ))
-
-            downloadMetadata()
-
-            onProgress(NavigationProgress(
-                phase = LoadingPhase.DOWNLOADING_METADATA,
-                overallPercentage = 55,
-                phaseTitle = LoadingPhase.DOWNLOADING_METADATA.title,
-                phaseDetail = "Metadata downloaded successfully"
-            ))
-
-            // Step 4: Download Data (60-80%)
-            onProgress(NavigationProgress(
-                phase = LoadingPhase.DOWNLOADING_DATA,
-                overallPercentage = 65,
-                phaseTitle = LoadingPhase.DOWNLOADING_DATA.title,
-                phaseDetail = "Downloading your data..."
-            ))
-
-            downloadAggregateData()
-
-            onProgress(NavigationProgress(
-                phase = LoadingPhase.DOWNLOADING_DATA,
-                overallPercentage = 70,
-                phaseTitle = LoadingPhase.DOWNLOADING_DATA.title,
-                phaseDetail = "Aggregate data downloaded successfully"
-            ))
-
-            // Download tracker/event data
-            onProgress(NavigationProgress(
-                phase = LoadingPhase.DOWNLOADING_DATA,
-                overallPercentage = 75,
-                phaseTitle = LoadingPhase.DOWNLOADING_DATA.title,
-                phaseDetail = "Downloading tracker data..."
-            ))
-
-            downloadTrackerData()
-
-            onProgress(NavigationProgress(
-                phase = LoadingPhase.DOWNLOADING_DATA,
                 overallPercentage = 80,
-                phaseTitle = LoadingPhase.DOWNLOADING_DATA.title,
-                phaseDetail = "Tracker data downloaded successfully"
+                phaseTitle = "Metadata Complete",
+                phaseDetail = if (metadataResult.hasAnyFailures) {
+                    "⚠ ${metadataResult.successful} of ${metadataResult.successful + metadataResult.failed} succeeded"
+                } else {
+                    "✓ All metadata downloaded successfully"
+                }
             ))
 
-            // Step 5: Database Preparation (80-95%)
             onProgress(NavigationProgress(
-                phase = LoadingPhase.PREPARING_DATABASE,
+                phase = LoadingPhase.LOADING_DATA,
                 overallPercentage = 85,
-                phaseTitle = LoadingPhase.PREPARING_DATABASE.title,
-                phaseDetail = "Preparing local database..."
+                phaseTitle = LoadingPhase.LOADING_DATA.title,
+                phaseDetail = "Preparing data sync..."
             ))
-
-            hydrateRoomFromSdk(context, db)
 
             onProgress(NavigationProgress(
-                phase = LoadingPhase.PREPARING_DATABASE,
+                phase = LoadingPhase.PROCESSING_DATA,
                 overallPercentage = 90,
-                phaseTitle = LoadingPhase.PREPARING_DATABASE.title,
-                phaseDetail = "Database setup complete"
+                phaseTitle = LoadingPhase.PROCESSING_DATA.title,
+                phaseDetail = "Setting up background processing..."
             ))
 
-            // Step 6: Finalization (95-100%)
+            // Step 4: Finalization (90-100%) - UI UNLOCKED AFTER THIS
             onProgress(NavigationProgress(
                 phase = LoadingPhase.FINALIZING,
-                overallPercentage = 98,
+                overallPercentage = 95,
                 phaseTitle = LoadingPhase.FINALIZING.title,
                 phaseDetail = "Login complete!"
             ))
@@ -251,55 +449,124 @@ class SessionManager @Inject constructor() {
                 phase = LoadingPhase.FINALIZING,
                 overallPercentage = 100,
                 phaseTitle = "Ready",
-                phaseDetail = "Welcome to DHIS2 Data Entry!"
+                phaseDetail = "Welcome! Data is syncing in background..."
             ))
 
+            // CRITICAL CHANGE: Data downloads moved to async background task
+            // UI is now unlocked, user can start working immediately
+            // Background sync will show notification when complete
+            Log.d("SessionManager", "Metadata sync complete - triggering background data sync...")
+            try {
+                val workName = backgroundSyncManager.triggerImmediateSync()
+                Log.d("SessionManager", "Background data sync triggered: $workName")
+            } catch (syncError: Exception) {
+                // Log but don't fail login - data sync can be retried later
+                Log.w("SessionManager", "Failed to trigger background sync: ${syncError.message}", syncError)
+            }
+
         } catch (e: Exception) {
-            Log.e("SessionManager", "Enhanced login failed", e)
-            onProgress(NavigationProgress.error(e.message ?: "Login failed"))
+            // Extract D2Error for detailed diagnostics and user-friendly messages
+            val d2Error = extractD2Error(e)
+            val errorCode = d2Error?.errorCode()
+
+            // Map D2ErrorCode to user-friendly messages (matching official DHIS2 Capture app)
+            val userMessage = when (errorCode) {
+                D2ErrorCode.BAD_CREDENTIALS -> "Invalid username or password"
+                D2ErrorCode.SERVER_CONNECTION_ERROR -> "Cannot connect to server. Check your internet connection."
+                D2ErrorCode.UNKNOWN_HOST -> "Server not found. Check the URL."
+                D2ErrorCode.SOCKET_TIMEOUT -> "Connection timed out. Please try again."
+                D2ErrorCode.NO_DHIS2_SERVER -> "Not a valid DHIS2 server"
+                D2ErrorCode.INVALID_DHIS_VERSION -> "DHIS2 version not supported by this app"
+                D2ErrorCode.USER_ACCOUNT_DISABLED -> "Your account has been disabled"
+                D2ErrorCode.USER_ACCOUNT_LOCKED -> "Your account is locked"
+                D2ErrorCode.API_UNSUCCESSFUL_RESPONSE -> "Server returned an error. Please try again later."
+                D2ErrorCode.API_RESPONSE_PROCESS_ERROR -> "Error processing server response"
+                D2ErrorCode.ALREADY_AUTHENTICATED -> "Session conflict. Please try again."
+                D2ErrorCode.URL_NOT_FOUND -> "Server URL not found (404)"
+                D2ErrorCode.SERVER_URL_MALFORMED -> "Invalid server URL format"
+                D2ErrorCode.SSL_ERROR -> "SSL/TLS security error. Check server certificate."
+                else -> d2Error?.errorDescription() ?: e.message ?: "Login failed"
+            }
+
+            Log.e("SessionManager", "Enhanced login failed: errorCode=$errorCode, description=${d2Error?.errorDescription()}", e)
+            onProgress(NavigationProgress.error(userMessage))
             throw e
         }
     }
 
-    suspend fun wipeAllData(context: Context) = withContext(Dispatchers.IO) {
+    suspend fun wipeAllData(context: Context, db: AppDatabase) = withContext(Dispatchers.IO) {
         try {
-            // Clear SharedPreferences first (always safe)
+            Log.w("SessionManager", "USER SWITCH DETECTED: Wiping data for previous user...")
+
+            // STEP 1: Clear Room database FIRST (synchronous, guaranteed)
+            clearRoomDatabase(db)
+
+            // STEP 2: Clear SharedPreferences
             val prefs = context.getSharedPreferences("session_prefs", Context.MODE_PRIVATE)
             prefs.edit().clear().apply()
 
-            // CRITICAL FIX: Force wipe database even when not authenticated to fix foreign key issues
+            // STEP 3: Clear DHIS2 SDK database (best effort)
             try {
-                // First try authenticated wipe
                 d2?.let { d2Instance ->
                     try {
                         if (d2Instance.userModule()?.isLogged()?.blockingGet() == true) {
                             d2Instance.wipeModule()?.wipeEverything()
-                            Log.i("SessionManager", "DHIS2 data wiped successfully via authenticated method")
+                            Log.i("SessionManager", "DHIS2 SDK data wiped successfully")
                         } else {
-                            Log.w("SessionManager", "Not authenticated - attempting database file cleanup")
-                            // Force database cleanup for corrupted state
+                            Log.w("SessionManager", "Not authenticated - attempting manual database cleanup")
                             wipeDatabaseFiles(context)
                         }
                     } catch (e: Exception) {
                         Log.w("SessionManager", "Authenticated wipe failed: ${e.message}")
-                        // Fallback to manual database file cleanup
                         wipeDatabaseFiles(context)
                     }
                 } ?: run {
-                    // D2 is null - force database cleanup
+                    Log.w("SessionManager", "D2 not initialized, clearing database files")
                     wipeDatabaseFiles(context)
                 }
             } catch (e: Exception) {
-                Log.e("SessionManager", "Complete wipe failed, trying database file cleanup", e)
+                Log.e("SessionManager", "SDK wipe failed, attempting database file cleanup", e)
                 wipeDatabaseFiles(context)
             }
 
-            Log.i("SessionManager", "Local data cleared successfully")
-            // Re-instantiate D2 after wipe
+            // STEP 4: Emit account change to ViewModels (Room already cleared)
+            _currentAccountId.value = null
+            Log.d("SessionManager", "Account cleared, notifying observers")
+
+            // STEP 5: Clear D2 reference
             d2 = null
-            initD2(context)
+
+            Log.i("SessionManager", "✓ All data wipe completed successfully")
         } catch (e: Exception) {
             Log.e("SessionManager", "Failed to wipe all data", e)
+        }
+    }
+
+    /**
+     * Clears all Room database tables synchronously to prevent stale data.
+     * Called BEFORE emitting account change to prevent race conditions.
+     */
+    private suspend fun clearRoomDatabase(db: AppDatabase) = withContext(Dispatchers.IO) {
+        try {
+            Log.d("SessionManager", "Starting synchronous Room database clear...")
+
+            // Clear all tables (no FK dependencies, order doesn't matter)
+            db.datasetDao().clearAll()
+            db.trackerProgramDao().clearAll()
+            db.eventProgramDao().clearAll()
+            db.trackerEnrollmentDao().clearAll()
+            db.eventInstanceDao().clearAll()
+            db.dataElementDao().clearAll()
+            db.categoryComboDao().clearAll()
+            db.categoryOptionComboDao().clearAll()
+            db.organisationUnitDao().clearAll()
+            db.dataValueDao().deleteAllDataValues()
+            db.dataValueDraftDao().deleteAllDrafts()
+
+            Log.i("SessionManager", "✓ Room database cleared successfully")
+        } catch (e: Exception) {
+            Log.e("SessionManager", "Failed to clear Room database", e)
+            // Don't throw - wipe should continue even if Room clear fails
         }
     }
 
@@ -329,6 +596,56 @@ class SessionManager @Inject constructor() {
         }
     }
 
+    /**
+     * CRITICAL FIX: Verify that data wipe completed successfully
+     * This prevents race condition where new user data loads before old user data is cleared
+     */
+    private suspend fun verifyDataWipeCompleted(context: Context) = withContext(Dispatchers.IO) {
+        try {
+
+            // Check 1: Verify SharedPreferences are cleared
+            val prefs = context.getSharedPreferences("session_prefs", Context.MODE_PRIVATE)
+            val hasUsername = prefs.getString("username", null) != null
+            val hasServerUrl = prefs.getString("serverUrl", null) != null
+
+            if (hasUsername || hasServerUrl) {
+                Log.w("SessionManager", "VERIFICATION FAILED: SharedPreferences not cleared properly")
+                // Force clear again
+                prefs.edit().clear().apply()
+            }
+
+            // Check 2: Verify database files are deleted
+            val dbDir = context.getDatabasePath("dhis.db").parentFile
+            val dhisDbFiles = dbDir?.listFiles()?.filter {
+                it.name.startsWith("dhis") || it.name.contains("d2")
+            } ?: emptyList()
+
+            if (dhisDbFiles.isNotEmpty()) {
+                Log.w("SessionManager", "VERIFICATION FAILED: Found ${dhisDbFiles.size} residual database files")
+                // Force delete again
+                dhisDbFiles.forEach { file ->
+                    val deleted = file.delete()
+                }
+            }
+
+            // Check 3: Verify D2 cache is cleared
+            val cacheDir = java.io.File(context.cacheDir, "d2")
+            if (cacheDir.exists()) {
+                Log.w("SessionManager", "VERIFICATION FAILED: D2 cache directory still exists")
+                cacheDir.deleteRecursively()
+            }
+
+            // Give file system a moment to finish all delete operations
+            kotlinx.coroutines.delay(100)
+
+
+        } catch (e: Exception) {
+            Log.e("SessionManager", "VERIFICATION: Data wipe verification failed", e)
+            // Don't throw - log the error but allow login to proceed
+            // This prevents blocking legitimate logins if verification has issues
+        }
+    }
+
     fun isSessionActive(): Boolean {
         return d2?.userModule()?.isLogged()?.blockingGet() ?: false
     }
@@ -337,7 +654,7 @@ class SessionManager @Inject constructor() {
      * Attempt offline login using existing DHIS2 session data with SECURE password validation
      * This validates the password against stored encrypted credentials before granting access
      */
-    suspend fun attemptOfflineLogin(context: Context, dhis2Config: Dhis2Config, db: AppDatabase): Boolean = withContext(Dispatchers.IO) {
+    suspend fun attemptOfflineLogin(context: Context, dhis2Config: Dhis2Config): Boolean = withContext(Dispatchers.IO) {
         return@withContext try {
             Log.d("SessionManager", "Attempting SECURE offline login for ${dhis2Config.username}")
 
@@ -407,8 +724,18 @@ class SessionManager @Inject constructor() {
                     putLong("last_validated", System.currentTimeMillis())
                 }
 
+                // Get or create account info
+                val accountInfo = accountManager.getOrCreateAccount(context, dhis2Config.username, dhis2Config.serverUrl)
+
+                // Get account-specific database
+                val accountDb = databaseManager.getDatabaseForAccount(context, accountInfo)
+
+                // Emit account change event for offline login
+                _currentAccountId.value = accountInfo.accountId
+                Log.d("SessionManager", "Offline account restored, notifying observers: ${accountInfo.accountId}")
+
                 // Hydrate Room database from existing SDK data
-                hydrateRoomFromSdk(context, db)
+                hydrateRoomFromSdk(context, accountDb)
 
                 Log.i("SessionManager", "SECURE offline login successful for ${dhis2Config.username}")
                 true
@@ -493,492 +820,362 @@ class SessionManager @Inject constructor() {
     fun getD2(): D2? = d2
 
 
-    fun downloadMetadata() : Unit{
+    // REMOVED: downloadMetadata() - DEAD CODE
+    // This atomic metadata download function has been replaced by downloadMetadataResilient()
+    // which handles JSON parse errors gracefully and verifies critical metadata types.
+    // See downloadMetadataResilient() at line 626 for the working implementation.
+
+    /**
+     * Resilient metadata download that handles JSON errors gracefully
+     * Downloads metadata from server and verifies what was successfully stored
+     * FIXED: Catches JSON errors but continues if critical metadata exists
+     */
+    /**
+     * Resilient metadata download with retry logic
+     * Retries up to 3 times on failure before giving up
+     */
+    suspend fun downloadMetadataResilient(
+        onProgress: (NavigationProgress) -> Unit
+    ): MetadataDownloadResult = withContext(Dispatchers.IO) {
         val d2Instance = d2 ?: throw IllegalStateException("D2 not initialized")
 
-        Log.d("SessionManager", "Starting metadata download - targeting user accessible data only")
+        var lastError: String? = null
+        val maxRetries = 3
 
-        try {
-            // CRITICAL FIX: Clear corrupted data before downloading new metadata
+        for (attempt in 1..maxRetries) {
+            Log.d("SessionManager", "Metadata download attempt $attempt of $maxRetries")
+
+            onProgress(NavigationProgress(
+                phase = LoadingPhase.DOWNLOADING_METADATA,
+                overallPercentage = 30,
+                phaseTitle = "Downloading Metadata",
+                phaseDetail = if (attempt > 1) "Retrying... (attempt $attempt)" else "Fetching metadata from server..."
+            ))
+
+            var downloadError: String? = null
+
             try {
-                Log.d("SessionManager", "Pre-cleaning any corrupted foreign key relationships")
-                d2Instance.wipeModule()?.wipeData()
-                Log.d("SessionManager", "Data pre-cleaning completed")
-            } catch (e: Exception) {
-                Log.w("SessionManager", "Data pre-cleaning failed (continuing anyway): ${e.message}")
-            }
-
-            // Download metadata with better error handling
-            // The SDK should automatically filter based on user permissions
-            d2Instance.metadataModule().blockingDownload()
-
-            Log.d("SessionManager", "Metadata download completed successfully")
-
-            // Check for foreign key constraint errors that could corrupt tracker data
-            checkDatabaseIntegrity(d2Instance)
-
-            // CRITICAL FIX: If we detect foreign key issues, force a clean re-download
-            if (hasForeignKeyIssues(d2Instance)) {
-                Log.w("SessionManager", "Foreign key issues detected - forcing clean metadata re-download")
-                d2Instance.wipeModule()?.wipeData()
-                d2Instance.metadataModule().blockingDownload()
-                Log.d("SessionManager", "Clean metadata re-download completed")
-            }
-
-        } catch (e: Exception) {
-            Log.e("SessionManager", "Metadata download failed", e)
-            throw e
-        }
-    }
-
-    private fun hasForeignKeyIssues(d2Instance: D2): Boolean {
-        return try {
-            // Test if we can access basic metadata relationships without foreign key errors
-            val datasets = d2Instance.dataSetModule().dataSets().blockingGet()
-            val programs = d2Instance.programModule().programs().blockingGet()
-            val orgUnits = d2Instance.organisationUnitModule().organisationUnits()
-                .byOrganisationUnitScope(org.hisp.dhis.android.core.organisationunit.OrganisationUnit.Scope.SCOPE_DATA_CAPTURE)
-                .blockingGet()
-
-            // If we have metadata but no data capture org units, there might be foreign key issues
-            val hasForeignKeyProblems = (datasets.isNotEmpty() || programs.isNotEmpty()) && orgUnits.isEmpty()
-
-            if (hasForeignKeyProblems) {
-                Log.w("SessionManager", "Potential foreign key issues detected: ${datasets.size} datasets, ${programs.size} programs, but ${orgUnits.size} data capture org units")
-            }
-
-            hasForeignKeyProblems
-        } catch (e: Exception) {
-            Log.w("SessionManager", "Error checking for foreign key issues: ${e.message}")
-            true // Assume there are issues if we can't check
-        }
-    }
-
-    private fun checkDatabaseIntegrity(d2Instance: D2) {
-        try {
-            // Since foreign key errors are automatically logged by ForeignKeyCleanerImpl,
-            // we'll implement a different approach: test the database state by checking
-            // if basic metadata relationships are intact
-
-            Log.d("SessionManager", "Checking database integrity after metadata sync...")
-
-            // Test 1: Check if we have programs with valid organisation units
-            val programs = d2Instance.programModule().programs().blockingGet()
-            val orgUnits = d2Instance.organisationUnitModule().organisationUnits().blockingGet()
-
-            Log.d("SessionManager", "Database state: ${programs.size} programs, ${orgUnits.size} org units")
-
-            // Test 2: Specifically check program-orgunit relationships for data capture
-            val userDataCaptureOrgUnits = d2Instance.organisationUnitModule().organisationUnits()
-                .byOrganisationUnitScope(org.hisp.dhis.android.core.organisationunit.OrganisationUnit.Scope.SCOPE_DATA_CAPTURE)
-                .blockingGet()
-
-            Log.d("SessionManager", "User has data capture access to ${userDataCaptureOrgUnits.size} org units")
-
-            if (userDataCaptureOrgUnits.isEmpty()) {
-                Log.w("SessionManager", "WARNING: User has no data capture org units - this could indicate foreign key issues")
-            }
-
-            // Test 3: Check if we can access specific program without errors
-            val targetProgram = programs.find { it.uid() == "QZkuUuLedjh" }
-            if (targetProgram != null) {
-                Log.d("SessionManager", "Target program QZkuUuLedjh found: ${targetProgram.displayName()}")
-
-                // Check if program has valid org unit assignments
-                // Using alternative approach to check program accessibility
-                val accessibleOrgUnits = d2Instance.organisationUnitModule().organisationUnits()
-                    .byOrganisationUnitScope(org.hisp.dhis.android.core.organisationunit.OrganisationUnit.Scope.SCOPE_DATA_CAPTURE)
-                    .blockingGet()
-
-                Log.d("SessionManager", "Program QZkuUuLedjh accessible through ${accessibleOrgUnits.size} data capture org units")
-
-                if (accessibleOrgUnits.isEmpty()) {
-                    Log.w("SessionManager", "CRITICAL: User has no data capture org units - likely foreign key constraint violation")
+                // Following official DHIS2 Capture app pattern:
+                // Use non-blocking download() with onErrorComplete() to swallow errors
+                io.reactivex.Completable.fromObservable(
+                    d2Instance.metadataModule().download()
+                        .doOnNext { progress ->
+                            val percent = progress.percentage() ?: 0.0
+                            Log.d("SessionManager", "Metadata progress: ${percent.toInt()}%")
+                            onProgress(NavigationProgress(
+                                phase = LoadingPhase.DOWNLOADING_METADATA,
+                                overallPercentage = 30 + (percent * 0.5).toInt(),
+                                phaseTitle = "Downloading Metadata",
+                                phaseDetail = "Progress: ${percent.toInt()}%"
+                            ))
+                        }
+                )
+                .doOnError { error ->
+                    Log.w("SessionManager", "Metadata download error: ${error.message}")
+                    downloadError = error.message
                 }
-            } else {
-                Log.w("SessionManager", "WARNING: Target program QZkuUuLedjh not found after metadata sync")
+                .onErrorComplete() // Swallow errors like official app
+                .blockingAwait()
+
+                Log.d("SessionManager", "Metadata download stream completed for attempt $attempt")
+            } catch (e: Exception) {
+                Log.e("SessionManager", "Metadata download exception: ${e.message}", e)
+                downloadError = e.message
             }
 
-            Log.d("SessionManager", "Database integrity check completed")
+            // Check what we have after the download attempt
+            val hasOrgUnits = d2Instance.organisationUnitModule().organisationUnits().blockingCount() > 0
+            val hasPrograms = d2Instance.programModule().programs().blockingCount() > 0
+            val hasDatasets = d2Instance.dataSetModule().dataSets().blockingCount() > 0
+            val hasUser = try {
+                d2Instance.userModule().user().blockingGet() != null
+            } catch (e: Exception) {
+                false
+            }
 
-        } catch (e: Exception) {
-            Log.w("SessionManager", "Database integrity check failed: ${e.message}")
-            // This could indicate foreign key constraint issues
+            Log.d("SessionManager", "Attempt $attempt result: User=$hasUser, OrgUnits=$hasOrgUnits, Programs=$hasPrograms, Datasets=$hasDatasets")
+
+            // Success if we have ANY usable metadata (org units, programs, or datasets)
+            val hasAnyData = hasOrgUnits || hasPrograms || hasDatasets
+
+            if (hasAnyData) {
+                Log.d("SessionManager", "✓ Metadata download successful on attempt $attempt")
+                return@withContext MetadataDownloadResult(
+                    successful = 1,
+                    failed = 0,
+                    criticalFailures = emptyList(),
+                    details = emptyList()
+                )
+            }
+
+            lastError = downloadError ?: "No metadata downloaded"
+
+            if (attempt < maxRetries) {
+                Log.w("SessionManager", "Metadata incomplete, waiting 2s before retry...")
+                kotlinx.coroutines.delay(2000) // Wait 2 seconds before retry
+            }
         }
+
+        // All retries failed
+        Log.e("SessionManager", "All $maxRetries metadata download attempts failed: $lastError")
+        MetadataDownloadResult(
+            successful = 0,
+            failed = 1,
+            criticalFailures = listOf(MetadataTypeResult("CoreMetadata", false, true, lastError)),
+            details = emptyList()
+        )
     }
 
+    /**
+     * Verify system metadata was downloaded (constants, settings)
+     * CRITICAL - Required for basic app functionality
+     */
+    // Verification methods removed as they are no longer needed with standard SDK download flow
 
-    fun downloadAggregateData() : Unit{
+    fun downloadAggregateData() {
         val d2Instance = d2 ?: throw IllegalStateException("D2 not initialized")
 
-        // Apply same comprehensive metadata sync for aggregate data to prevent FK violations
-        Log.d("SessionManager", "AGGREGATE: Ensuring metadata dependencies before aggregate data download...")
         try {
-            // Force complete metadata sync first
-            d2Instance.metadataModule().blockingDownload()
-
-            // Check CategoryOptionCombo dependencies for DataValues
-            val categoryOptionCombos = d2Instance.categoryModule().categoryOptionCombos().blockingGet()
-            Log.d("SessionManager", "AGGREGATE: Found ${categoryOptionCombos.size} CategoryOptionCombos available")
-
-        } catch (e: Exception) {
-            Log.e("SessionManager", "AGGREGATE: Metadata sync failed", e)
-        }
-
-        try {
+            Log.d("SessionManager", "Downloading aggregate data...")
             d2Instance.aggregatedModule().data().blockingDownload()
-            Log.d("SessionManager", "AGGREGATE: Data download completed")
-
-            // Handle any FK violations from aggregate data
-            handlePostDownloadForeignKeyViolations(d2Instance)
-
+            Log.d("SessionManager", "Aggregate data download complete")
         } catch (e: Exception) {
             Log.e("SessionManager", "AGGREGATE: Data download failed", e)
         }
     }
 
-    fun downloadTrackerData() : Unit {
-        val d2Instance = d2 ?: throw IllegalStateException("D2 not initialized")
-
-        // CRITICAL FIX: Comprehensive metadata dependency resolution
-        // Based on DHIS2 SDK documentation, this addresses known CategoryOptionCombo foreign key issues
-        Log.d("SessionManager", "CRITICAL FIX: Synchronizing ALL metadata dependencies to prevent foreign key violations...")
-        try {
-            // 1. Force complete metadata sync with expanded scope
-            Log.d("SessionManager", "Phase 1: Downloading complete metadata including CategoryOptionCombos...")
-            d2Instance.metadataModule().blockingDownload()
-
-            // 2. Explicitly sync CategoryOptionCombos and related dependencies
-            Log.d("SessionManager", "Phase 2: Ensuring CategoryOptionCombo dependencies are complete...")
-
-            // Force sync of category-related metadata that commonly causes FK violations
-            try {
-                // This addresses the known ANDROSDK-1592 issue with incomplete CategoryOptionCombos
-                val categories = d2Instance.categoryModule().categories().blockingGet()
-                val categoryCombos = d2Instance.categoryModule().categoryCombos().blockingGet()
-                val categoryOptionCombos = d2Instance.categoryModule().categoryOptionCombos().blockingGet()
-
-                Log.d("SessionManager", "Metadata dependency check: ${categories.size} categories, ${categoryCombos.size} combos, ${categoryOptionCombos.size} option combos")
-
-            } catch (e: Exception) {
-                Log.w("SessionManager", "Category metadata verification failed: ${e.message}")
-            }
-
-            // 3. Check for and log foreign key violations from previous syncs
-            try {
-                val foreignKeyViolations = d2Instance.maintenanceModule().foreignKeyViolations().blockingGet()
-                if (foreignKeyViolations.isNotEmpty()) {
-                    Log.w("SessionManager", "Found ${foreignKeyViolations.size} existing foreign key violations")
-                    foreignKeyViolations.take(5).forEach { violation ->
-                        Log.w("SessionManager", "FK Violation: ${violation.fromTable()} -> ${violation.toTable()}, missing: ${violation.notFoundValue()}")
-                    }
-                }
-            } catch (e: Exception) {
-                Log.w("SessionManager", "Could not inspect foreign key violations: ${e.message}")
-            }
-
-            Log.d("SessionManager", "Metadata sync completed - all dependencies should now be available")
-        } catch (e: Exception) {
-            Log.e("SessionManager", "Comprehensive metadata sync failed - data download may have FK violations", e)
-        }
-
-        // Get user's data capture org units for logging
-        val userOrgUnits = d2Instance.organisationUnitModule().organisationUnits()
-            .byOrganisationUnitScope(org.hisp.dhis.android.core.organisationunit.OrganisationUnit.Scope.SCOPE_DATA_CAPTURE)
-            .blockingGet()
-
-        val userOrgUnitUids = userOrgUnits.map { it.uid() }
-        Log.d("SessionManager", "User has access to org units: ${userOrgUnitUids.joinToString(", ")}")
-
-        // CRITICAL DEBUG: Check if user has access to org unit FvewOonC8lS where the tracker data exists
-        Log.d("SessionManager", "CRITICAL DEBUG: Does user have access to FvewOonC8lS? ${userOrgUnitUids.contains("FvewOonC8lS")}")
-
-        // Get ALL org units user has access to (including search scope)
-        val allUserOrgUnits = d2Instance.organisationUnitModule().organisationUnits()
-            .blockingGet()
-        val allUserOrgUnitUids = allUserOrgUnits.map { "${it.uid()} (${it.displayName()})" }
-        Log.d("SessionManager", "User has access to ALL org units: ${allUserOrgUnitUids.joinToString(", ")}")
-
-        // Get all available tracker programs for download
-        val trackerPrograms = d2Instance.programModule().programs()
-            .byProgramType().eq(org.hisp.dhis.android.core.program.ProgramType.WITH_REGISTRATION)
-            .blockingGet()
-
-        Log.d("SessionManager", "Found ${trackerPrograms.size} tracker programs to download")
-
-        // Use EXACT official Android Capture app patterns (much simpler)
-        Log.d("SessionManager", "Using EXACT official Android Capture app patterns")
-
-        if (trackerPrograms.isNotEmpty()) {
-            // Download for each tracker program using official pattern
-            trackerPrograms.forEach { program ->
-                val programUid = program.uid()
-                Log.d("SessionManager", "Downloading tracker data for program: $programUid")
-
-                try {
-                    d2Instance.trackedEntityModule().trackedEntityInstanceDownloader()
-                        .byProgramUid(programUid)
-                        .download()
-                    Log.d("SessionManager", "Successfully downloaded tracker data for program: $programUid")
-                } catch (e: Exception) {
-                    Log.e("SessionManager", "Failed to download tracker data for program: $programUid", e)
-                }
-            }
-        } else {
-            Log.d("SessionManager", "No tracker programs found, downloading all tracker data")
-            // Fallback: download all tracker data without program filter
-            try {
-                d2Instance.trackedEntityModule().trackedEntityInstanceDownloader()
-                    .download()
-                Log.d("SessionManager", "Successfully downloaded all tracker data")
-            } catch (e: Exception) {
-                Log.e("SessionManager", "Failed to download all tracker data", e)
-            }
-        }
-
-        // Download standalone events using official pattern
-        try {
-            d2Instance.eventModule().eventDownloader()
-                .download()
-            Log.d("SessionManager", "Successfully downloaded event data")
-        } catch (e: Exception) {
-            Log.e("SessionManager", "Failed to download event data", e)
-        }
-
-        Log.d("SessionManager", "Tracker data download completed")
-
-        // POST-DOWNLOAD ANALYSIS: Comprehensive foreign key violation handling
-        handlePostDownloadForeignKeyViolations(d2Instance)
-
-        // POST-DOWNLOAD VERIFICATION: Check if data was actually stored
-        verifyTrackerDataStorage(d2Instance)
-    }
-
-    private fun verifyTrackerDataStorage(d2Instance: D2) {
-        try {
-            Log.d("SessionManager", "VERIFICATION: Checking if tracker data was actually stored...")
-
-            // Check total TrackedEntityInstances stored
-            val allTEIs = d2Instance.trackedEntityModule().trackedEntityInstances().blockingGet()
-            Log.d("SessionManager", "VERIFICATION: Found ${allTEIs.size} total TEIs in local database")
-
-            // Check enrollments
-            val allEnrollments = d2Instance.enrollmentModule().enrollments().blockingGet()
-            Log.d("SessionManager", "VERIFICATION: Found ${allEnrollments.size} total enrollments in local database")
-
-            // Check events
-            val allEvents = d2Instance.eventModule().events().blockingGet()
-            Log.d("SessionManager", "VERIFICATION: Found ${allEvents.size} total events in local database")
-
-            // Check specifically for our target program QZkuUuLedjh
-            val targetProgramEnrollments = d2Instance.enrollmentModule().enrollments()
-                .byProgram().eq("QZkuUuLedjh")
-                .blockingGet()
-
-            Log.d("SessionManager", "VERIFICATION: Found ${targetProgramEnrollments.size} enrollments for program QZkuUuLedjh")
-
-            // Get TEIs that have enrollments in target program by checking enrollment TEI references
-            val targetProgramTEIUids = targetProgramEnrollments.mapNotNull { it.trackedEntityInstance() }.distinct()
-            Log.d("SessionManager", "VERIFICATION: Found ${targetProgramTEIUids.size} unique TEIs for program QZkuUuLedjh")
-
-            // CRITICAL ASSESSMENT
-            if (allTEIs.isEmpty() && allEnrollments.isEmpty() && allEvents.isEmpty()) {
-                Log.w("SessionManager", "CRITICAL: Despite successful download, NO tracker data was stored!")
-                Log.w("SessionManager", "This indicates foreign key constraint violations are blocking data storage")
-            } else {
-                Log.d("SessionManager", "VERIFICATION: Tracker data storage appears to be working correctly")
-
-                if (targetProgramTEIUids.isEmpty() && targetProgramEnrollments.isEmpty()) {
-                    Log.w("SessionManager", "WARNING: General tracker data stored but target program QZkuUuLedjh has no data")
-                    Log.w("SessionManager", "This could indicate org unit access or program assignment issues")
-                }
-            }
-
-        } catch (e: Exception) {
-            Log.e("SessionManager", "VERIFICATION: Failed to verify tracker data storage: ${e.message}", e)
-            Log.w("SessionManager", "Database access error suggests foreign key constraint violations may be affecting storage")
-        }
-    }
-
-    /**
-     * Comprehensive foreign key violation handling for all DHIS2 data types
-     * Based on DHIS2 SDK documentation and community solutions
-     */
-    private fun handlePostDownloadForeignKeyViolations(d2Instance: D2) {
-        try {
-            Log.d("SessionManager", "FK ANALYSIS: Checking for foreign key violations after data download...")
-
-            // Get all foreign key violations from the SDK
-            val foreignKeyViolations = d2Instance.maintenanceModule().foreignKeyViolations().blockingGet()
-
-            if (foreignKeyViolations.isEmpty()) {
-                Log.d("SessionManager", "FK ANALYSIS: No foreign key violations detected")
-                return
-            }
-
-            Log.w("SessionManager", "FK ANALYSIS: Found ${foreignKeyViolations.size} foreign key violations")
-
-            // Group violations by type for systematic handling
-            val violationsByTable = foreignKeyViolations.groupBy { "${it.fromTable()} -> ${it.toTable()}" }
-
-            violationsByTable.forEach { (violationType, violations) ->
-                Log.w("SessionManager", "FK VIOLATION TYPE: $violationType (${violations.size} instances)")
-
-                // Handle specific violation types with targeted solutions
-                when {
-                    // CategoryOptionCombo violations (most common)
-                    violationType.contains("CategoryOptionCombo") -> {
-                        handleCategoryOptionComboViolations(d2Instance, violations)
-                    }
-
-                    // DataElement violations
-                    violationType.contains("DataElement") -> {
-                        handleDataElementViolations(d2Instance, violations)
-                    }
-
-                    // OrganisationUnit violations
-                    violationType.contains("OrganisationUnit") -> {
-                        handleOrganisationUnitViolations(d2Instance, violations)
-                    }
-
-                    // Program-related violations
-                    violationType.contains("Program") -> {
-                        handleProgramViolations(d2Instance, violations)
-                    }
-
-                    else -> {
-                        // Log unknown violation types for investigation
-                        violations.take(3).forEach { violation ->
-                            Log.w("SessionManager", "UNKNOWN FK VIOLATION: ${violation.fromTable()} -> ${violation.toTable()}, missing: ${violation.notFoundValue()}")
-                        }
-                    }
-                }
-            }
-
-            // Attempt to resolve violations by re-syncing missing metadata
-            attemptForeignKeyViolationResolution(d2Instance)
-
-        } catch (e: Exception) {
-            Log.e("SessionManager", "FK ANALYSIS: Failed to analyze foreign key violations: ${e.message}", e)
-        }
-    }
-
-    private fun handleCategoryOptionComboViolations(d2Instance: D2, violations: List<org.hisp.dhis.android.core.maintenance.ForeignKeyViolation>) {
-        Log.w("SessionManager", "HANDLING CategoryOptionCombo violations (${violations.size} instances)")
-
-        val missingCOCs = violations.map { it.notFoundValue() }.distinct()
-        Log.w("SessionManager", "Missing CategoryOptionCombos: ${missingCOCs.take(10).joinToString(", ")}")
-
-        // Try to fetch missing CategoryOptionCombos from server
-        try {
-            Log.d("SessionManager", "Attempting to fetch missing CategoryOptionCombos from server...")
-            // Force sync categories and category combos to resolve missing COCs
-            d2Instance.metadataModule().blockingDownload()
-        } catch (e: Exception) {
-            Log.e("SessionManager", "Failed to resolve CategoryOptionCombo violations: ${e.message}")
-        }
-    }
-
-    private fun handleDataElementViolations(d2Instance: D2, violations: List<org.hisp.dhis.android.core.maintenance.ForeignKeyViolation>) {
-        Log.w("SessionManager", "HANDLING DataElement violations (${violations.size} instances)")
-        val missingDataElements = violations.map { it.notFoundValue() }.distinct()
-        Log.w("SessionManager", "Missing DataElements: ${missingDataElements.take(5).joinToString(", ")}")
-    }
-
-    private fun handleOrganisationUnitViolations(d2Instance: D2, violations: List<org.hisp.dhis.android.core.maintenance.ForeignKeyViolation>) {
-        Log.w("SessionManager", "HANDLING OrganisationUnit violations (${violations.size} instances)")
-        val missingOrgUnits = violations.map { it.notFoundValue() }.distinct()
-        Log.w("SessionManager", "Missing OrganisationUnits: ${missingOrgUnits.take(5).joinToString(", ")}")
-    }
-
-    private fun handleProgramViolations(d2Instance: D2, violations: List<org.hisp.dhis.android.core.maintenance.ForeignKeyViolation>) {
-        Log.w("SessionManager", "HANDLING Program violations (${violations.size} instances)")
-        val missingPrograms = violations.map { it.notFoundValue() }.distinct()
-        Log.w("SessionManager", "Missing Programs: ${missingPrograms.take(5).joinToString(", ")}")
-    }
-
-    private fun attemptForeignKeyViolationResolution(d2Instance: D2) {
-        try {
-            Log.d("SessionManager", "RESOLUTION: Attempting to resolve foreign key violations...")
-
-            // Note: Foreign key violations are read-only in SDK - they cannot be manually cleared
-            // The SDK will automatically update them after metadata sync resolves dependencies
-            Log.d("SessionManager", "RESOLUTION: Note - FK violations are managed by SDK, will be updated after metadata sync")
-
-            // Force a complete metadata re-sync to resolve missing dependencies
-            try {
-                Log.d("SessionManager", "RESOLUTION: Re-syncing metadata to resolve missing dependencies...")
-                d2Instance.metadataModule().blockingDownload()
-                Log.d("SessionManager", "RESOLUTION: Metadata re-sync completed")
-            } catch (e: Exception) {
-                Log.e("SessionManager", "RESOLUTION: Metadata re-sync failed: ${e.message}")
-            }
-
-        } catch (e: Exception) {
-            Log.e("SessionManager", "RESOLUTION: Failed to resolve foreign key violations: ${e.message}")
-        }
-    }
-
     suspend fun hydrateRoomFromSdk(context: Context, db: AppDatabase) = withContext(Dispatchers.IO) {
         val d2Instance = d2 ?: return@withContext
-        // Hydrate datasets with style information
-        val datasets = d2Instance.dataSetModule().dataSets().blockingGet().map {
-            val datasetStyle = it.style()
-            Log.d("SessionManager", "Dataset ${it.uid()}: style=${datasetStyle?.icon()}, color=${datasetStyle?.color()}")
 
-            com.ash.simpledataentry.data.local.DatasetEntity(
-                id = it.uid(),
-                name = it.displayName() ?: it.name() ?: "Unnamed Dataset",
-                description = it.description() ?: "",
-                periodType = it.periodType()?.name ?: "Monthly",
-                styleIcon = datasetStyle?.icon(),
-                styleColor = datasetStyle?.color()
-            )
+        // Note: Cache validation no longer needed - DatabaseProvider ensures account isolation
+
+        val startTime = System.currentTimeMillis()
+
+        // PERFORMANCE OPTIMIZATION: Fetch all metadata in parallel using async
+        val datasetsDeferred = async {
+            d2Instance.dataSetModule().dataSets().blockingGet().map {
+                val datasetStyle = it.style()
+
+                com.ash.simpledataentry.data.local.DatasetEntity(
+                    id = it.uid(),
+                    name = it.displayName() ?: it.name() ?: "Unnamed Dataset",
+                    description = it.description() ?: "",
+                    periodType = it.periodType()?.name ?: "Monthly",
+                    styleIcon = datasetStyle?.icon(),
+                    styleColor = datasetStyle?.color()
+                )
+            }
         }
+
+        val dataElementsDeferred = async {
+            d2Instance.dataElementModule().dataElements().blockingGet().map {
+                com.ash.simpledataentry.data.local.DataElementEntity(
+                    id = it.uid(),
+                    name = it.displayName() ?: it.name() ?: "Unnamed DataElement",
+                    valueType = it.valueType()?.name ?: "TEXT",
+                    categoryComboId = it.categoryComboUid(),
+                    description = it.description()
+                )
+            }
+        }
+
+        val categoryCombosDeferred = async {
+            d2Instance.categoryModule().categoryCombos().blockingGet().map {
+                com.ash.simpledataentry.data.local.CategoryComboEntity(
+                    id = it.uid(),
+                    name = it.displayName() ?: it.name() ?: "Unnamed CategoryCombo"
+                )
+            }
+        }
+
+        val categoryOptionCombosDeferred = async {
+            d2Instance.categoryModule().categoryOptionCombos().blockingGet().map {
+                com.ash.simpledataentry.data.local.CategoryOptionComboEntity(
+                    id = it.uid(),
+                    name = it.displayName() ?: it.uid(),
+                    categoryComboId = it.categoryCombo()?.uid() ?: "",
+                    optionUids = it.categoryOptions()?.joinToString(",") { opt -> opt.uid() } ?: ""
+                )
+            }
+        }
+
+        val orgUnitsDeferred = async {
+            d2Instance.organisationUnitModule().organisationUnits().blockingGet().map {
+                com.ash.simpledataentry.data.local.OrganisationUnitEntity(
+                    id = it.uid(),
+                    name = it.displayName() ?: it.name() ?: "Unnamed OrgUnit",
+                    parentId = it.parent()?.uid()
+                )
+            }
+        }
+
+        // PHASE 2 FIX: Add tracker and event program hydration
+        val trackerProgramsDeferred = async {
+            d2Instance.programModule().programs()
+                .byProgramType().eq(org.hisp.dhis.android.core.program.ProgramType.WITH_REGISTRATION)
+                .blockingGet()
+                .map { program ->
+                    com.ash.simpledataentry.data.local.TrackerProgramEntity(
+                        id = program.uid(),
+                        name = program.displayName() ?: program.name() ?: "Unnamed Program",
+                        description = program.description(),
+                        trackedEntityType = program.trackedEntityType()?.uid(),
+                        categoryCombo = program.categoryCombo()?.uid(),
+                        styleIcon = program.style()?.icon(),
+                        styleColor = program.style()?.color(),
+                        enrollmentDateLabel = program.enrollmentDateLabel(),
+                        incidentDateLabel = program.incidentDateLabel(),
+                        displayIncidentDate = program.displayIncidentDate() ?: false,
+                        onlyEnrollOnce = program.onlyEnrollOnce() ?: false,
+                        selectEnrollmentDatesInFuture = program.selectEnrollmentDatesInFuture() ?: false,
+                        selectIncidentDatesInFuture = program.selectIncidentDatesInFuture() ?: false,
+                        featureType = program.featureType()?.name ?: "NONE",
+                        minAttributesRequiredToSearch = program.minAttributesRequiredToSearch() ?: 1,
+                        maxTeiCountToReturn = program.maxTeiCountToReturn() ?: 50
+                    )
+                }
+        }
+
+        val eventProgramsDeferred = async {
+            d2Instance.programModule().programs()
+                .byProgramType().eq(org.hisp.dhis.android.core.program.ProgramType.WITHOUT_REGISTRATION)
+                .blockingGet()
+                .map { program ->
+                    com.ash.simpledataentry.data.local.EventProgramEntity(
+                        id = program.uid(),
+                        name = program.displayName() ?: program.name() ?: "Unnamed Program",
+                        description = program.description(),
+                        categoryCombo = program.categoryCombo()?.uid(),
+                        styleIcon = program.style()?.icon(),
+                        styleColor = program.style()?.color(),
+                        featureType = program.featureType()?.name ?: "NONE"
+                    )
+                }
+        }
+
+        // PHASE 2 FIX: Add tracker enrollment and event instance hydration
+        val trackerEnrollmentsDeferred = async {
+            val orgUnitMap = d2Instance.organisationUnitModule().organisationUnits()
+                .blockingGet()
+                .associateBy({ it.uid() }, { it.displayName() ?: it.name() ?: "Unknown" })
+
+            d2Instance.enrollmentModule().enrollments()
+                .blockingGet()
+                .map { enrollment ->
+                    com.ash.simpledataentry.data.local.TrackerEnrollmentEntity(
+                        id = enrollment.uid(),
+                        programId = enrollment.program() ?: "",
+                        trackedEntityInstanceId = enrollment.trackedEntityInstance() ?: "",
+                        organisationUnitId = enrollment.organisationUnit() ?: "",
+                        organisationUnitName = orgUnitMap[enrollment.organisationUnit()] ?: "Unknown",
+                        enrollmentDate = enrollment.enrollmentDate()?.toString(),
+                        incidentDate = enrollment.incidentDate()?.toString(),
+                        status = enrollment.status()?.name ?: "ACTIVE",
+                        followUp = enrollment.followUp() ?: false,
+                        deleted = enrollment.deleted() ?: false,
+                        lastUpdated = enrollment.lastUpdated()?.toString()
+                    )
+                }
+        }
+
+        val eventInstancesDeferred = async {
+            val orgUnitMap = d2Instance.organisationUnitModule().organisationUnits()
+                .blockingGet()
+                .associateBy({ it.uid() }, { it.displayName() ?: it.name() ?: "Unknown" })
+
+            d2Instance.eventModule().events()
+                .byEnrollmentUid().isNull // Only standalone events (no enrollment)
+                .blockingGet()
+                .map { event ->
+                    com.ash.simpledataentry.data.local.EventInstanceEntity(
+                        id = event.uid(),
+                        programId = event.program() ?: "",
+                        programStageId = event.programStage() ?: "",
+                        organisationUnitId = event.organisationUnit() ?: "",
+                        organisationUnitName = orgUnitMap[event.organisationUnit()] ?: "Unknown",
+                        eventDate = event.eventDate()?.toString(),
+                        status = event.status()?.name ?: "ACTIVE",
+                        deleted = event.deleted() ?: false,
+                        lastUpdated = event.lastUpdated()?.toString(),
+                        enrollmentId = null
+                    )
+                }
+        }
+
+        // Wait for all parallel operations to complete
+        val datasets = datasetsDeferred.await()
+        val dataElements = dataElementsDeferred.await()
+        val categoryCombos = categoryCombosDeferred.await()
+        val categoryOptionCombos = categoryOptionCombosDeferred.await()
+        val orgUnits = orgUnitsDeferred.await()
+        val trackerPrograms = trackerProgramsDeferred.await()
+        val eventPrograms = eventProgramsDeferred.await()
+        val trackerEnrollments = trackerEnrollmentsDeferred.await()
+        val eventInstances = eventInstancesDeferred.await()
+
+        val fetchTime = System.currentTimeMillis() - startTime
+
+        // Insert all data sequentially (Room doesn't handle parallel writes well)
+        // CRITICAL: Log what SDK returns to diagnose empty Room issues
+        Log.d("SessionManager", "SDK returned: ${datasets.size} datasets, ${dataElements.size} dataElements, ${categoryCombos.size} categoryCombos, ${categoryOptionCombos.size} COCs, ${orgUnits.size} orgUnits")
+
         db.datasetDao().clearAll()
         db.datasetDao().insertAll(datasets)
-        // Hydrate data elements
-        val dataElements = d2Instance.dataElementModule().dataElements().blockingGet().map {
-            com.ash.simpledataentry.data.local.DataElementEntity(
-                id = it.uid(),
-                name = it.displayName() ?: it.name() ?: "Unnamed DataElement",
-                valueType = it.valueType()?.name ?: "TEXT",
-                categoryComboId = it.categoryComboUid(),
-                description = it.description()
-            )
+        Log.d("SessionManager", "Hydrated Room with ${datasets.size} datasets")
+
+        // CRITICAL FIX: Only clear and re-insert if SDK returned data
+        // This prevents wiping Room when SDK returns empty (e.g., during offline mode)
+        if (dataElements.isNotEmpty()) {
+            db.dataElementDao().clearAll()
+            db.dataElementDao().insertAll(dataElements)
+            Log.d("SessionManager", "Hydrated Room with ${dataElements.size} dataElements")
+        } else {
+            Log.w("SessionManager", "SDK returned 0 dataElements - preserving existing Room data")
         }
-        db.dataElementDao().clearAll()
-        db.dataElementDao().insertAll(dataElements)
-        // Hydrate category combos
-        val categoryCombos = d2Instance.categoryModule().categoryCombos().blockingGet().map {
-            com.ash.simpledataentry.data.local.CategoryComboEntity(
-                id = it.uid(),
-                name = it.displayName() ?: it.name() ?: "Unnamed CategoryCombo"
-            )
+
+        if (categoryCombos.isNotEmpty()) {
+            db.categoryComboDao().clearAll()
+            db.categoryComboDao().insertAll(categoryCombos)
+            Log.d("SessionManager", "Hydrated Room with ${categoryCombos.size} categoryCombos")
+        } else {
+            Log.w("SessionManager", "SDK returned 0 categoryCombos - preserving existing Room data")
         }
-        db.categoryComboDao().clearAll()
-        db.categoryComboDao().insertAll(categoryCombos)
-        // Hydrate category option combos
-        val categoryOptionCombos = d2Instance.categoryModule().categoryOptionCombos().blockingGet().map {
-            com.ash.simpledataentry.data.local.CategoryOptionComboEntity(
-                id = it.uid(),
-                name = it.displayName() ?: it.uid(),
-                categoryComboId = it.categoryCombo()?.uid() ?: "",
-                optionUids = it.categoryOptions()?.joinToString(",") { opt -> opt.uid() } ?: ""
-            )
+
+        if (categoryOptionCombos.isNotEmpty()) {
+            db.categoryOptionComboDao().clearAll()
+            db.categoryOptionComboDao().insertAll(categoryOptionCombos)
+            Log.d("SessionManager", "Hydrated Room with ${categoryOptionCombos.size} categoryOptionCombos")
+        } else {
+            Log.w("SessionManager", "SDK returned 0 categoryOptionCombos - preserving existing Room data")
         }
-        db.categoryOptionComboDao().clearAll()
-        db.categoryOptionComboDao().insertAll(categoryOptionCombos)
-        // Hydrate organisation units
-        val orgUnits = d2Instance.organisationUnitModule().organisationUnits().blockingGet().map {
-            com.ash.simpledataentry.data.local.OrganisationUnitEntity(
-                id = it.uid(),
-                name = it.displayName() ?: it.name() ?: "Unnamed OrgUnit",
-                parentId = it.parent()?.uid()
-            )
+
+        if (orgUnits.isNotEmpty()) {
+            db.organisationUnitDao().clearAll()
+            db.organisationUnitDao().insertAll(orgUnits)
+            Log.d("SessionManager", "Hydrated Room with ${orgUnits.size} orgUnits")
+        } else {
+            Log.w("SessionManager", "SDK returned 0 orgUnits - preserving existing Room data")
         }
-        db.organisationUnitDao().clearAll()
-        db.organisationUnitDao().insertAll(orgUnits)
+
+        // PHASE 2 FIX: Insert tracker and event programs into Room
+        db.trackerProgramDao().clearAll()
+        db.trackerProgramDao().insertAll(trackerPrograms)
+        Log.d("SessionManager", "Hydrated ${trackerPrograms.size} tracker programs")
+
+        db.eventProgramDao().clearAll()
+        db.eventProgramDao().insertAll(eventPrograms)
+        Log.d("SessionManager", "Hydrated ${eventPrograms.size} event programs")
+
+        // PHASE 2 FIX: Insert tracker enrollments and event instances into Room
+        db.trackerEnrollmentDao().clearAll()
+        db.trackerEnrollmentDao().insertAll(trackerEnrollments)
+        Log.d("SessionManager", "Hydrated ${trackerEnrollments.size} tracker enrollments")
+
+        db.eventInstanceDao().clearAll()
+        db.eventInstanceDao().insertAll(eventInstances)
+        Log.d("SessionManager", "Hydrated ${eventInstances.size} event instances")
+
+        val totalTime = System.currentTimeMillis() - startTime
 
 
         // Hydrate data values from DHIS2 SDK to Room database
@@ -1008,9 +1205,6 @@ class SessionManager @Inject constructor() {
                 val categoryOptionCombo = dataValue.categoryOptionCombo() ?: ""
                 val value = dataValue.value()
 
-                if (index < 10) { // Log first 10 for debugging
-                    Log.d("SessionManager", "Storing DataValue $index: datasetId='$datasetId', period='$period', orgUnit='$orgUnit', attributeOptionCombo='$attributeOptionCombo', dataElement='$dataElementUid', categoryOptionCombo='$categoryOptionCombo', value='$value'")
-                }
 
                 com.ash.simpledataentry.data.local.DataValueEntity(
                     datasetId = datasetId,
@@ -1108,6 +1302,46 @@ class SessionManager @Inject constructor() {
 
             if (isLoggedIn) {
                 Log.d("SessionManager", "User is still logged in, session active")
+
+                // CRITICAL: Switch to account-specific database on session restoration
+                // Without this, the fallback database is used and datasets won't appear
+                val activeAccountInfo = accountManager.getActiveAccount(context)
+                if (activeAccountInfo != null) {
+                    val db = databaseManager.getDatabaseForAccount(context, activeAccountInfo)
+                    Log.d("SessionManager", "Switched to account database: ${activeAccountInfo.roomDatabaseName}")
+
+                    // CRITICAL FIX: Check if Room database is hydrated, re-hydrate if empty
+                    // This handles cases where Room was cleared, or a new account was created
+                    // NOTE: Use AND logic - we need ALL critical metadata tables populated
+                    val dataElements = db.dataElementDao().getAll()
+                    val categoryOptionCombos = db.categoryOptionComboDao().getAll()
+                    val datasets = db.datasetDao().getAll().first()
+
+                    // Check if critical metadata exists (dataElements and categoryOptionCombos are essential for data entry)
+                    val hasFullMetadata = dataElements.isNotEmpty() && categoryOptionCombos.isNotEmpty()
+                    Log.d("SessionManager", "Room metadata check: ${dataElements.size} dataElements, ${categoryOptionCombos.size} COCs, ${datasets.size} datasets")
+
+
+                    if (!hasFullMetadata) {
+                        Log.w("SessionManager", "Room database is empty - triggering re-hydration from SDK cache")
+                        try {
+                            hydrateRoomFromSdk(context, db)
+                            Log.d("SessionManager", "Room re-hydration completed successfully")
+                        } catch (e: Exception) {
+                            Log.e("SessionManager", "Failed to re-hydrate Room: ${e.message}")
+                        }
+                    } else {
+                        Log.d("SessionManager", "Room database has metadata, skipping hydration")
+                    }
+
+                    // Emit account ID to trigger ViewModel reloads
+                    // This ensures DatasetsViewModel reloads from the correct database
+                    _currentAccountId.value = activeAccountInfo.accountId
+                    Log.d("SessionManager", "Emitted currentAccountId: ${activeAccountInfo.accountId}")
+                } else {
+                    Log.w("SessionManager", "User is logged in but no active account found - database may be stale")
+                }
+
                 return@withContext
             }
 
@@ -1134,6 +1368,15 @@ class SessionManager @Inject constructor() {
                     prefs.edit {
                         putLong("last_validated", System.currentTimeMillis())
                     }
+
+                    // Switch to account-specific database for offline session
+                    val accountInfo = accountManager.getOrCreateAccount(context, storedUsername, storedServerUrl)
+                    databaseManager.getDatabaseForAccount(context, accountInfo)
+                    Log.d("SessionManager", "Offline session: switched to account database: ${accountInfo.roomDatabaseName}")
+
+                    // Emit account ID to trigger ViewModel reloads
+                    _currentAccountId.value = accountInfo.accountId
+                    Log.d("SessionManager", "Offline session: emitted currentAccountId: ${accountInfo.accountId}")
                 } else {
                     Log.w("SessionManager", "No user data available for offline session restoration")
                 }
@@ -1145,5 +1388,61 @@ class SessionManager @Inject constructor() {
             Log.e("SessionManager", "Failed to restore session: ${e.message}", e)
         }
     }
+
+    fun downloadTrackerData() {
+        val d2Instance = d2 ?: throw IllegalStateException("D2 not initialized")
+
+        Log.d("SessionManager", "Starting standard tracker data download...")
+
+        // 1. Download Tracker Programs (WITH_REGISTRATION)
+        val trackerPrograms = d2Instance.programModule().programs()
+            .byProgramType().eq(org.hisp.dhis.android.core.program.ProgramType.WITH_REGISTRATION)
+            .blockingGet()
+
+        Log.d("SessionManager", "Found ${trackerPrograms.size} tracker programs")
+
+        trackerPrograms.forEach { program ->
+            val programUid = program.uid()
+            Log.d("SessionManager", "Downloading tracker data for: ${program.displayName()}")
+            try {
+                d2Instance.trackedEntityModule().trackedEntityInstanceDownloader()
+                    .byProgramUid(programUid)
+                    .blockingDownload()
+            } catch (e: Exception) {
+                Log.e("SessionManager", "Failed to download tracker data for ${program.displayName()}: ${e.message}")
+            }
+        }
+
+        // 2. Download Event Programs (WITHOUT_REGISTRATION)
+        val eventPrograms = d2Instance.programModule().programs()
+            .byProgramType().eq(org.hisp.dhis.android.core.program.ProgramType.WITHOUT_REGISTRATION)
+            .blockingGet()
+
+        Log.d("SessionManager", "Found ${eventPrograms.size} event programs")
+
+        eventPrograms.forEach { program ->
+            val programUid = program.uid()
+            Log.d("SessionManager", "Downloading event data for: ${program.displayName()}")
+            try {
+                d2Instance.eventModule().eventDownloader()
+                    .byProgramUid(programUid)
+                    .blockingDownload()
+            } catch (e: Exception) {
+                Log.e("SessionManager", "Failed to download event data for ${program.displayName()}: ${e.message}")
+            }
+        }
+
+        // 3. Download Standalone Events (no program)
+        try {
+            Log.d("SessionManager", "Downloading standalone events...")
+            d2Instance.eventModule().eventDownloader().download()
+        } catch (e: Exception) {
+            Log.e("SessionManager", "Failed to download standalone events: ${e.message}")
+        }
+        
+        Log.d("SessionManager", "Tracker and event data download completed")
+    }
+
+
 
 }

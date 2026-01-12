@@ -25,6 +25,7 @@ class BackgroundSyncManager @Inject constructor(
     companion object {
         private const val TAG = "BackgroundSyncManager"
         private const val SYNC_WORK_NAME = "background_sync_work"
+        private const val METADATA_SYNC_WORK_NAME = "metadata_sync_work"
     }
     
     private val workManager = WorkManager.getInstance(context)
@@ -128,4 +129,91 @@ class BackgroundSyncManager @Inject constructor(
      * Get work info for monitoring immediate sync status
      */
     fun getImmediateSyncWorkInfo(workName: String) = workManager.getWorkInfosForUniqueWorkLiveData(workName)
+
+    /**
+     * Schedule periodic metadata sync (typically weekly)
+     */
+    fun scheduleMetadataSync(frequency: SyncFrequency = SyncFrequency.WEEKLY) {
+        Log.d(TAG, "Scheduling metadata sync: ${frequency.displayName}")
+
+        // Cancel any existing metadata sync work first
+        cancelMetadataSync()
+
+        when (frequency) {
+            SyncFrequency.NEVER, SyncFrequency.MANUAL -> {
+                Log.d(TAG, "Metadata sync disabled per user preference")
+                // Work already cancelled above
+            }
+            else -> {
+                schedulePeriodicMetadataSync(frequency)
+            }
+        }
+    }
+
+    /**
+     * Schedule periodic metadata sync work
+     */
+    private fun schedulePeriodicMetadataSync(frequency: SyncFrequency) {
+        val constraints = Constraints.Builder()
+            .setRequiredNetworkType(androidx.work.NetworkType.CONNECTED)
+            .setRequiresBatteryNotLow(true)
+            .build()
+
+        val periodicWorkRequest = PeriodicWorkRequestBuilder<MetadataSyncWorker>(
+            frequency.intervalMinutes.toLong(),
+            TimeUnit.MINUTES
+        )
+            .setConstraints(constraints)
+            .addTag(METADATA_SYNC_WORK_NAME)
+            .setBackoffCriteria(
+                BackoffPolicy.EXPONENTIAL,
+                WorkRequest.MIN_BACKOFF_MILLIS,
+                TimeUnit.MILLISECONDS
+            )
+            .build()
+
+        workManager.enqueueUniquePeriodicWork(
+            METADATA_SYNC_WORK_NAME,
+            ExistingPeriodicWorkPolicy.REPLACE,
+            periodicWorkRequest
+        )
+
+        Log.d(TAG, "Scheduled periodic metadata sync every ${frequency.intervalMinutes} minutes")
+    }
+
+    /**
+     * Trigger an immediate metadata sync (one-time work)
+     */
+    fun triggerImmediateMetadataSync(): String {
+        val constraints = Constraints.Builder()
+            .setRequiredNetworkType(androidx.work.NetworkType.CONNECTED)
+            .build()
+
+        val workName = "immediate_metadata_sync_${System.currentTimeMillis()}"
+        val oneTimeWorkRequest = OneTimeWorkRequestBuilder<MetadataSyncWorker>()
+            .setConstraints(constraints)
+            .addTag("immediate_metadata_sync")
+            .build()
+
+        workManager.enqueueUniqueWork(
+            workName,
+            ExistingWorkPolicy.REPLACE,
+            oneTimeWorkRequest
+        )
+        Log.d(TAG, "Triggered immediate metadata sync with work name: $workName")
+        return workName
+    }
+
+    /**
+     * Cancel metadata sync
+     */
+    fun cancelMetadataSync() {
+        workManager.cancelUniqueWork(METADATA_SYNC_WORK_NAME)
+        Log.d(TAG, "Metadata sync cancelled")
+    }
+
+    /**
+     * Get work info for monitoring metadata sync status
+     */
+    fun getMetadataSyncWorkInfo() = workManager.getWorkInfosForUniqueWorkLiveData(METADATA_SYNC_WORK_NAME)
 }

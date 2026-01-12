@@ -1,8 +1,10 @@
 package com.ash.simpledataentry.data.cache
 
 import android.util.Log
+import com.ash.simpledataentry.data.DatabaseProvider
 import com.ash.simpledataentry.data.SessionManager
 import com.ash.simpledataentry.data.local.*
+import com.ash.simpledataentry.domain.model.GroupingStrategy
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import org.hisp.dhis.android.core.D2
@@ -12,28 +14,43 @@ import javax.inject.Singleton
 /**
  * Service for caching and optimizing metadata access across feature stacks.
  * Leverages data already loaded during login to reduce API calls in EditEntryScreen.
+ *
+ * CRITICAL: Uses DatabaseProvider for dynamic DAO access to ensure we always use
+ * the correct account-specific database, not stale DAOs from app startup.
  */
 @Singleton
 class MetadataCacheService @Inject constructor(
     private val sessionManager: SessionManager,
-    private val dataElementDao: DataElementDao,
-    private val categoryComboDao: CategoryComboDao,
-    private val categoryOptionComboDao: CategoryOptionComboDao,
-    private val organisationUnitDao: OrganisationUnitDao,
-    private val dataValueDao: DataValueDao
+    private val databaseProvider: DatabaseProvider
 ) {
-    
+    // Dynamic DAO accessors - always get from current database
+    private val dataElementDao: DataElementDao get() = databaseProvider.getCurrentDatabase().dataElementDao()
+    private val categoryComboDao: CategoryComboDao get() = databaseProvider.getCurrentDatabase().categoryComboDao()
+    private val categoryOptionComboDao: CategoryOptionComboDao get() = databaseProvider.getCurrentDatabase().categoryOptionComboDao()
+    private val organisationUnitDao: OrganisationUnitDao get() = databaseProvider.getCurrentDatabase().organisationUnitDao()
+    private val dataValueDao: DataValueDao get() = databaseProvider.getCurrentDatabase().dataValueDao()
+
     private val d2 get() = sessionManager.getD2()!!
 
     // Cache for sections to avoid repeated API calls
     private val sectionsCache = mutableMapOf<String, List<SectionInfo>>()
-    
+
     // Cache for category combo structures to avoid repeated API calls
     private val categoryComboStructureCache = mutableMapOf<String, List<Pair<String, List<Pair<String, String>>>>>()
-    
+
     // Cache for category option combos
     private val categoryOptionCombosCache = mutableMapOf<String, List<Pair<String, List<String>>>>()
-    
+
+    // Cache for grouping analysis results (validation rule-based grouping)
+    // Key: datasetId, Value: Map of section name to grouping strategies
+    // This cache persists across ViewModel lifecycle to avoid expensive re-computation
+    private val groupingStrategyCache = mutableMapOf<String, Map<String, List<GroupingStrategy>>>()
+
+    // Cache for implied category inference results (for event/tracker programs)
+    // Key: programId:sectionName, Value: ImpliedCategoryCombination
+    // This cache persists across ViewModel lifecycle to avoid expensive re-computation
+    private val impliedCategoryCache = mutableMapOf<String, com.ash.simpledataentry.domain.model.ImpliedCategoryCombination>()
+
     data class SectionInfo(
         val name: String,
         val dataElementUids: List<String>
@@ -56,8 +73,22 @@ class MetadataCacheService @Inject constructor(
         val sections = getSectionsForDataset(datasetId)
         val allDataElementUids = sections.flatMap { it.dataElementUids }.distinct()
 
+        // DEBUG: Log what UIDs we're looking for
+        Log.d("MetadataCacheService", "Looking for ${allDataElementUids.size} data element UIDs from ${sections.size} sections")
+        if (allDataElementUids.isNotEmpty()) {
+            Log.d("MetadataCacheService", "First 5 UIDs requested: ${allDataElementUids.take(5)}")
+        }
+
         // 2. Get data elements from Room (already hydrated during login)
         val dataElements = dataElementDao.getByIds(allDataElementUids).associateBy { it.id }
+
+        // DEBUG: Log what we found
+        Log.d("MetadataCacheService", "Found ${dataElements.size} data elements in Room")
+        if (dataElements.isEmpty() && allDataElementUids.isNotEmpty()) {
+            // Check total data elements in Room
+            val totalInRoom = dataElementDao.getAll().size
+            Log.w("MetadataCacheService", "WARNING: Room has $totalInRoom total data elements but none match the requested UIDs!")
+        }
 
         // 3. Get category combos from Room (already hydrated during login)
         val categoryCombos = categoryComboDao.getAll().associateBy { it.id }
@@ -122,18 +153,43 @@ class MetadataCacheService @Inject constructor(
                 .withDataElements()
                 .byDataSetUid().eq(datasetId)
                 .blockingGet()
-                
-            sections.map { section ->
-                SectionInfo(
-                    name = section.displayName() ?: "Unassigned",
-                    dataElementUids = section.dataElements()?.map { it.uid() } ?: emptyList()
-                )
+
+            if (sections.isEmpty()) {
+                val dataSet = d2.dataSetModule().dataSets()
+                    .withDataSetElements()
+                    .uid(datasetId)
+                    .blockingGet()
+
+                val dataElementUids = dataSet?.dataSetElements()
+                    ?.mapNotNull { it.dataElement()?.uid() }
+                    ?.distinct()
+                    .orEmpty()
+
+                if (dataElementUids.isEmpty()) {
+                    emptyList()
+                } else {
+                    listOf(
+                        SectionInfo(
+                            name = "Default Section",
+                            dataElementUids = dataElementUids
+                        )
+                    )
+                }
+            } else {
+                sections.map { section ->
+                    SectionInfo(
+                        name = section.displayName() ?: "Unassigned",
+                        dataElementUids = section.dataElements()?.map { it.uid() } ?: emptyList()
+                    )
+                }
             }
         }
     }
     
     /**
      * Get category combo structure with caching
+     * Categories and options are returned in the order provided by the SDK
+     * (SDK maintains metadata-defined order internally)
      */
     suspend fun getCategoryComboStructure(categoryComboUid: String): List<Pair<String, List<Pair<String, String>>>> {
         return categoryComboStructureCache.getOrPut(categoryComboUid) {
@@ -144,7 +200,7 @@ class MetadataCacheService @Inject constructor(
                     .blockingGet() ?: return@getOrPut emptyList()
 
                 val actualCategoryComboUid = categoryOptionCombo.categoryCombo()
-                
+
                 // Get the category combo with its categories
                 val categoryCombo = d2.categoryModule().categoryCombos()
                     .withCategories()
@@ -154,17 +210,22 @@ class MetadataCacheService @Inject constructor(
                 val categories = categoryCombo.categories() ?: emptyList()
                 if (categories.isEmpty()) return@getOrPut emptyList()
 
-                categories.mapNotNull { catRef ->
-                    // Get category with its options
+                // Process categories in the order returned by SDK (maintains metadata order)
+                // Use mapIndexed to preserve original order while processing
+                categories.mapIndexedNotNull { catIndex, catRef ->
                     val category = d2.categoryModule().categories()
                         .withCategoryOptions()
                         .uid(catRef.uid())
-                        .blockingGet() ?: return@mapNotNull null
+                        .blockingGet() ?: return@mapIndexedNotNull null
 
                     val options = category.categoryOptions() ?: emptyList()
+
+                    // Options from SDK should already be in sorted order
                     val optionPairs = options.map { optRef ->
                         optRef.uid() to (optRef.displayName() ?: optRef.uid())
                     }
+
+                    Log.d("MetadataCacheService", "Category $catIndex: ${category.displayName()} with ${optionPairs.size} options")
 
                     (category.displayName() ?: category.uid()) to optionPairs
                 }
@@ -205,12 +266,54 @@ class MetadataCacheService @Inject constructor(
     }
     
     /**
+     * Get cached grouping strategies for a dataset
+     * Returns null if not cached - caller should compute and store
+     */
+    fun getGroupingStrategies(datasetId: String): Map<String, List<GroupingStrategy>>? {
+        return groupingStrategyCache[datasetId]
+    }
+
+    /**
+     * Store grouping strategies in cache
+     * This persists across ViewModel lifecycle for performance
+     */
+    fun setGroupingStrategies(datasetId: String, strategies: Map<String, List<GroupingStrategy>>) {
+        groupingStrategyCache[datasetId] = strategies
+        Log.d("MetadataCacheService", "Cached grouping strategies for dataset $datasetId: ${strategies.size} sections")
+    }
+
+    /**
+     * Get cached implied category combination for a program section
+     * Returns null if not cached - caller should compute and store
+     */
+    fun getImpliedCategories(programId: String, sectionName: String): com.ash.simpledataentry.domain.model.ImpliedCategoryCombination? {
+        val key = "$programId:$sectionName"
+        return impliedCategoryCache[key]
+    }
+
+    /**
+     * Store implied category combination in cache
+     * This persists across ViewModel lifecycle for performance
+     */
+    fun setImpliedCategories(
+        programId: String,
+        sectionName: String,
+        combination: com.ash.simpledataentry.domain.model.ImpliedCategoryCombination
+    ) {
+        val key = "$programId:$sectionName"
+        impliedCategoryCache[key] = combination
+        Log.d("MetadataCacheService", "Cached implied categories for $key: ${combination.categories.size} levels, confidence=${combination.confidence}")
+    }
+
+    /**
      * Clear all caches (useful when switching accounts or after sync)
      */
     fun clearAllCaches() {
         sectionsCache.clear()
         categoryComboStructureCache.clear()
         categoryOptionCombosCache.clear()
+        groupingStrategyCache.clear()
+        impliedCategoryCache.clear()
         Log.d("MetadataCacheService", "All metadata caches cleared")
     }
     

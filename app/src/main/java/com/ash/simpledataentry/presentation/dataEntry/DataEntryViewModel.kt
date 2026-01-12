@@ -12,12 +12,18 @@ import com.ash.simpledataentry.data.local.DataValueDraftDao
 import com.ash.simpledataentry.data.local.DataValueDraftEntity
 import com.ash.simpledataentry.data.repositoryImpl.ValidationRepository
 import com.ash.simpledataentry.domain.model.*
+import com.ash.simpledataentry.domain.grouping.DataElementGroupingAnalyzer
 import com.ash.simpledataentry.data.sync.DetailedSyncProgress
 import com.ash.simpledataentry.data.sync.SyncQueueManager
+import com.ash.simpledataentry.data.sync.SyncStatusController
 import com.ash.simpledataentry.domain.repository.DataEntryRepository
 import com.ash.simpledataentry.domain.useCase.DataEntryUseCases
 import com.ash.simpledataentry.util.NetworkUtils
 import com.ash.simpledataentry.data.sync.NetworkStateManager
+import com.ash.simpledataentry.presentation.core.LoadingOperation
+import com.ash.simpledataentry.presentation.core.LoadingProgress
+import com.ash.simpledataentry.presentation.core.UiError
+import com.ash.simpledataentry.presentation.core.UiState
 import dagger.hilt.android.lifecycle.HiltViewModel
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.async
@@ -65,7 +71,31 @@ data class DataEntryState(
     val navigationProgress: com.ash.simpledataentry.presentation.core.NavigationProgress? = null, // Enhanced loading progress
     val completionProgress: com.ash.simpledataentry.presentation.core.CompletionProgress? = null, // Enhanced completion progress
     val showCompletionDialog: Boolean = false,
-    val completionAction: com.ash.simpledataentry.presentation.core.CompletionAction? = null
+    val completionAction: com.ash.simpledataentry.presentation.core.CompletionAction? = null,
+    val optionSets: Map<String, com.ash.simpledataentry.domain.model.OptionSet> = emptyMap(), // Option sets by data element ID
+    val renderTypes: Map<String, com.ash.simpledataentry.domain.model.RenderType> = emptyMap(), // Computed render types by data element ID
+
+    // Program rule effects (currently for tracker/event, can be extended to aggregate)
+    val hiddenFields: Set<String> = emptySet(),
+    val disabledFields: Set<String> = emptySet(),
+    val mandatoryFields: Set<String> = emptySet(),
+    val fieldWarnings: Map<String, String> = emptyMap(),
+    val fieldErrors: Map<String, String> = emptyMap(),
+    val calculatedValues: Map<String, String> = emptyMap(),
+
+    // Radio button groups: Map<groupTitle, List<dataElementIds>>
+    val radioButtonGroups: Map<String, List<String>> = emptyMap(),
+
+    // Checkbox groups: Map<groupTitle, List<dataElementIds>>
+    val checkboxGroups: Map<String, List<String>> = emptyMap(),
+
+    // Generic grouping strategies per section
+    val sectionGroupingStrategies: Map<String, List<GroupingStrategy>> = emptyMap(),
+
+    // PERFORMANCE OPTIMIZATION: Pre-computed data element ordering per section
+    // This avoids expensive re-computation on every render
+    // Key: sectionName, Value: Map<dataElement, orderIndex>
+    val dataElementOrdering: Map<String, Map<String, Int>> = emptyMap()
 )
 
 @HiltViewModel
@@ -76,19 +106,57 @@ class DataEntryViewModel @Inject constructor(
     private val draftDao: DataValueDraftDao,
     private val validationRepository: ValidationRepository,
     private val syncQueueManager: SyncQueueManager,
-    private val networkStateManager: NetworkStateManager
+    private val networkStateManager: NetworkStateManager,
+    private val sessionManager: com.ash.simpledataentry.data.SessionManager,
+    private val metadataCacheService: com.ash.simpledataentry.data.cache.MetadataCacheService,
+    private val syncStatusController: SyncStatusController
 ) : ViewModel() {
     private val _state = MutableStateFlow(DataEntryState())
     val state: StateFlow<DataEntryState> = _state.asStateFlow()
+    private val _uiState = MutableStateFlow<UiState<DataEntryState>>(UiState.Loading(LoadingOperation.Initial))
+    val uiState: StateFlow<UiState<DataEntryState>> = _uiState.asStateFlow()
+    private var lastSuccessfulState: DataEntryState? = null
+    val syncController: SyncStatusController = syncStatusController
+
+    private fun emitSuccessState() {
+        val current = _state.value
+        lastSuccessfulState = current
+        _uiState.value = UiState.Success(current)
+    }
+
+    private fun updateState(
+        autoEmit: Boolean = true,
+        transform: (DataEntryState) -> DataEntryState
+    ) {
+        _state.update(transform)
+        if (autoEmit && _uiState.value is UiState.Success) {
+            emitSuccessState()
+        }
+    }
+
+    private fun setUiLoading(operation: LoadingOperation, progress: LoadingProgress? = null) {
+        _uiState.value = UiState.Loading(operation, progress)
+    }
+
+    private fun setUiError(error: UiError) {
+        _uiState.value = UiState.Error(error, previousData = lastSuccessfulState)
+    }
+
+    // Grouping analyzer for intelligent data element organization
+    private val groupingAnalyzer = DataElementGroupingAnalyzer()
 
     // Track unsaved edits: key = Pair<dataElement, categoryOptionCombo>, value = DataValue
     private val dirtyDataValues = mutableMapOf<Pair<String, String>, DataValue>()
+
+    // Program rule evaluation debouncing
+    private var ruleEvaluationJob: kotlinx.coroutines.Job? = null
+    private val ruleEvaluationDelay = 300L // milliseconds
 
     init {
         // Observe sync progress from SyncQueueManager
         viewModelScope.launch {
             syncQueueManager.detailedProgress.collect { progress ->
-                _state.update { currentState ->
+                updateState { currentState ->
                     currentState.copy(
                         detailedSyncProgress = progress,
                         isSyncing = progress != null
@@ -127,7 +195,14 @@ class DataEntryViewModel @Inject constructor(
     ) {
         viewModelScope.launch {
             try {
-                _state.update { currentState ->
+                val initialProgress = com.ash.simpledataentry.presentation.core.NavigationProgress(
+                    phase = com.ash.simpledataentry.presentation.core.LoadingPhase.INITIALIZING,
+                    overallPercentage = 10,
+                    phaseTitle = com.ash.simpledataentry.presentation.core.LoadingPhase.INITIALIZING.title,
+                    phaseDetail = "Preparing form...",
+                    loadingType = com.ash.simpledataentry.presentation.core.StepLoadingType.ENTRY
+                )
+                updateState { currentState ->
                     currentState.copy(
                         isLoading = true,
                         error = null,
@@ -137,24 +212,26 @@ class DataEntryViewModel @Inject constructor(
                         orgUnit = orgUnitId,
                         attributeOptionCombo = attributeOptionCombo,
                         isEditMode = isEditMode,
+                        navigationProgress = initialProgress
+                    )
+                }
+                setUiLoading(
+                    operation = LoadingOperation.Navigation(initialProgress),
+                    progress = LoadingProgress(message = initialProgress.phaseDetail)
+                )
+
+                // Step 1: Load Drafts (10-30%)
+                updateState {
+                    it.copy(
                         navigationProgress = com.ash.simpledataentry.presentation.core.NavigationProgress(
-                            phase = com.ash.simpledataentry.presentation.core.LoadingPhase.INITIALIZING,
-                            overallPercentage = 10,
-                            phaseTitle = com.ash.simpledataentry.presentation.core.LoadingPhase.INITIALIZING.title,
-                            phaseDetail = "Preparing form..."
+                            phase = com.ash.simpledataentry.presentation.core.LoadingPhase.LOADING_DATA,
+                            overallPercentage = 25,
+                            phaseTitle = com.ash.simpledataentry.presentation.core.LoadingPhase.LOADING_DATA.title,
+                            phaseDetail = "Loading draft data...",
+                            loadingType = com.ash.simpledataentry.presentation.core.StepLoadingType.ENTRY
                         )
                     )
                 }
-
-                // Step 1: Load Drafts (10-30%)
-                _state.update { it.copy(
-                    navigationProgress = com.ash.simpledataentry.presentation.core.NavigationProgress(
-                        phase = com.ash.simpledataentry.presentation.core.LoadingPhase.LOADING_DATA,
-                        overallPercentage = 25,
-                        phaseTitle = com.ash.simpledataentry.presentation.core.LoadingPhase.LOADING_DATA.title,
-                        phaseDetail = "Loading draft data..."
-                    )
-                )}
 
                 val drafts = withContext(Dispatchers.IO) {
                     draftDao.getDraftsForInstance(datasetId, period, orgUnitId, attributeOptionCombo)
@@ -166,26 +243,32 @@ class DataEntryViewModel @Inject constructor(
                 }
 
                 // Step 2: Load Data Values (30-50%)
-                _state.update { it.copy(
-                    navigationProgress = com.ash.simpledataentry.presentation.core.NavigationProgress(
-                        phase = com.ash.simpledataentry.presentation.core.LoadingPhase.LOADING_DATA,
-                        overallPercentage = 40,
-                        phaseTitle = com.ash.simpledataentry.presentation.core.LoadingPhase.LOADING_DATA.title,
-                        phaseDetail = "Loading form data..."
+                updateState {
+                    it.copy(
+                        navigationProgress = com.ash.simpledataentry.presentation.core.NavigationProgress(
+                            phase = com.ash.simpledataentry.presentation.core.LoadingPhase.LOADING_DATA,
+                            overallPercentage = 40,
+                            phaseTitle = com.ash.simpledataentry.presentation.core.LoadingPhase.LOADING_DATA.title,
+                            phaseDetail = "Loading form data...",
+                            loadingType = com.ash.simpledataentry.presentation.core.StepLoadingType.ENTRY
+                        )
                     )
-                )}
+                }
 
                 val dataValuesFlow = repository.getDataValues(datasetId, period, orgUnitId, attributeOptionCombo)
                 dataValuesFlow.collect { values ->
                     // Step 3: Process Categories (50-70%)
-                    _state.update { it.copy(
-                        navigationProgress = com.ash.simpledataentry.presentation.core.NavigationProgress(
-                            phase = com.ash.simpledataentry.presentation.core.LoadingPhase.PROCESSING_DATA,
-                            overallPercentage = 60,
-                            phaseTitle = com.ash.simpledataentry.presentation.core.LoadingPhase.PROCESSING_DATA.title,
-                            phaseDetail = "Processing categories..."
+                    updateState {
+                        it.copy(
+                            navigationProgress = com.ash.simpledataentry.presentation.core.NavigationProgress(
+                                phase = com.ash.simpledataentry.presentation.core.LoadingPhase.PROCESSING_DATA,
+                                overallPercentage = 60,
+                                phaseTitle = com.ash.simpledataentry.presentation.core.LoadingPhase.PROCESSING_DATA.title,
+                                phaseDetail = "Processing categories...",
+                                loadingType = com.ash.simpledataentry.presentation.core.StepLoadingType.ENTRY
+                            )
                         )
-                    )}
+                    }
 
                     val uniqueCategoryCombos = values
                         .mapNotNull { it.categoryOptionCombo }
@@ -196,11 +279,24 @@ class DataEntryViewModel @Inject constructor(
                     val categoryComboStructures = mutableMapOf<String, List<Pair<String, List<Pair<String, String>>>>>()
                     val optionUidsToComboUid = mutableMapOf<String, Map<Set<String>, String>>()
 
+                    Log.d("DataEntryViewModel", "=== CATEGORY COMBO STRUCTURE LOADING ===")
+                    Log.d("DataEntryViewModel", "Found ${uniqueCategoryCombos.size} unique category option combos")
+
                     uniqueCategoryCombos.map { comboUid ->
                         async {
                             if (!categoryComboStructures.containsKey(comboUid)) {
                                 val structure = repository.getCategoryComboStructure(comboUid)
                                 categoryComboStructures[comboUid] = structure
+
+                                // DEBUG: Log the structure for each combo
+                                if (structure.isEmpty()) {
+                                    Log.d("DataEntryViewModel", "  ComboUID $comboUid -> EMPTY structure (default)")
+                                } else {
+                                    Log.d("DataEntryViewModel", "  ComboUID $comboUid -> ${structure.size} categories:")
+                                    structure.forEach { (catName, options) ->
+                                        Log.d("DataEntryViewModel", "    - $catName: ${options.size} options")
+                                    }
+                                }
 
                                 val combos = repository.getCategoryOptionCombos(comboUid)
                                 val map = combos.associate { coc ->
@@ -211,6 +307,11 @@ class DataEntryViewModel @Inject constructor(
                             }
                         }
                     }.awaitAll()
+
+                    Log.d("DataEntryViewModel", "=== CATEGORY COMBO STRUCTURE SUMMARY ===")
+                    Log.d("DataEntryViewModel", "Total structures loaded: ${categoryComboStructures.size}")
+                    val nonDefaultCount = categoryComboStructures.values.count { it.isNotEmpty() }
+                    Log.d("DataEntryViewModel", "Non-default structures: $nonDefaultCount")
 
                     val attributeOptionCombos = attributeOptionComboDeferred.await()
                     val attributeOptionComboName = attributeOptionCombos.find { it.first == attributeOptionCombo }?.second ?: attributeOptionCombo
@@ -234,23 +335,125 @@ class DataEntryViewModel @Inject constructor(
                         }
                     }
 
-                    // Step 4: Finalizing (70-100%)
-                    _state.update { it.copy(
-                        navigationProgress = com.ash.simpledataentry.presentation.core.NavigationProgress(
-                            phase = com.ash.simpledataentry.presentation.core.LoadingPhase.COMPLETING,
-                            overallPercentage = 90,
-                            phaseTitle = com.ash.simpledataentry.presentation.core.LoadingPhase.COMPLETING.title,
-                            phaseDetail = "Setting up form..."
+                    // Step 3.5: Load Option Sets (65-80%)
+                    updateState {
+                        it.copy(
+                            navigationProgress = com.ash.simpledataentry.presentation.core.NavigationProgress(
+                                phase = com.ash.simpledataentry.presentation.core.LoadingPhase.PROCESSING_DATA,
+                                overallPercentage = 70,
+                                phaseTitle = com.ash.simpledataentry.presentation.core.LoadingPhase.PROCESSING_DATA.title,
+                                phaseDetail = "Loading option sets...",
+                                loadingType = com.ash.simpledataentry.presentation.core.StepLoadingType.ENTRY
+                            )
                         )
-                    )}
+                    }
 
-                    _state.update { currentState ->
+                    val optionSets = repository.getAllOptionSetsForDataset(datasetId)
 
-                        val groupedBySection = mergedValues.groupBy { it.sectionName } // Group once
+                    // Compute render types on background thread to avoid UI freezes
+                    val renderTypes = withContext(Dispatchers.Default) {
+                        optionSets.mapValues { (_, optionSet) ->
+                            optionSet.computeRenderType()
+                        }
+                    }
+
+                    // Fetch validation rules for intelligent grouping
+                    val validationRules = repository.getValidationRulesForDataset(datasetId)
+                    Log.d("DataEntryViewModel", "Fetched ${validationRules.size} validation rules for dataset $datasetId")
+
+                    // Step 3.6: Analyze grouping strategies per section (75-85%)
+                    updateState {
+                        it.copy(
+                            navigationProgress = com.ash.simpledataentry.presentation.core.NavigationProgress(
+                                phase = com.ash.simpledataentry.presentation.core.LoadingPhase.PROCESSING_DATA,
+                                overallPercentage = 80,
+                                phaseTitle = com.ash.simpledataentry.presentation.core.LoadingPhase.PROCESSING_DATA.title,
+                                phaseDetail = "Analyzing data grouping...",
+                                loadingType = com.ash.simpledataentry.presentation.core.StepLoadingType.ENTRY
+                            )
+                        )
+                    }
+
+                    val groupedBySection = mergedValues.groupBy { it.sectionName }
+
+                    // Check singleton cache first to avoid expensive re-computation
+                    // This cache persists across ViewModel lifecycle for optimal performance
+                    val sectionGroupingStrategies = metadataCacheService.getGroupingStrategies(datasetId) ?: run {
+                        // Cache miss - compute grouping strategies on background thread
+                        Log.d("DataEntryViewModel", "========== GROUPING ANALYSIS START ==========")
+                        Log.d("DataEntryViewModel", "Cache miss for dataset $datasetId - computing grouping strategies")
+
+                        val computed = withContext(Dispatchers.Default) {
+                            groupedBySection.mapValues { (sectionName, sectionValues) ->
+
+                                val strategies = groupingAnalyzer.analyzeGrouping(
+                                    dataElements = sectionValues,
+                                    categoryComboStructures = categoryComboStructures,
+                                    optionSets = optionSets,
+                                    validationRules = validationRules
+                                )
+
+
+                                strategies
+                            }
+                        }
+                        // Store in singleton cache for persistence across ViewModel lifecycle
+                        metadataCacheService.setGroupingStrategies(datasetId, computed)
+
+                        Log.d("DataEntryViewModel", "=== CACHED STRATEGIES SUMMARY ===")
+                        computed.forEach { (section, strategies) ->
+                            Log.d("DataEntryViewModel", "  Section '$section': ${strategies.size} strategies")
+                        }
+
+                        computed
+                    }
+
+                    // Preserve legacy radio button groups for backward compatibility and merge heuristics
+                    val analyzerRadioGroups = sectionGroupingStrategies.values
+                        .flatten()
+                        .filter { it.groupType == GroupType.RADIO_GROUP }
+                        .associate { it.groupTitle to it.members.map { dv -> dv.dataElement } }
+
+                    val heuristicRadioGroups = detectRadioButtonGroupsByName(mergedValues, optionSets)
+                    val radioButtonGroups = analyzerRadioGroups.toMutableMap()
+                    heuristicRadioGroups.forEach { (title, ids) ->
+                        radioButtonGroups.putIfAbsent(title, ids)
+                    }
+
+                    val checkboxGroups = sectionGroupingStrategies.values
+                        .flatten()
+                        .filter { it.groupType == GroupType.CHECKBOX_GROUP }
+                        .associate { it.groupTitle to it.members.map { dv -> dv.dataElement } }
+
+                    // Step 4: Finalizing (85-100%)
+                    updateState {
+                        it.copy(
+                            navigationProgress = com.ash.simpledataentry.presentation.core.NavigationProgress(
+                                phase = com.ash.simpledataentry.presentation.core.LoadingPhase.COMPLETING,
+                                overallPercentage = 90,
+                                phaseTitle = com.ash.simpledataentry.presentation.core.LoadingPhase.COMPLETING.title,
+                                phaseDetail = "Setting up form...",
+                                loadingType = com.ash.simpledataentry.presentation.core.StepLoadingType.ENTRY
+                            )
+                        )
+                    }
+
+                    updateState { currentState ->
                         val dataElementGroupedSections = groupedBySection.mapValues { (_, sectionValues) ->
                             sectionValues.groupBy { it.dataElement }
                         }
                         val totalSections = groupedBySection.size
+
+                        // PERFORMANCE OPTIMIZATION: Pre-compute data element ordering for all sections
+                        // This eliminates expensive re-computation on every render
+                        val dataElementOrdering = groupedBySection.mapValues { (sectionName, sectionValues) ->
+                            sectionValues
+                                .groupBy { it.dataElement }
+                                .keys
+                                .mapIndexed { index, dataElement -> dataElement to index }
+                                .toMap()
+                        }
+                        Log.d("DataEntryViewModel", "Pre-computed data element ordering for ${dataElementOrdering.size} sections")
 
                         // Determine the initial currentSectionIndex
                         val initialOrPreservedIndex = if (totalSections > 0) {
@@ -287,6 +490,12 @@ class DataEntryViewModel @Inject constructor(
                             attributeOptionComboName = attributeOptionComboName,
                             attributeOptionCombos = attributeOptionCombos,
                             dataElementGroupedSections = dataElementGroupedSections,
+                            optionSets = optionSets,
+                            renderTypes = renderTypes,
+                            radioButtonGroups = radioButtonGroups,
+                            checkboxGroups = checkboxGroups,
+                            sectionGroupingStrategies = sectionGroupingStrategies,
+                            dataElementOrdering = dataElementOrdering, // Pre-computed ordering for performance
                             navigationProgress = null // Clear progress when done
                         )
                     }
@@ -294,16 +503,18 @@ class DataEntryViewModel @Inject constructor(
                 
                 // Load draft count after data is loaded
                 loadDraftCount()
-                
+                emitSuccessState()
+
             } catch (e: Exception) {
                 Log.e("DataEntryViewModel", "Failed to load data values", e)
-                _state.update { currentState ->
+                updateState { currentState ->
                     currentState.copy(
                         error = "Failed to load data values: ${e.message}",
                         isLoading = false,
                         navigationProgress = com.ash.simpledataentry.presentation.core.NavigationProgress.error(e.message ?: "Failed to load data values")
                     )
                 }
+                setUiError(UiError.Local(e.message ?: "Failed to load data values"))
             }
         }
     }
@@ -313,22 +524,41 @@ class DataEntryViewModel @Inject constructor(
         val dataValueToUpdate = _state.value.dataValues.find {
             it.dataElement == dataElementUid && it.categoryOptionCombo == categoryOptionComboUid
         }
+
         if (dataValueToUpdate != null) {
             val updatedValueObject = dataValueToUpdate.copy(value = value)
             dirtyDataValues[key] = updatedValueObject
-            
+
             // Reset savePressed when new changes are made after a save
             if (savePressed) {
                 savePressed = false
             }
-            _state.update { currentState ->
+
+            updateState { currentState ->
+                var updateCount = 0
+                val updatedValues = currentState.dataValues.map {
+                    if (it.dataElement == dataElementUid && it.categoryOptionCombo == categoryOptionComboUid) {
+                        updateCount++
+                        updatedValueObject
+                    } else {
+                        it
+                    }
+                }
+
+                // CRITICAL FIX: Rebuild dataElementGroupedSections with updated values
+                val updatedGroupedSections = updatedValues
+                    .groupBy { it.sectionName }
+                    .mapValues { (_, sectionValues) ->
+                        sectionValues.groupBy { it.dataElement }
+                    }
+
                 currentState.copy(
-                    dataValues = currentState.dataValues.map {
-                        if (it.dataElement == dataElementUid && it.categoryOptionCombo == categoryOptionComboUid) updatedValueObject else it
-                    },
+                    dataValues = updatedValues,
+                    dataElementGroupedSections = updatedGroupedSections,
                     currentDataValue = if (currentState.currentDataValue?.dataElement == dataElementUid && currentState.currentDataValue?.categoryOptionCombo == categoryOptionComboUid) updatedValueObject else currentState.currentDataValue
                 )
             }
+
             viewModelScope.launch(Dispatchers.IO) {
                 if (value.isNotBlank()) {
                     draftDao.upsertDraft(
@@ -354,16 +584,31 @@ class DataEntryViewModel @Inject constructor(
                         categoryOptionCombo = categoryOptionComboUid
                     )
                 }
-                
+
                 // Update draft count after draft operation
                 loadDraftCount()
             }
+        } else {
+            Log.w("DataEntryViewModel", "NO MATCH FOUND for dataElement=$dataElementUid, combo=$categoryOptionComboUid in ${_state.value.dataValues.size} values")
+        }
+    }
+
+    /**
+     * Update all fields in a grouped radio button set
+     * Set selected field to "1" (Yes), all others to "0" (No)
+     */
+    fun updateGroupedRadioFields(groupFields: List<DataValue>, selectedFieldId: String?) {
+        Log.d("DataEntryViewModel", "updateGroupedRadioFields called with selectedFieldId: $selectedFieldId, groupFields: ${groupFields.map { it.dataElementName }}")
+        groupFields.forEach { field ->
+            val newValue = if (field.dataElement == selectedFieldId) "1" else "0"
+            Log.d("DataEntryViewModel", "Setting ${field.dataElementName} (${field.dataElement}) to $newValue")
+            updateCurrentValue(newValue, field.dataElement, field.categoryOptionCombo)
         }
     }
 
     fun saveAllDataValues(context: android.content.Context? = null) {
         viewModelScope.launch {
-            _state.update { it.copy(saveInProgress = true, saveResult = null) }
+            updateState { it.copy(saveInProgress = true, saveResult = null) }
             savePressed = true
             val stateSnapshot = _state.value
 
@@ -388,13 +633,13 @@ class DataEntryViewModel @Inject constructor(
 
                 dirtyDataValues.clear()
 
-                _state.update { it.copy(
+                updateState { it.copy(
                     saveInProgress = false,
                     saveResult = Result.success(Unit)
                 ) }
 
             } catch (e: Exception) {
-                _state.update { it.copy(
+                updateState { it.copy(
                     saveInProgress = false,
                     saveResult = Result.failure(e)
                 ) }
@@ -404,12 +649,12 @@ class DataEntryViewModel @Inject constructor(
 
     fun syncCurrentEntryForm() {
         viewModelScope.launch {
-            _state.update { it.copy(isLoading = true, error = null) }
+            updateState { it.copy(isLoading = true, error = null) }
             val stateSnapshot = _state.value
             // More permissive network check - allow 2G connections
             val networkState = networkStateManager.networkState.value
             if (!networkState.isConnected || !networkState.hasInternet) {
-                _state.update { it.copy(isLoading = false, error = "Cannot sync while offline.") }
+                updateState { it.copy(isLoading = false, error = "Cannot sync while offline.") }
                 return@launch
             }
 
@@ -446,7 +691,7 @@ class DataEntryViewModel @Inject constructor(
                         "DataEntryViewModel",
                         "Failed to stage ${'$'}{failed.size} drafts: ${'$'}{failed.map { it.exceptionOrNull()?.message }}"
                     )
-                    _state.update {
+                    updateState {
                         it.copy(
                             isLoading = false,
                             error = "Failed to stage some values for upload."
@@ -478,7 +723,7 @@ class DataEntryViewModel @Inject constructor(
                             "DataEntryViewModel",
                             "Upload failed or returned empty result: $uploadResult"
                         )
-                        _state.update {
+                        updateState {
                             it.copy(
                                 isLoading = false,
                                 error = "Upload failed or returned empty result."
@@ -488,7 +733,7 @@ class DataEntryViewModel @Inject constructor(
                     }
                 } catch (e: Exception) {
                     Log.e("DataEntryViewModel", "Upload failed: ${'$'}{e.message}", e)
-                    _state.update {
+                    updateState {
                         it.copy(
                             isLoading = false,
                             error = "Upload failed: ${'$'}{e.message}"
@@ -527,7 +772,7 @@ class DataEntryViewModel @Inject constructor(
                         stateSnapshot.attributeOptionCombo
                     )
                 }
-                _state.update { it.copy(localDraftCount = draftCount) }
+                updateState { it.copy(localDraftCount = draftCount) }
             } catch (e: Exception) {
                 Log.e("DataEntryViewModel", "Failed to load draft count", e)
             }
@@ -563,7 +808,7 @@ class DataEntryViewModel @Inject constructor(
                         } else {
                             "Data entry synced successfully"
                         }
-                        _state.update {
+                        updateState {
                             it.copy(
                                 successMessage = message,
                                 detailedSyncProgress = null // Clear progress when done
@@ -573,7 +818,7 @@ class DataEntryViewModel @Inject constructor(
                     onFailure = { error ->
                         Log.e("DataEntryViewModel", "Enhanced sync failed", error)
                         val errorMessage = error.message ?: "Failed to sync data entry"
-                        _state.update {
+                        updateState {
                             it.copy(
                                 error = errorMessage,
                                 detailedSyncProgress = null // Clear progress on failure
@@ -583,7 +828,7 @@ class DataEntryViewModel @Inject constructor(
                 )
             } catch (e: Exception) {
                 Log.e("DataEntryViewModel", "Enhanced sync failed", e)
-                _state.update {
+                updateState {
                     it.copy(
                         isSyncing = false,
                         error = e.message ?: "Failed to sync data entry",
@@ -595,13 +840,13 @@ class DataEntryViewModel @Inject constructor(
     }
 
     fun clearMessages() {
-        _state.update { it.copy(error = null, successMessage = null) }
+        updateState { it.copy(error = null, successMessage = null) }
     }
 
     fun dismissSyncOverlay() {
         // Clear error state in SyncQueueManager to prevent persistent dialogs
         syncQueueManager.clearErrorState()
-        _state.update {
+        updateState {
             it.copy(
                 detailedSyncProgress = null,
                 isSyncing = false
@@ -611,7 +856,7 @@ class DataEntryViewModel @Inject constructor(
 
 
     fun toggleSection(sectionName: String) {
-        _state.update { currentState ->
+        updateState { currentState ->
             val current = currentState.isExpandedSections[sectionName] ?: false
             currentState.copy(
                 isExpandedSections = currentState.isExpandedSections.toMutableMap().apply {
@@ -622,9 +867,9 @@ class DataEntryViewModel @Inject constructor(
     }
 
     fun setCurrentSectionIndex(index: Int) {
-        _state.update { currentState ->
+        updateState { currentState ->
             if (index < 0 || index >= currentState.totalSections) { // Safety check
-                return@update currentState
+                return@updateState currentState
             }
             val newIndex = if (currentState.currentSectionIndex == index) {
                 -1 // If clicking the currently open section, close it
@@ -637,8 +882,8 @@ class DataEntryViewModel @Inject constructor(
 
 
     fun goToNextSection() {
-        _state.update { currentState ->
-            if (currentState.totalSections == 0) return@update currentState
+        updateState { currentState ->
+            if (currentState.totalSections == 0) return@updateState currentState
 
             val newIndex = if (currentState.currentSectionIndex == -1) {
                 0 // If nothing is open, "Next" opens the first section
@@ -650,8 +895,8 @@ class DataEntryViewModel @Inject constructor(
     }
 
     fun goToPreviousSection() {
-        _state.update { currentState ->
-            if (currentState.totalSections == 0) return@update currentState
+        updateState { currentState ->
+            if (currentState.totalSections == 0) return@updateState currentState
 
             val newIndex = if (currentState.currentSectionIndex == -1) {
                 currentState.totalSections - 1 // If nothing is open, "Previous" opens the last section
@@ -664,7 +909,7 @@ class DataEntryViewModel @Inject constructor(
 
 
     fun toggleCategoryGroup(sectionName: String, categoryGroup: String) {
-        _state.update { currentState ->
+        updateState { currentState ->
             val key = "$sectionName:$categoryGroup"
             val newExpanded = if (currentState.expandedCategoryGroup == key) null else key
             currentState.copy(expandedCategoryGroup = newExpanded)
@@ -675,7 +920,7 @@ class DataEntryViewModel @Inject constructor(
         val currentStep = _state.value.currentStep
         val totalSteps = _state.value.dataValues.size
         return if (currentStep < totalSteps - 1) {
-            _state.update { currentState ->
+            updateState { currentState ->
                 currentState.copy(
                     currentStep = currentStep + 1,
                     currentDataValue = _state.value.dataValues[currentStep + 1]
@@ -683,7 +928,7 @@ class DataEntryViewModel @Inject constructor(
             }
             false
         } else {
-            _state.update { currentState ->
+            updateState { currentState ->
                 currentState.copy(
                     isEditMode = true,
                     isCompleted = true
@@ -696,7 +941,7 @@ class DataEntryViewModel @Inject constructor(
     fun moveToPreviousStep(): Boolean {
         val currentStep = _state.value.currentStep
         return if (currentStep > 0) {
-            _state.update { currentState ->
+            updateState { currentState ->
                 currentState.copy(
                     currentStep = currentStep - 1,
                     currentDataValue = _state.value.dataValues[currentStep - 1]
@@ -708,8 +953,8 @@ class DataEntryViewModel @Inject constructor(
         }
     }
 
-    suspend fun getAvailablePeriods(datasetId: String): List<Period> {
-        return repository.getAvailablePeriods(datasetId)
+    suspend fun getAvailablePeriods(datasetId: String, limit: Int = 5, showAll: Boolean = false): List<Period> {
+        return repository.getAvailablePeriods(datasetId, limit, showAll)
     }
 
     suspend fun getUserOrgUnit(datasetId: String): OrganisationUnit? {
@@ -741,11 +986,11 @@ class DataEntryViewModel @Inject constructor(
     }
 
     fun setNavigating(isNavigating: Boolean) {
-        _state.update { it.copy(isNavigating = isNavigating) }
+        updateState { it.copy(isNavigating = isNavigating) }
     }
 
     fun resetSaveFeedback() {
-        _state.update { it.copy(saveResult = null, saveInProgress = false) }
+        updateState { it.copy(saveResult = null, saveInProgress = false) }
         // Don't reset savePressed here - only reset when new changes are made
     }
 
@@ -800,7 +1045,7 @@ class DataEntryViewModel @Inject constructor(
     }
 
     fun toggleGridRow(sectionName: String, rowKey: String) {
-        _state.update { currentState ->
+        updateState { currentState ->
             val currentSet = currentState.expandedGridRows[sectionName] ?: emptySet()
             val newSet =
                 if (currentSet.contains(rowKey)) currentSet - rowKey else currentSet + rowKey
@@ -822,7 +1067,7 @@ class DataEntryViewModel @Inject constructor(
             Log.d("DataEntryViewModel", "=== COMPLETION FLOW: Starting validation for completion ===")
             Log.d("DataEntryViewModel", "Current isCompleted state: ${stateSnapshot.isCompleted}")
             Log.d("DataEntryViewModel", "Dataset: ${stateSnapshot.datasetId}, Period: ${stateSnapshot.period}, OrgUnit: ${stateSnapshot.orgUnit}")
-            _state.update { it.copy(isValidating = true, error = null, validationSummary = null) }
+            updateState { it.copy(isValidating = true, error = null, validationSummary = null) }
             
             try {
                 val validationResult = validationRepository.validateDatasetInstance(
@@ -836,7 +1081,7 @@ class DataEntryViewModel @Inject constructor(
                 
                 Log.d("DataEntryViewModel", "Validation completed: ${validationResult.errorCount} errors, ${validationResult.warningCount} warnings")
                 
-                _state.update { 
+                updateState { 
                     it.copy(
                         isValidating = false, 
                         validationSummary = validationResult
@@ -845,7 +1090,7 @@ class DataEntryViewModel @Inject constructor(
                 
             } catch (e: Exception) {
                 Log.e("DataEntryViewModel", "Error during validation: ${e.message}", e)
-                _state.update {
+                updateState {
                     it.copy(
                         isValidating = false,
                         error = "Error during validation: ${e.message}"
@@ -861,7 +1106,7 @@ class DataEntryViewModel @Inject constructor(
             Log.d("DataEntryViewModel", "=== COMPLETION FLOW: Proceeding with dataset completion after validation ===")
             Log.d("DataEntryViewModel", "Dataset: ${stateSnapshot.datasetId}, Period: ${stateSnapshot.period}, OrgUnit: ${stateSnapshot.orgUnit}")
             Log.d("DataEntryViewModel", "AttributeOptionCombo: ${stateSnapshot.attributeOptionCombo}")
-            _state.update { it.copy(isLoading = true, error = null) }
+            updateState { it.copy(isLoading = true, error = null) }
             
             try {
                 val result = useCases.completeDatasetInstance(
@@ -880,11 +1125,11 @@ class DataEntryViewModel @Inject constructor(
                     }
                     
                     Log.d("DataEntryViewModel", successMessage)
-                    _state.update { it.copy(isCompleted = true, isLoading = false, validationSummary = null) }
+                    updateState { it.copy(isCompleted = true, isLoading = false, validationSummary = null) }
                     onResult(true, successMessage)
                 } else {
                     Log.e("DataEntryViewModel", "Failed to mark dataset as complete: ${result.exceptionOrNull()?.message}")
-                    _state.update {
+                    updateState {
                         it.copy(
                             isLoading = false,
                             error = result.exceptionOrNull()?.message
@@ -895,7 +1140,7 @@ class DataEntryViewModel @Inject constructor(
                 
             } catch (e: Exception) {
                 Log.e("DataEntryViewModel", "Error during completion: ${e.message}", e)
-                _state.update {
+                updateState {
                     it.copy(
                         isLoading = false,
                         error = "Error during completion: ${e.message}"
@@ -912,7 +1157,7 @@ class DataEntryViewModel @Inject constructor(
             Log.d("DataEntryViewModel", "=== COMPLETION FLOW: Marking dataset as incomplete ===")
             Log.d("DataEntryViewModel", "Dataset: ${stateSnapshot.datasetId}, Period: ${stateSnapshot.period}, OrgUnit: ${stateSnapshot.orgUnit}")
             Log.d("DataEntryViewModel", "AttributeOptionCombo: ${stateSnapshot.attributeOptionCombo}")
-            _state.update { it.copy(isLoading = true, error = null) }
+            updateState { it.copy(isLoading = true, error = null) }
 
             try {
                 val result = useCases.markDatasetInstanceIncomplete(
@@ -923,7 +1168,7 @@ class DataEntryViewModel @Inject constructor(
                 )
 
                 if (result.isSuccess) {
-                    _state.update {
+                    updateState {
                         it.copy(
                             isLoading = false,
                             isCompleted = false,
@@ -933,29 +1178,29 @@ class DataEntryViewModel @Inject constructor(
                     onResult(true, "Dataset marked as incomplete")
                 } else {
                     Log.e("DataEntryViewModel", "Failed to mark dataset incomplete: ${result.exceptionOrNull()}")
-                    _state.update { it.copy(isLoading = false, error = result.exceptionOrNull()?.message) }
+                    updateState { it.copy(isLoading = false, error = result.exceptionOrNull()?.message) }
                     onResult(false, result.exceptionOrNull()?.message)
                 }
             } catch (e: Exception) {
                 Log.e("DataEntryViewModel", "Exception marking dataset incomplete: ${e.message}", e)
-                _state.update { it.copy(isLoading = false, error = e.message) }
+                updateState { it.copy(isLoading = false, error = e.message) }
                 onResult(false, e.message)
             }
         }
     }
 
     fun clearValidationResult() {
-        _state.update { it.copy(validationSummary = null) }
+        updateState { it.copy(validationSummary = null) }
     }
 
     // === Enhanced Completion Workflow ===
 
     fun showCompletionDialog() {
-        _state.update { it.copy(showCompletionDialog = true) }
+        updateState { it.copy(showCompletionDialog = true) }
     }
 
     fun dismissCompletionDialog() {
-        _state.update {
+        updateState {
             it.copy(
                 showCompletionDialog = false,
                 completionAction = null,
@@ -965,7 +1210,7 @@ class DataEntryViewModel @Inject constructor(
     }
 
     fun startCompletionWorkflow(action: com.ash.simpledataentry.presentation.core.CompletionAction) {
-        _state.update {
+        updateState {
             it.copy(
                 completionAction = action,
                 showCompletionDialog = false
@@ -993,7 +1238,7 @@ class DataEntryViewModel @Inject constructor(
         viewModelScope.launch {
             try {
                 // Step 1: Preparing (0-10%)
-                _state.update {
+                updateState {
                     it.copy(
                         isValidating = true,
                         error = null,
@@ -1009,7 +1254,7 @@ class DataEntryViewModel @Inject constructor(
                 }
 
                 // Step 2: Validating (10-70%)
-                _state.update {
+                updateState {
                     it.copy(
                         completionProgress = com.ash.simpledataentry.presentation.core.CompletionProgress(
                             phase = com.ash.simpledataentry.presentation.core.CompletionPhase.VALIDATING,
@@ -1031,7 +1276,7 @@ class DataEntryViewModel @Inject constructor(
                 )
 
                 // Step 3: Processing Results (70-90%)
-                _state.update {
+                updateState {
                     it.copy(
                         completionProgress = com.ash.simpledataentry.presentation.core.CompletionProgress(
                             phase = com.ash.simpledataentry.presentation.core.CompletionPhase.PROCESSING_RESULTS,
@@ -1043,7 +1288,7 @@ class DataEntryViewModel @Inject constructor(
                     )
                 }
 
-                _state.update {
+                updateState {
                     it.copy(
                         isValidating = false,
                         validationSummary = validationResult,
@@ -1053,7 +1298,7 @@ class DataEntryViewModel @Inject constructor(
 
             } catch (e: Exception) {
                 Log.e("DataEntryViewModel", "Enhanced validation failed", e)
-                _state.update {
+                updateState {
                     it.copy(
                         isValidating = false,
                         error = "Validation failed: ${e.message}",
@@ -1071,7 +1316,7 @@ class DataEntryViewModel @Inject constructor(
         viewModelScope.launch {
             try {
                 // Step 1: Preparing (0-10%)
-                _state.update {
+                updateState {
                     it.copy(
                         isLoading = true,
                         error = null,
@@ -1085,7 +1330,7 @@ class DataEntryViewModel @Inject constructor(
                 }
 
                 // Step 2: Completing (10-90%)
-                _state.update {
+                updateState {
                     it.copy(
                         completionProgress = com.ash.simpledataentry.presentation.core.CompletionProgress(
                             phase = com.ash.simpledataentry.presentation.core.CompletionPhase.COMPLETING,
@@ -1105,7 +1350,7 @@ class DataEntryViewModel @Inject constructor(
 
                 if (result.isSuccess) {
                     // Step 3: Completed (90-100%)
-                    _state.update {
+                    updateState {
                         it.copy(
                             completionProgress = com.ash.simpledataentry.presentation.core.CompletionProgress(
                                 phase = com.ash.simpledataentry.presentation.core.CompletionPhase.COMPLETED,
@@ -1118,7 +1363,7 @@ class DataEntryViewModel @Inject constructor(
 
                     // Show success briefly, then clear
                     kotlinx.coroutines.delay(1500)
-                    _state.update {
+                    updateState {
                         it.copy(
                             isCompleted = true,
                             isLoading = false,
@@ -1127,7 +1372,7 @@ class DataEntryViewModel @Inject constructor(
                         )
                     }
                 } else {
-                    _state.update {
+                    updateState {
                         it.copy(
                             isLoading = false,
                             error = result.exceptionOrNull()?.message ?: "Failed to complete dataset",
@@ -1140,7 +1385,7 @@ class DataEntryViewModel @Inject constructor(
 
             } catch (e: Exception) {
                 Log.e("DataEntryViewModel", "Direct completion failed", e)
-                _state.update {
+                updateState {
                     it.copy(
                         isLoading = false,
                         error = "Completion failed: ${e.message}",
@@ -1161,7 +1406,7 @@ class DataEntryViewModel @Inject constructor(
         val stateSnapshot = _state.value
         viewModelScope.launch {
             try {
-                _state.update {
+                updateState {
                     it.copy(
                         isLoading = true,
                         error = null,
@@ -1182,7 +1427,7 @@ class DataEntryViewModel @Inject constructor(
                 )
 
                 if (result.isSuccess) {
-                    _state.update {
+                    updateState {
                         it.copy(
                             isLoading = false,
                             isCompleted = false,
@@ -1192,7 +1437,7 @@ class DataEntryViewModel @Inject constructor(
                         )
                     }
                 } else {
-                    _state.update {
+                    updateState {
                         it.copy(
                             isLoading = false,
                             error = result.exceptionOrNull()?.message ?: "Failed to mark incomplete",
@@ -1205,7 +1450,7 @@ class DataEntryViewModel @Inject constructor(
 
             } catch (e: Exception) {
                 Log.e("DataEntryViewModel", "Mark incomplete failed", e)
-                _state.update {
+                updateState {
                     it.copy(
                         isLoading = false,
                         error = e.message ?: "Failed to mark incomplete",
@@ -1216,5 +1461,186 @@ class DataEntryViewModel @Inject constructor(
                 }
             }
         }
+    }
+
+    /**
+     * Trigger program rule evaluation when field loses focus
+     * Uses debouncing to avoid excessive evaluations
+     */
+    fun onFieldBlur(dataElementId: String) {
+        // Cancel any pending evaluation
+        ruleEvaluationJob?.cancel()
+
+        // Schedule new evaluation after delay
+        ruleEvaluationJob = viewModelScope.launch {
+            kotlinx.coroutines.delay(ruleEvaluationDelay)
+            evaluateProgramRules()
+        }
+    }
+
+    /**
+     * Evaluate program rules for current dataset/program
+     * Note: Aggregate datasets typically don't have program rules
+     * This is primarily for future tracker/event program support
+     */
+    private suspend fun evaluateProgramRules() {
+        // TODO: Implement when extending to tracker/event programs
+        // For now, this is a placeholder for aggregate datasets
+        // which don't typically use program rules
+
+        // Future implementation will:
+        // 1. Get d2 instance from sessionManager
+        // 2. Call programRuleEngine() for tracker/event programs
+        // 3. Evaluate rules based on current form data
+        // 4. Apply effects to state
+
+        Log.d("DataEntryViewModel", "Program rule evaluation placeholder - not implemented for aggregate datasets")
+    }
+
+    /**
+     * Apply program rule effects to the form state
+     * Updates hidden fields, warnings, errors, calculated values, etc.
+     */
+    private fun applyProgramRuleEffects(effect: com.ash.simpledataentry.domain.model.ProgramRuleEffect) {
+        updateState { currentState ->
+            currentState.copy(
+                hiddenFields = effect.hiddenFields,
+                disabledFields = effect.disabledFields,
+                mandatoryFields = effect.mandatoryFields,
+                fieldWarnings = effect.fieldWarnings,
+                fieldErrors = effect.fieldErrors,
+                calculatedValues = effect.calculatedValues
+            )
+        }
+
+        // Apply calculated values to actual data fields
+        effect.calculatedValues.forEach { (dataElementId, value) ->
+            val matchingDataValue = _state.value.dataValues.find { it.dataElement == dataElementId }
+            if (matchingDataValue != null) {
+                updateCurrentValue(value, dataElementId, matchingDataValue.categoryOptionCombo)
+            }
+        }
+    }
+
+    /**
+     * Detect radio button groups from data values using name-based heuristics
+     * NOTE: Ideally would use DHIS2 validation rules, but SDK doesn't expose them
+     *
+     * Requirements for grouping:
+     * 1. Fields must share the EXACT SAME option set instance (by ID)
+     * 2. Fields must have 3+ fields sharing the same option set (indicates mutual exclusivity)
+     * 3. Fields must have a clear common prefix ending with space, underscore, or dash
+     * 4. Common prefix must be at least 5 characters (avoid false positives like "Is", "Has", etc.)
+     */
+    private fun detectRadioButtonGroupsByName(
+        dataValues: List<DataValue>,
+        optionSets: Map<String, com.ash.simpledataentry.domain.model.OptionSet>
+    ): Map<String, List<String>> {
+        // Only consider fields with YES/NO option sets
+        val yesNoFields = dataValues.mapNotNull { dataValue ->
+            val optionSet = optionSets[dataValue.dataElement]
+            if (optionSet != null && isYesNoOptionSet(optionSet)) {
+                dataValue to optionSet
+            } else null
+        }
+
+        Log.d("RadioGroupDetection", "Found ${yesNoFields.size} YES/NO fields to analyze for grouping")
+
+        // Group by section first
+        val radioGroups = mutableMapOf<String, MutableList<String>>()
+        val fieldsBySection = yesNoFields.groupBy { it.first.sectionName }
+
+        fieldsBySection.forEach { (sectionName, fieldsWithOptionSets) ->
+            Log.d("RadioGroupDetection", "Analyzing section '$sectionName' with ${fieldsWithOptionSets.size} YES/NO fields")
+
+            // CRITICAL: Group by option set ID first - only fields sharing the SAME option set can be grouped
+            val fieldsByOptionSet = fieldsWithOptionSets.groupBy { it.second.id }
+
+            fieldsByOptionSet.forEach { (optionSetId, fieldsInSet) ->
+                // CONSERVATIVE: Require at least 3 fields sharing same option set to consider grouping
+                // This indicates they're likely mutually exclusive
+                if (fieldsInSet.size < 3) {
+                    Log.d("RadioGroupDetection", "Skipping option set $optionSetId - only ${fieldsInSet.size} field(s), need 3+ for grouping")
+                    return@forEach
+                }
+
+                Log.d("RadioGroupDetection", "Checking ${fieldsInSet.size} fields sharing option set $optionSetId for grouping")
+
+                val fields = fieldsInSet.map { it.first }
+
+                // Find common prefix among ALL fields in this option set
+                var commonPrefix = fields[0].dataElementName
+                for (field in fields.drop(1)) {
+                    commonPrefix = findCommonPrefix(commonPrefix, field.dataElementName)
+                }
+
+                // CONSERVATIVE: Prefix must be at least 5 characters AND end with clear separator
+                val hasValidSeparator = commonPrefix.endsWith(" ") ||
+                                       commonPrefix.endsWith("_") ||
+                                       commonPrefix.endsWith("-")
+
+                if (commonPrefix.length >= 5 && hasValidSeparator) {
+                    val groupTitle = commonPrefix.trim().trimEnd('-', ':', '|', '/', ' ', '_')
+
+                    if (groupTitle.isNotEmpty()) {
+                        val fieldIds = fields.map { it.dataElement }
+                        radioGroups[groupTitle] = fieldIds.toMutableList()
+
+                        Log.d("RadioGroupDetection", "✓ Created group '$groupTitle' with ${fieldIds.size} fields sharing option set $optionSetId: ${fields.map { it.dataElementName }}")
+                    } else {
+                        Log.d("RadioGroupDetection", "✗ Rejected group - empty title after cleanup")
+                    }
+                } else {
+                    Log.d("RadioGroupDetection", "✗ Rejected grouping for option set $optionSetId - prefix too short (${ commonPrefix.length} chars) or no separator. Prefix: '$commonPrefix'")
+                }
+            }
+        }
+
+        val result = radioGroups.filter { it.value.size >= 3 }  // Final filter: groups must have 3+ members
+        Log.d("RadioGroupDetection", "Final result: ${result.size} groups detected with 3+ members each")
+        return result
+    }
+
+    private fun findCommonPrefix(str1: String, str2: String): String {
+        var i = 0
+        while (i < str1.length && i < str2.length && str1[i] == str2[i]) {
+            i++
+        }
+        return str1.substring(0, i)
+    }
+
+    /**
+     * Check if an option set is a YES/NO boolean option set
+     */
+    private fun isYesNoOptionSet(optionSet: com.ash.simpledataentry.domain.model.OptionSet): Boolean {
+        if (optionSet.options.size != 2) return false
+        val codes = optionSet.options.map { it.code.uppercase() }.toSet()
+        return codes.containsAll(setOf("YES", "NO")) ||
+               codes.containsAll(setOf("TRUE", "FALSE")) ||
+               codes.containsAll(setOf("1", "0"))
+    }
+
+    /**
+     * Extract common prefix from a list of strings
+     */
+    private fun extractCommonPrefix(strings: List<String>): String {
+        if (strings.isEmpty()) return ""
+        if (strings.size == 1) return strings[0]
+
+        var prefix = strings[0]
+        for (i in 1 until strings.size) {
+            while (!strings[i].startsWith(prefix)) {
+                prefix = prefix.dropLast(1)
+                if (prefix.isEmpty()) return ""
+            }
+        }
+
+        // Trim to last meaningful separator
+        val lastSeparator = prefix.indexOfLast { it in listOf('-', ':', '|', '/', ' ') }
+        if (lastSeparator > 0) {
+            prefix = prefix.substring(0, lastSeparator + 1)
+        }
+
+        return prefix
     }
 }

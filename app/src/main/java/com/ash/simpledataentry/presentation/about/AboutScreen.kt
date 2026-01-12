@@ -19,6 +19,7 @@ fun AboutScreen(
 ) {
     BaseScreen(
         title = "About",
+        subtitle = "App info",
         navController = navController
     ) {
         Column(

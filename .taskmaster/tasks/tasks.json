@@ -362,11 +362,77 @@
             "parentTaskId": 11
           }
         ]
+      },
+      {
+        "id": 12,
+        "title": "Previous user data displayed after account switch",
+        "description": "Race condition in SessionManager between wipeAllData() and hydrateRoomFromSdk() causes previous user's datasets/programs to appear after switching accounts",
+        "details": "SessionManager.kt lines 64-72 detect user change and call wipeAllData(), but line 97 immediately calls hydrateRoomFromSdk() without waiting for wipe completion. Need to make wipe synchronous and add verification before data load.",
+        "testStrategy": "",
+        "status": "done",
+        "dependencies": [],
+        "priority": "medium",
+        "subtasks": []
+      },
+      {
+        "id": 13,
+        "title": "EditEntryScreen performance lag with large datasets",
+        "description": "Expensive recomputations in EditEntryScreen causing lag - dataElementOrder recreated on every render, sorting/filtering runs repeatedly",
+        "details": "EditEntryScreen.kt lines 636-667 show expensive sorting without proper memoization. Need to pre-compute dataElementOrder in ViewModel and improve remember dependencies. Also move grouping analysis completely to cache service.",
+        "testStrategy": "",
+        "status": "done",
+        "dependencies": [],
+        "priority": "medium",
+        "subtasks": []
+      },
+      {
+        "id": 14,
+        "title": "Event/Tracker program entry screens are laggy",
+        "description": "EventCaptureScreen renders flat list without grouping, missing nested accordion structure that exists in EditEntryScreen",
+        "details": "EventCaptureScreen.kt lines 408-422 render flat LazyColumn with no performance optimizations. Event/tracker programs don't have DHIS2 category combinations, so structure must be inferred from data element names. Previously implemented but removed.",
+        "testStrategy": "",
+        "status": "pending",
+        "dependencies": [],
+        "priority": "medium",
+        "subtasks": []
+      },
+      {
+        "id": 15,
+        "title": "Restore nested accordion for event/tracker implied categories",
+        "description": "Create name-based category inference service to detect nested structure from data element names for event/tracker programs",
+        "details": "Need to create ImpliedCategoryInferenceService.kt to parse data element names and detect hierarchical category structure. Extend MetadataCacheService to cache implied categories. Integrate in EventCaptureViewModel and replace flat rendering with nested accordions. Git commits 2b78f6e and c11092e show historical implementation.",
+        "testStrategy": "",
+        "status": "pending",
+        "dependencies": [],
+        "priority": "medium",
+        "subtasks": []
+      },
+      {
+        "id": 16,
+        "title": "Login process is too slow",
+        "description": "Login blocks on synchronous metadata download causing lag - need to parallelize and optimize",
+        "details": "SessionManager.kt line 214 blocks on downloadMetadata(). Lines 487-511 show fully synchronous download with database integrity checks. Need to parallelize independent downloads and move non-critical checks to background.",
+        "testStrategy": "",
+        "status": "pending",
+        "dependencies": [],
+        "priority": "medium",
+        "subtasks": []
+      },
+      {
+        "id": 17,
+        "title": "Radio button grouping inconsistent across datasets",
+        "description": "DataElementGroupingAnalyzer validation rule detection working inconsistently - may need lower confidence thresholds",
+        "details": "DataElementGroupingAnalyzer may have strict thresholds causing inconsistent detection. Need to lower confidence from 0.8 to 0.6, add name-based detection fallback, and add diagnostic logging to understand why some datasets work and others don't.",
+        "testStrategy": "",
+        "status": "pending",
+        "dependencies": [],
+        "priority": "medium",
+        "subtasks": []
       }
     ],
     "metadata": {
       "created": "2025-06-16T09:08:19.486Z",
-      "updated": "2025-06-26T13:12:03.237Z",
+      "updated": "2025-10-16T10:16:07.496Z",
       "description": "Tasks for master context"
     }
   }

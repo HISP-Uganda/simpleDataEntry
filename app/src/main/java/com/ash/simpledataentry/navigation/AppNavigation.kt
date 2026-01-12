@@ -62,6 +62,7 @@ fun AppNavigation(
             DatasetsScreen(navController = navController)
         }
 
+        // Route for aggregate dataset instances (DATASET program type)
         composable(
             route = "DatasetInstances/{datasetId}/{datasetName}",
             arguments = listOf(
@@ -75,6 +76,40 @@ fun AppNavigation(
                 navController = navController,
                 datasetId = datasetId,
                 datasetName = datasetName
+            )
+        }
+
+        // Route for tracker program enrollments (TRACKER program type) - CARD VIEW
+        composable(
+            route = "TrackerEnrollments/{programId}/{programName}",
+            arguments = listOf(
+                navArgument("programId") { type = NavType.StringType },
+                navArgument("programName") { type = NavType.StringType }
+            )
+        ) { backStackEntry ->
+            val programId = backStackEntry.arguments?.getString("programId") ?: ""
+            val programName = backStackEntry.arguments?.getString("programName") ?: ""
+            com.ash.simpledataentry.presentation.tracker.TrackerEnrollmentsScreen(
+                navController = navController,
+                programId = programId,
+                programName = programName
+            )
+        }
+
+        // Route for event program instances (EVENT program type) - CARD VIEW
+        composable(
+            route = "EventInstances/{programId}/{programName}",
+            arguments = listOf(
+                navArgument("programId") { type = NavType.StringType },
+                navArgument("programName") { type = NavType.StringType }
+            )
+        ) { backStackEntry ->
+            val programId = backStackEntry.arguments?.getString("programId") ?: ""
+            val programName = backStackEntry.arguments?.getString("programName") ?: ""
+            com.ash.simpledataentry.presentation.event.EventInstancesScreen(
+                navController = navController,
+                programId = programId,
+                programName = programName
             )
         }
 
@@ -185,17 +220,37 @@ fun AppNavigation(
             )
         }
 
-        // Route for event creation
+        // Route for event creation with program stage AND enrollment (TRACKER programs)
         composable(
-            route = "CreateEvent/{programId}/{programName}/{programStageId?}",
+            route = "CreateEvent/{programId}/{programName}/{programStageId}/{enrollmentId}",
             arguments = listOf(
                 navArgument("programId") { type = NavType.StringType },
                 navArgument("programName") { type = NavType.StringType },
-                navArgument("programStageId") {
-                    type = NavType.StringType
-                    nullable = true
-                    defaultValue = null
-                }
+                navArgument("programStageId") { type = NavType.StringType },
+                navArgument("enrollmentId") { type = NavType.StringType }
+            )
+        ) { backStackEntry ->
+            val programId = backStackEntry.arguments?.getString("programId") ?: ""
+            val programName = backStackEntry.arguments?.getString("programName") ?: ""
+            val programStageId = backStackEntry.arguments?.getString("programStageId")
+            val enrollmentId = backStackEntry.arguments?.getString("enrollmentId")
+
+            EventCaptureScreen(
+                navController = navController,
+                programId = programId,
+                programStageId = programStageId,
+                eventId = null,
+                enrollmentId = enrollmentId
+            )
+        }
+
+        // Route for event creation with program stage only (EVENT programs without registration)
+        composable(
+            route = "CreateEvent/{programId}/{programName}/{programStageId}",
+            arguments = listOf(
+                navArgument("programId") { type = NavType.StringType },
+                navArgument("programName") { type = NavType.StringType },
+                navArgument("programStageId") { type = NavType.StringType }
             )
         ) { backStackEntry ->
             val programId = backStackEntry.arguments?.getString("programId") ?: ""
@@ -211,18 +266,34 @@ fun AppNavigation(
             )
         }
 
-        // Route for event editing
+        // Route for event creation without program stage (will auto-detect)
         composable(
-            route = "EditEvent/{programId}/{programName}/{eventId}/{enrollmentId?}",
+            route = "CreateEvent/{programId}/{programName}",
+            arguments = listOf(
+                navArgument("programId") { type = NavType.StringType },
+                navArgument("programName") { type = NavType.StringType }
+            )
+        ) { backStackEntry ->
+            val programId = backStackEntry.arguments?.getString("programId") ?: ""
+            val programName = backStackEntry.arguments?.getString("programName") ?: ""
+
+            EventCaptureScreen(
+                navController = navController,
+                programId = programId,
+                programStageId = null,
+                eventId = null,
+                enrollmentId = null
+            )
+        }
+
+        // Route for event editing (from tracker - with enrollment)
+        composable(
+            route = "EditEvent/{programId}/{programName}/{eventId}/{enrollmentId}",
             arguments = listOf(
                 navArgument("programId") { type = NavType.StringType },
                 navArgument("programName") { type = NavType.StringType },
                 navArgument("eventId") { type = NavType.StringType },
-                navArgument("enrollmentId") {
-                    type = NavType.StringType
-                    nullable = true
-                    defaultValue = null
-                }
+                navArgument("enrollmentId") { type = NavType.StringType }
             )
         ) { backStackEntry ->
             val programId = backStackEntry.arguments?.getString("programId") ?: ""
@@ -239,23 +310,25 @@ fun AppNavigation(
             )
         }
 
-        // Route for event creation (standalone events)
+        // Route for standalone event editing (no enrollment)
         composable(
-            route = "CreateEvent/{programId}/{programName}",
+            route = "EditStandaloneEvent/{programId}/{programName}/{eventId}",
             arguments = listOf(
                 navArgument("programId") { type = NavType.StringType },
-                navArgument("programName") { type = NavType.StringType }
+                navArgument("programName") { type = NavType.StringType },
+                navArgument("eventId") { type = NavType.StringType }
             )
         ) { backStackEntry ->
             val programId = backStackEntry.arguments?.getString("programId") ?: ""
             val programName = backStackEntry.arguments?.getString("programName") ?: ""
+            val eventId = backStackEntry.arguments?.getString("eventId") ?: ""
 
             EventCaptureScreen(
                 navController = navController,
                 programId = programId,
-                programStageId = null, // Will be determined from program
-                eventId = null, // Creating new event
-                enrollmentId = null // Standalone event
+                programStageId = null,
+                eventId = eventId,
+                enrollmentId = null
             )
         }
 

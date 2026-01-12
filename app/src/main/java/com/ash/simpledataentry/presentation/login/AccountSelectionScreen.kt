@@ -46,6 +46,7 @@ fun AccountSelectionScreen(
 
     BaseScreen(
         title = "Select Account",
+        subtitle = "Choose a saved profile",
         navController = navController,
         navigationIcon = null
     ) {

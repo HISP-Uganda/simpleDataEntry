@@ -1,6 +1,5 @@
 package com.ash.simpledataentry.ui.theme
 
-import android.app.Activity
 import android.os.Build
 import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.material3.MaterialTheme
@@ -9,35 +8,46 @@ import androidx.compose.material3.dynamicDarkColorScheme
 import androidx.compose.material3.dynamicLightColorScheme
 import androidx.compose.material3.lightColorScheme
 import androidx.compose.runtime.Composable
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
 
 private val DarkColorScheme = darkColorScheme(
-    primary = Purple80,
-    secondary = PurpleGrey80,
-    tertiary = Pink80
+    primary = Primary80,
+    onPrimary = NeutralOnSurface,
+    primaryContainer = PrimaryContainer80,
+    onPrimaryContainer = Primary80,
+    secondary = Secondary80,
+    onSecondary = NeutralOnSurface,
+    background = Color(0xFF101214),
+    onBackground = Color(0xFFE6E8EC),
+    surface = Color(0xFF101214),
+    onSurface = Color(0xFFE6E8EC),
+    surfaceVariant = Color(0xFF1E2226),
+    onSurfaceVariant = Color(0xFFB8BCC2),
+    outline = Color(0xFF343A40)
 )
 
 private val LightColorScheme = lightColorScheme(
-    primary = Purple40,
-    secondary = PurpleGrey40,
-    tertiary = Pink40
-
-    /* Other default colors to override
-    background = Color(0xFFFFFBFE),
-    surface = Color(0xFFFFFBFE),
+    primary = Primary40,
     onPrimary = Color.White,
+    primaryContainer = PrimaryContainer40,
+    onPrimaryContainer = NeutralOnSurface,
+    secondary = Secondary40,
     onSecondary = Color.White,
-    onTertiary = Color.White,
-    onBackground = Color(0xFF1C1B1F),
-    onSurface = Color(0xFF1C1B1F),
-    */
+    background = NeutralBackground,
+    onBackground = NeutralOnSurface,
+    surface = NeutralSurface,
+    onSurface = NeutralOnSurface,
+    surfaceVariant = NeutralSurfaceVariant,
+    onSurfaceVariant = NeutralMuted,
+    outline = NeutralOutline
 )
 
 @Composable
 fun SimpleDataEntryTheme(
     darkTheme: Boolean = isSystemInDarkTheme(),
     // Dynamic color is available on Android 12+
-    dynamicColor: Boolean = true,
+    dynamicColor: Boolean = false,
     content: @Composable () -> Unit
 ) {
     val colorScheme = when {
@@ -53,6 +63,7 @@ fun SimpleDataEntryTheme(
     MaterialTheme(
         colorScheme = colorScheme,
         typography = Typography,
+        shapes = Shapes,
         content = content
     )
 }

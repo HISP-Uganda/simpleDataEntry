@@ -330,6 +330,27 @@ class ValidationService @Inject constructor(
                     )
                 }
                 
+            } catch (e: StackOverflowError) {
+                Log.e(tag, "DHIS2 SDK validation engine stack overflow: ${e.message}")
+                Log.e(tag, "Validation engine evaluation caused a stack overflow; returning warning instead of crashing.")
+
+                val executionTime = System.currentTimeMillis() - startTime
+                val warning = ValidationIssue(
+                    ruleId = "sdk_validation_stack_overflow",
+                    ruleName = "Validation Engine Warning",
+                    description = "Validation engine failed due to deep expression recursion. Please verify data manually.",
+                    severity = ValidationSeverity.WARNING
+                )
+
+                return@withContext ValidationSummary(
+                    totalRulesChecked = validationRulesForDataset.size,
+                    passedRules = 0,
+                    errorCount = 0,
+                    warningCount = 1,
+                    canComplete = true,
+                    executionTimeMs = executionTime,
+                    validationResult = ValidationResult.Warning(listOf(warning))
+                )
             } catch (e: Exception) {
                 Log.e(tag, "DHIS2 SDK validation engine failed: ${e.message}")
                 Log.e(tag, "Exception type: ${e.javaClass.simpleName}")
@@ -384,6 +405,26 @@ class ValidationService @Inject constructor(
                 )
             }
 
+        } catch (e: StackOverflowError) {
+            Log.e(tag, "Validation failed due to stack overflow: ${e.message}")
+            ValidationSummary(
+                totalRulesChecked = 0,
+                passedRules = 0,
+                errorCount = 0,
+                warningCount = 1,
+                canComplete = true,
+                executionTimeMs = System.currentTimeMillis() - startTime,
+                validationResult = ValidationResult.Warning(
+                    listOf(
+                        ValidationIssue(
+                            ruleId = "validation_stack_overflow",
+                            ruleName = "Validation Warning",
+                            description = "Validation engine overflowed while evaluating rules. Please verify data manually.",
+                            severity = ValidationSeverity.WARNING
+                        )
+                    )
+                )
+            )
         } catch (e: Exception) {
             Log.e(tag, "Error during validation", e)
             ValidationSummary(

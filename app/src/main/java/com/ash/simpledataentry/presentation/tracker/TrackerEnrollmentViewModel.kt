@@ -6,6 +6,7 @@ import androidx.lifecycle.viewModelScope
 import com.ash.simpledataentry.data.SessionManager
 import com.ash.simpledataentry.data.sync.DetailedSyncProgress
 import com.ash.simpledataentry.data.sync.SyncQueueManager
+import com.ash.simpledataentry.data.sync.SyncStatusController
 import com.ash.simpledataentry.data.sync.NetworkStateManager
 import com.ash.simpledataentry.domain.model.*
 import com.ash.simpledataentry.domain.repository.DatasetInstancesRepository
@@ -70,11 +71,13 @@ class TrackerEnrollmentViewModel @Inject constructor(
     private val sessionManager: SessionManager,
     private val repository: DatasetInstancesRepository,
     private val syncQueueManager: SyncQueueManager,
-    private val networkStateManager: NetworkStateManager
+    private val networkStateManager: NetworkStateManager,
+    private val syncStatusController: SyncStatusController
 ) : ViewModel() {
 
     private val _state = MutableStateFlow(TrackerEnrollmentState())
     val state: StateFlow<TrackerEnrollmentState> = _state.asStateFlow()
+    val syncController: SyncStatusController = syncStatusController
 
     private var d2: D2? = null
     private var enrollmentId: String? = null

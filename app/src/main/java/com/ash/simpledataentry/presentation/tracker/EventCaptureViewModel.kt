@@ -4,12 +4,19 @@ import android.app.Application
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.ash.simpledataentry.data.SessionManager
+import com.ash.simpledataentry.data.cache.MetadataCacheService
 import com.ash.simpledataentry.data.sync.DetailedSyncProgress
 import com.ash.simpledataentry.data.sync.SyncQueueManager
+import com.ash.simpledataentry.data.sync.SyncStatusController
 import com.ash.simpledataentry.data.sync.NetworkStateManager
+import com.ash.simpledataentry.domain.grouping.ImpliedCategoryInferenceService
 import com.ash.simpledataentry.domain.model.*
 import com.ash.simpledataentry.domain.repository.DatasetInstancesRepository
 import com.ash.simpledataentry.presentation.core.NavigationProgress
+import com.ash.simpledataentry.presentation.core.LoadingOperation
+import com.ash.simpledataentry.presentation.core.LoadingProgress
+import com.ash.simpledataentry.presentation.core.UiError
+import com.ash.simpledataentry.presentation.core.UiState
 import dagger.hilt.android.lifecycle.HiltViewModel
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -54,6 +61,13 @@ data class EventCaptureState(
     val dataValues: List<DataValue> = emptyList(),
     val currentDataValue: DataValue? = null,
 
+    // IMPLIED CATEGORY INFERENCE: For event/tracker programs that don't have DHIS2 category combinations
+    // This detects category structure from data element names (e.g., "ANC Visit - First Trimester - Blood Pressure")
+    // Map of sectionName -> ImpliedCategoryCombination (since each section can have different patterns)
+    val impliedCategoriesBySection: Map<String, ImpliedCategoryCombination> = emptyMap(),
+    val impliedCategoryMappingsBySection: Map<String, List<ImpliedCategoryMapping>> = emptyMap(),
+    val sectionHasData: Map<String, Boolean> = emptyMap(),
+
     // Reuse validation patterns from DataEntry
     val validationState: ValidationState = ValidationState.VALID,
     val validationErrors: List<String> = emptyList(),
@@ -72,7 +86,10 @@ data class EventCaptureState(
     val isEditMode: Boolean = false,
     val currentStep: Int = 0,
     val expandedSection: String? = null,
-    val isCompleted: Boolean = false
+    val isCompleted: Boolean = false,
+
+    // Program rules
+    val programRuleEffect: ProgramRuleEffect? = null
 )
 
 @HiltViewModel
@@ -81,11 +98,46 @@ class EventCaptureViewModel @Inject constructor(
     private val sessionManager: SessionManager,
     private val repository: DatasetInstancesRepository,
     private val syncQueueManager: SyncQueueManager,
-    private val networkStateManager: NetworkStateManager
+    private val networkStateManager: NetworkStateManager,
+    private val impliedCategoryService: ImpliedCategoryInferenceService,
+    private val metadataCacheService: MetadataCacheService,
+    private val syncStatusController: SyncStatusController
 ) : ViewModel() {
 
     private val _state = MutableStateFlow(EventCaptureState())
     val state: StateFlow<EventCaptureState> = _state.asStateFlow()
+    private val _uiState = MutableStateFlow<UiState<EventCaptureState>>(UiState.Loading(LoadingOperation.Initial))
+    val uiState: StateFlow<UiState<EventCaptureState>> = _uiState.asStateFlow()
+private var lastSuccessfulState: EventCaptureState? = null
+private var isShowingSyncOverlay = false
+    private var initialValues: Map<String, String?> = emptyMap()
+    private var initialEventDate: Date? = null
+    private var initialOrganisationUnitId: String? = null
+    val syncController: SyncStatusController = syncStatusController
+
+    private fun emitSuccessState() {
+        val current = _state.value
+        lastSuccessfulState = current
+        _uiState.value = UiState.Success(current)
+    }
+
+    private fun updateState(
+        autoEmit: Boolean = true,
+        transform: (EventCaptureState) -> EventCaptureState
+    ) {
+        _state.update(transform)
+        if (autoEmit && _uiState.value is UiState.Success) {
+            emitSuccessState()
+        }
+    }
+
+    private fun setUiLoading(operation: LoadingOperation, progress: LoadingProgress? = null) {
+        _uiState.value = UiState.Loading(operation, progress)
+    }
+
+    private fun setUiError(error: UiError) {
+        _uiState.value = UiState.Error(error, previousData = lastSuccessfulState)
+    }
 
     private var d2: D2? = null
 
@@ -98,10 +150,20 @@ class EventCaptureViewModel @Inject constructor(
         // Observe sync progress (reuse DataEntry pattern)
         viewModelScope.launch {
             syncQueueManager.detailedProgress.collect { progress ->
-                _state.update { it.copy(
-                    detailedSyncProgress = progress,
-                    isSyncing = progress != null
-                ) }
+                updateState {
+                    it.copy(
+                        detailedSyncProgress = progress,
+                        isSyncing = progress != null
+                    )
+                }
+
+                if (progress != null) {
+                    isShowingSyncOverlay = true
+                    setUiLoading(LoadingOperation.Syncing(progress))
+                } else if (isShowingSyncOverlay) {
+                    isShowingSyncOverlay = false
+                    emitSuccessState()
+                }
             }
         }
     }
@@ -114,7 +176,7 @@ class EventCaptureViewModel @Inject constructor(
     ) {
         viewModelScope.launch {
             try {
-                _state.update {
+                updateState {
                     it.copy(
                         isLoading = true,
                         error = null,
@@ -123,6 +185,17 @@ class EventCaptureViewModel @Inject constructor(
                         enrollmentId = enrollmentId
                     )
                 }
+                val navigationProgress = NavigationProgress(
+                    phase = com.ash.simpledataentry.presentation.core.LoadingPhase.LOADING_DATA,
+                    overallPercentage = 10,
+                    phaseTitle = "Loading event",
+                    phaseDetail = "Preparing event form...",
+                    loadingType = com.ash.simpledataentry.presentation.core.StepLoadingType.ENTRY
+                )
+                setUiLoading(
+                    operation = LoadingOperation.Navigation(navigationProgress),
+                    progress = LoadingProgress(message = navigationProgress.phaseDetail)
+                )
 
                 val d2Instance = d2 ?: throw Exception("Not authenticated")
 
@@ -131,15 +204,31 @@ class EventCaptureViewModel @Inject constructor(
                     .uid(programId).blockingGet()
                     ?: throw Exception("Program not found")
 
-                val stageId = programStageId ?: run {
+                val existingEvent = if (eventId != null) {
+                    d2Instance.eventModule().events().uid(eventId).blockingGet()
+                        ?: throw Exception("Event not found")
+                } else null
+
+                val stageId = programStageId
+                    ?: existingEvent?.programStage()
+                    ?: run {
                     val stages = d2Instance.programModule().programStages()
                         .byProgramUid().eq(programId).blockingGet()
                     stages.firstOrNull()?.uid() ?: throw Exception("No program stage found")
-                }
+                    }
 
                 val programStage = d2Instance.programModule().programStages()
                     .uid(stageId).blockingGet()
                     ?: throw Exception("Program stage not found")
+
+                // Load program stage sections (if any) - this will be the first accordion level
+                val programStageSections = d2Instance.programModule()
+                    .programStageSections()
+                    .byProgramStageUid().eq(stageId)
+                    .withDataElements()
+                    .blockingGet()
+
+                android.util.Log.d("EventCaptureVM", "Program stage sections found: ${programStageSections.size}")
 
                 // Transform program stage data elements to DataValue objects (reuse existing model)
                 val dataElementsFromStage = d2Instance.programModule()
@@ -154,11 +243,19 @@ class EventCaptureViewModel @Inject constructor(
                         .blockingGet()
 
                     dataElement?.let { de ->
+                        // Find section for this data element (if sections exist)
+                        val sectionName = programStageSections
+                            .firstOrNull { section ->
+                                section.dataElements()?.any { it.uid() == de.uid() } == true
+                            }
+                            ?.displayName()
+                            ?: programStage.displayName() ?: "Event Data"
+
                         // Convert to DataValue format to reuse all existing input components
                         DataValue(
                             dataElement = de.uid(),
                             dataElementName = de.displayName() ?: de.name() ?: "",
-                            sectionName = programStage.displayName() ?: "Event Data",
+                            sectionName = sectionName,
                             categoryOptionCombo = de.categoryCombo()?.uid() ?: "HllvX50cXC0",
                             categoryOptionComboName = "default",
                             value = null, // Will be loaded if editing existing event
@@ -185,8 +282,51 @@ class EventCaptureViewModel @Inject constructor(
                         .associate { it.dataElement()!! to it.value() }
                 } else emptyMap()
 
+                // Load option sets for data elements
+                val dataValuesWithOptionSets = dataValues.map { dataValue ->
+                    val optionSet = try {
+                        // Get option set from data element
+                        val de = d2Instance.dataElementModule().dataElements()
+                            .uid(dataValue.dataElement)
+                            .blockingGet()
+
+                        val optionSetUid = de?.optionSet()?.uid()
+
+                        if (optionSetUid != null) {
+                            val optionSetObj = d2Instance.optionModule().optionSets()
+                                .uid(optionSetUid)
+                                .blockingGet()
+
+                            val sdkOptions = d2Instance.optionModule().options()
+                                .byOptionSetUid().eq(optionSetUid)
+                                .blockingGet()
+
+                            val options = sdkOptions.mapIndexed { index, option ->
+                                Option(
+                                    code = option.code() ?: option.uid(),
+                                    name = option.name() ?: option.code() ?: option.uid(),
+                                    displayName = option.displayName(),
+                                    sortOrder = option.sortOrder() ?: index
+                                )
+                            }
+
+                            OptionSet(
+                                id = optionSetObj?.uid() ?: optionSetUid,
+                                name = optionSetObj?.name() ?: "",
+                                displayName = optionSetObj?.displayName(),
+                                options = options
+                            )
+                        } else null
+                    } catch (e: Exception) {
+                        android.util.Log.w("EventCaptureVM", "Failed to load option set for ${dataValue.dataElement}: ${e.message}")
+                        null
+                    }
+
+                    dataValue.copy(optionSet = optionSet)
+                }
+
                 // Update data values with existing values
-                val updatedDataValues = dataValues.map { dataValue ->
+                val updatedDataValues = dataValuesWithOptionSets.map { dataValue ->
                     existingDataValues[dataValue.dataElement]?.let { existingValue ->
                         dataValue.copy(value = existingValue)
                     } ?: dataValue
@@ -206,18 +346,41 @@ class EventCaptureViewModel @Inject constructor(
                 } else emptyList()
 
                 // Load existing event details if editing
-                val (eventDate, orgUnitId, completed) = if (eventId != null) {
-                    val event = d2Instance.eventModule().events().uid(eventId).blockingGet()
+                val (eventDate, orgUnitId, completed) = if (existingEvent != null) {
                     Triple(
-                        event?.eventDate() ?: Date(),
-                        event?.organisationUnit(),
-                        event?.status()?.name == "COMPLETED"
+                        existingEvent.eventDate() ?: Date(),
+                        existingEvent.organisationUnit(),
+                        existingEvent.status()?.name == "COMPLETED"
                     )
                 } else {
                     Triple(Date(), null, false)
                 }
 
-                _state.update {
+                // INFER IMPLIED CATEGORY STRUCTURE from data element names per section
+                // This restores the previously-removed nested accordion functionality
+                // Sections are the first accordion level, implied categories are nested within sections
+                val sections = updatedDataValues.map { it.sectionName }.distinct()
+                val impliedCategoriesBySection = mutableMapOf<String, ImpliedCategoryCombination>()
+                val impliedMappingsBySection = mutableMapOf<String, List<ImpliedCategoryMapping>>()
+
+                sections.forEach { sectionName ->
+                    val sectionDataValues = updatedDataValues.filter { it.sectionName == sectionName }
+                    val impliedCombination = inferImpliedCategories(programId, sectionName, sectionDataValues)
+
+                    if (impliedCombination != null) {
+                        impliedCategoriesBySection[sectionName] = impliedCombination
+                        impliedMappingsBySection[sectionName] =
+                            impliedCategoryService.createMappings(sectionDataValues, impliedCombination)
+
+                        android.util.Log.d("EventCaptureVM", "Section '$sectionName': " +
+                            "inferred ${impliedCombination.categories.size} category levels, " +
+                            "confidence=${impliedCombination.confidence}")
+                    } else {
+                        android.util.Log.d("EventCaptureVM", "Section '$sectionName': No category pattern detected")
+                    }
+                }
+
+                updateState {
                     it.copy(
                         isLoading = false,
                         programId = programId,
@@ -228,26 +391,35 @@ class EventCaptureViewModel @Inject constructor(
                         availableOrganisationUnits = orgUnits,
                         eventDate = eventDate,
                         selectedOrganisationUnitId = orgUnitId,
-                        isCompleted = completed
+                        isCompleted = completed,
+                        impliedCategoriesBySection = impliedCategoriesBySection,
+                        impliedCategoryMappingsBySection = impliedMappingsBySection,
+                        sectionHasData = calculateSectionHasData(updatedDataValues)
                     )
                 }
+                cacheInitialState(updatedDataValues, eventDate, orgUnitId)
 
                 updateCanSave()
 
+                // Trigger program rules evaluation after loading existing event
+                eventId?.let { evaluateProgramRules(it) }
+                emitSuccessState()
+
             } catch (e: Exception) {
-                _state.update {
+                updateState {
                     it.copy(
                         isLoading = false,
                         error = "Failed to initialize event: ${e.message}"
                     )
                 }
+                setUiError(UiError.Local(e.message ?: "Failed to initialize event"))
             }
         }
     }
 
     // Reuse exact same field update pattern from DataEntryViewModel
     fun updateDataValue(value: String, dataValue: DataValue) {
-        _state.update { currentState ->
+        updateState { currentState ->
             val updatedDataValues = currentState.dataValues.map { existingDataValue ->
                 if (existingDataValue.dataElement == dataValue.dataElement &&
                     existingDataValue.categoryOptionCombo == dataValue.categoryOptionCombo) {
@@ -262,20 +434,62 @@ class EventCaptureViewModel @Inject constructor(
 
             currentState.copy(
                 dataValues = updatedDataValues,
-                currentDataValue = dataValue.copy(value = value.ifBlank { null })
+                currentDataValue = dataValue.copy(value = value.ifBlank { null }),
+                sectionHasData = calculateSectionHasData(updatedDataValues)
             )
         }
         updateCanSave()
+
+        // Trigger program rules evaluation after value change
+        _state.value.eventId?.let { eventId ->
+            evaluateProgramRules(eventId)
+        }
     }
 
     fun updateEventDate(date: Date) {
-        _state.update { it.copy(eventDate = date) }
+        updateState { it.copy(eventDate = date) }
         updateCanSave()
     }
 
     fun updateOrganisationUnit(orgUnitId: String) {
-        _state.update { it.copy(selectedOrganisationUnitId = orgUnitId) }
+        updateState { it.copy(selectedOrganisationUnitId = orgUnitId) }
         updateCanSave()
+    }
+
+    fun hasUnsavedChanges(): Boolean {
+        val currentState = _state.value
+        val currentValues = currentState.dataValues.associate { dataValue ->
+            "${dataValue.dataElement}|${dataValue.categoryOptionCombo}" to dataValue.value?.ifBlank { null }
+        }
+        val normalizedInitial = initialValues.mapValues { it.value?.ifBlank { null } }
+        if (currentValues != normalizedInitial) {
+            return true
+        }
+        if (currentState.eventDate != initialEventDate) {
+            return true
+        }
+        if (currentState.selectedOrganisationUnitId != initialOrganisationUnitId) {
+            return true
+        }
+        return false
+    }
+
+    private fun cacheInitialState(
+        dataValues: List<DataValue>,
+        eventDate: Date?,
+        organisationUnitId: String?
+    ) {
+        initialValues = dataValues.associate { dataValue ->
+            "${dataValue.dataElement}|${dataValue.categoryOptionCombo}" to dataValue.value?.ifBlank { null }
+        }
+        initialEventDate = eventDate
+        initialOrganisationUnitId = organisationUnitId
+    }
+
+    private fun calculateSectionHasData(dataValues: List<DataValue>): Map<String, Boolean> {
+        return dataValues
+            .groupBy { it.sectionName }
+            .mapValues { (_, values) -> values.any { !it.value.isNullOrBlank() } }
     }
 
     private fun updateCanSave() {
@@ -291,7 +505,7 @@ class EventCaptureViewModel @Inject constructor(
             validationErrors.add("Event date is required")
         }
 
-        _state.update {
+        updateState {
             it.copy(
                 validationErrors = validationErrors,
                 validationState = if (validationErrors.isEmpty()) ValidationState.VALID else ValidationState.VALID,
@@ -303,10 +517,17 @@ class EventCaptureViewModel @Inject constructor(
     fun saveEvent() {
         viewModelScope.launch {
             try {
-                _state.update { it.copy(saveInProgress = true, error = null) }
+                updateState { it.copy(saveInProgress = true, error = null) }
+                val currentState = _state.value
+                val savingProgress = LoadingProgress(
+                    message = if (currentState.isEditMode) "Updating event..." else "Creating event..."
+                )
+                setUiLoading(
+                    operation = LoadingOperation.Saving(),
+                    progress = savingProgress
+                )
 
                 val d2Instance = d2 ?: throw Exception("Not authenticated")
-                val currentState = _state.value
 
                 if (!currentState.canSave) {
                     throw Exception("Cannot save: validation errors exist")
@@ -318,7 +539,7 @@ class EventCaptureViewModel @Inject constructor(
                     createNewEvent(d2Instance, currentState)
                 }
 
-                _state.update {
+                updateState {
                     it.copy(
                         saveInProgress = false,
                         saveSuccess = true,
@@ -326,15 +547,59 @@ class EventCaptureViewModel @Inject constructor(
                         successMessage = if (currentState.isEditMode) "Event updated successfully" else "Event created successfully"
                     )
                 }
+                cacheInitialState(_state.value.dataValues, _state.value.eventDate, _state.value.selectedOrganisationUnitId)
+
+                // Trigger program rules evaluation after save
+                _state.value.eventId?.let { eventId ->
+                    evaluateProgramRules(eventId)
+                }
+                emitSuccessState()
 
             } catch (e: Exception) {
-                _state.update {
+                updateState {
                     it.copy(
                         saveInProgress = false,
                         saveResult = Result.failure(e),
                         error = "Failed to save event: ${e.message}"
                     )
                 }
+                emitSuccessState()
+            }
+        }
+    }
+
+    fun completeEvent() {
+        viewModelScope.launch {
+            try {
+                val eventId = _state.value.eventId ?: return@launch
+                updateState { it.copy(saveInProgress = true, error = null) }
+                val completionProgress = LoadingProgress(message = "Completing event...")
+                setUiLoading(
+                    operation = LoadingOperation.Saving(),
+                    progress = completionProgress
+                )
+
+                val result = repository.completeEvent(eventId)
+                if (result.isFailure) {
+                    throw result.exceptionOrNull() ?: Exception("Failed to complete event")
+                }
+
+                updateState {
+                    it.copy(
+                        saveInProgress = false,
+                        isCompleted = true,
+                        successMessage = "Event marked complete"
+                    )
+                }
+                emitSuccessState()
+            } catch (e: Exception) {
+                updateState {
+                    it.copy(
+                        saveInProgress = false,
+                        error = "Failed to complete event: ${e.message}"
+                    )
+                }
+                emitSuccessState()
             }
         }
     }
@@ -401,17 +666,17 @@ class EventCaptureViewModel @Inject constructor(
 
                 repository.syncProgramInstances(currentState.programId, ProgramType.EVENT)
                     .onSuccess {
-                        _state.update {
+                        updateState {
                             it.copy(successMessage = "Event synced successfully")
                         }
                     }
                     .onFailure { error ->
-                        _state.update {
+                        updateState {
                             it.copy(error = "Sync failed: ${error.message}")
                         }
                     }
             } catch (e: Exception) {
-                _state.update {
+                updateState {
                     it.copy(error = "Sync failed: ${e.message}")
                 }
             }
@@ -419,7 +684,7 @@ class EventCaptureViewModel @Inject constructor(
     }
 
     fun clearMessages() {
-        _state.update {
+        updateState {
             it.copy(
                 error = null,
                 successMessage = null,
@@ -440,5 +705,213 @@ class EventCaptureViewModel @Inject constructor(
         val key = "${dataValue.dataElement}|${dataValue.categoryOptionCombo}"
         fieldStates[key] = newValue
         updateDataValue(newValue.text, dataValue)
+    }
+
+    /**
+     * Evaluate program rules for the current event
+     * Uses DHIS2 rule-engine library for offline evaluation
+     *
+     * TODO: Fix API usage - currently has compilation errors
+     * The correct DHIS2 SDK API for program rule evaluation needs to be researched
+     */
+    private fun evaluateProgramRules(eventUid: String) {
+        // COMMENTED OUT: Has compilation errors - needs correct DHIS2 SDK API
+        /*
+        viewModelScope.launch(kotlinx.coroutines.Dispatchers.Default) {
+            try {
+                val d2Instance = d2 ?: return@launch
+
+                // Use DHIS2 rule engine from org.hisp.dhis.rules package
+                val ruleEngine = org.hisp.dhis.rules.RuleEngineContext.builder()
+                    .build()
+
+                // Get program rules
+                val programId = _state.value.programId
+                val programRules = d2Instance.programModule().programRules()
+                    .byProgramUid().eq(programId)
+                    .blockingGet()
+                    .map { programRule ->
+                        org.hisp.dhis.rules.models.Rule.create(
+                            null, null, "", "",
+                            programRule.uid(),
+                            programRule.name() ?: "",
+                            programRule.condition() ?: "",
+                            emptyList()
+                        )
+                    }
+
+                // Get data values for evaluation
+                val dataValues = _state.value.dataValues
+                    .mapNotNull { dv ->
+                        dv.value?.let {
+                            org.hisp.dhis.rules.models.RuleDataValue.create(
+                                Date(),
+                                "",
+                                dv.dataElement,
+                                it
+                            )
+                        }
+                    }
+
+                // Evaluate rules
+                val ruleEffects = org.hisp.dhis.rules.RuleEngine.builder(ruleEngine)
+                    .rules(programRules)
+                    .build()
+                    .evaluate(
+                        org.hisp.dhis.rules.models.RuleEvent.create(
+                            eventUid,
+                            programId,
+                            org.hisp.dhis.rules.models.RuleEvent.Status.ACTIVE,
+                            Date(),
+                            Date(),
+                            "",
+                            null,
+                            null,
+                            dataValues,
+                            "",
+                            null
+                        )
+                    )
+
+                // Convert to our ProgramRuleEffect model
+                val effect = convertToRuleEffect(ruleEffects)
+
+                // Apply effects to state on main thread
+                kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.Main) {
+                    applyRuleEffects(effect)
+                }
+            } catch (e: Exception) {
+                android.util.Log.e("EventCaptureVM", "Program rule evaluation failed: ${e.message}", e)
+            }
+        }
+        */
+    }
+
+    /**
+     * Convert DHIS2 SDK RuleEffect list to ProgramRuleEffect model
+     *
+     * TODO: Will be re-enabled when evaluateProgramRules is fixed
+     */
+    @Suppress("unused")
+    private fun convertToRuleEffect(
+        sdkEffects: List<org.hisp.dhis.rules.models.RuleEffect>
+    ): ProgramRuleEffect {
+        val hiddenFields = mutableSetOf<String>()
+        val mandatoryFields = mutableSetOf<String>()
+        val fieldWarnings = mutableMapOf<String, String>()
+        val fieldErrors = mutableMapOf<String, String>()
+        val calculatedValues = mutableMapOf<String, String>()
+        val displayTexts = mutableListOf<String>()
+        val displayKeyValuePairs = mutableMapOf<String, String>()
+        val hiddenSections = mutableSetOf<String>()
+
+        sdkEffects.forEach { effect ->
+            when (effect.ruleAction().javaClass.simpleName) {
+                "RuleActionHideField" -> {
+                    effect.data()?.let { hiddenFields.add(it) }
+                }
+                "RuleActionShowWarning" -> {
+                    val field = effect.data() ?: ""
+                    val message = effect.ruleAction().data() ?: ""
+                    if (field.isNotEmpty()) fieldWarnings[field] = message
+                }
+                "RuleActionShowError" -> {
+                    val field = effect.data() ?: ""
+                    val message = effect.ruleAction().data() ?: ""
+                    if (field.isNotEmpty()) fieldErrors[field] = message
+                }
+                "RuleActionAssign" -> {
+                    val field = effect.data() ?: ""
+                    val value = effect.ruleAction().data() ?: ""
+                    if (field.isNotEmpty()) calculatedValues[field] = value
+                }
+                "RuleActionSetMandatoryField" -> {
+                    effect.data()?.let { mandatoryFields.add(it) }
+                }
+                "RuleActionDisplayText" -> {
+                    effect.ruleAction().data()?.let { displayTexts.add(it) }
+                }
+                "RuleActionDisplayKeyValuePair" -> {
+                    //val key = effect.ruleAction().location() ?: ""
+                    val value = effect.ruleAction().data() ?: ""
+                    //if (key.isNotEmpty()) displayKeyValuePairs[key] = value
+                }
+                "RuleActionHideSection" -> {
+                    effect.data()?.let { hiddenSections.add(it) }
+                }
+            }
+        }
+
+        return ProgramRuleEffect(
+            hiddenFields = hiddenFields,
+            mandatoryFields = mandatoryFields,
+            fieldWarnings = fieldWarnings,
+            fieldErrors = fieldErrors,
+            calculatedValues = calculatedValues,
+            displayTexts = displayTexts,
+            displayKeyValuePairs = displayKeyValuePairs,
+            hiddenSections = hiddenSections
+        )
+    }
+
+    /**
+     * Apply program rule effects to form state
+     *
+     * TODO: Will be re-enabled when evaluateProgramRules is fixed
+     */
+    @Suppress("unused")
+    private fun applyRuleEffects(effect: ProgramRuleEffect) {
+        updateState { currentState ->
+            // Apply calculated values to data values
+            val updatedDataValues = currentState.dataValues.map { dv ->
+                val calculatedValue = effect.calculatedValues[dv.dataElement]
+                if (calculatedValue != null) {
+                    dv.copy(value = calculatedValue)
+                } else {
+                    dv
+                }
+            }
+
+            currentState.copy(
+                dataValues = updatedDataValues,
+                programRuleEffect = effect
+            )
+        }
+    }
+
+    /**
+     * Infer implied category structure from data element names
+     * Uses caching via MetadataCacheService to avoid re-computation
+     *
+     * This restores the nested accordion functionality that was previously removed
+     * in commits 2b78f6e and c11092e
+     */
+    private fun inferImpliedCategories(
+        programId: String,
+        sectionName: String,
+        dataValues: List<DataValue>
+    ): ImpliedCategoryCombination? {
+        // Check cache first
+        val cached = metadataCacheService.getImpliedCategories(programId, sectionName)
+        if (cached != null && cached.categories.any { it.options.size > 1 }) {
+            android.util.Log.d("EventCaptureVM", "Using cached implied categories for $programId:$sectionName")
+            return cached
+        }
+        if (cached != null) {
+            android.util.Log.d(
+                "EventCaptureVM",
+                "Cached implied categories lack meaningful options for $programId:$sectionName - recomputing"
+            )
+        }
+
+        // Infer from data element names
+        val inferred = impliedCategoryService.inferCategoryStructure(dataValues, sectionName)
+
+        // Store in cache if inference was successful
+        if (inferred != null) {
+            metadataCacheService.setImpliedCategories(programId, sectionName, inferred)
+        }
+
+        return inferred
     }
 }

@@ -1,38 +1,51 @@
 package com.ash.simpledataentry.presentation.tracker
 
+import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
-import androidx.compose.foundation.rememberScrollState
-import androidx.compose.foundation.verticalScroll
+import androidx.compose.foundation.lazy.rememberLazyListState
+import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.DateRange
 import androidx.compose.material.icons.filled.Person
 import androidx.compose.material.icons.filled.Save
 import androidx.compose.material.icons.filled.Sync
 import androidx.compose.material.icons.filled.ArrowDropDown
-import androidx.compose.material.icons.filled.ArrowBack
+import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material3.*
+import androidx.compose.material3.MenuAnchorType
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.Brush
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.TextFieldValue
+import androidx.compose.ui.text.TextRange
 import androidx.compose.ui.unit.dp
 import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.navigation.NavController
+import com.ash.simpledataentry.presentation.core.AdaptiveLoadingOverlay
 import com.ash.simpledataentry.presentation.core.BaseScreen
 import com.ash.simpledataentry.presentation.core.DatePickerDialog
-import com.ash.simpledataentry.presentation.core.DetailedSyncOverlay
-import com.ash.simpledataentry.presentation.core.OverlayLoader
+import com.ash.simpledataentry.presentation.core.Section
+import com.ash.simpledataentry.presentation.core.SectionNavigationBar
+import com.ash.simpledataentry.presentation.core.ShimmerFormSection
+import com.ash.simpledataentry.presentation.core.SimpleProgressOverlay
+import com.ash.simpledataentry.presentation.core.LoadingOperation
+import com.ash.simpledataentry.presentation.core.UiState
 import com.ash.simpledataentry.domain.model.TrackedEntityAttributeValue
+import com.ash.simpledataentry.ui.theme.DHIS2Blue
+import com.ash.simpledataentry.ui.theme.DHIS2BlueDark
+import com.ash.simpledataentry.ui.theme.DHIS2BlueLight
 import org.hisp.dhis.mobile.ui.designsystem.component.*
-import org.hisp.dhis.mobile.ui.designsystem.theme.DHIS2Theme
-import org.hisp.dhis.mobile.ui.designsystem.theme.TextColor
 import java.text.SimpleDateFormat
 import java.util.*
 import kotlinx.coroutines.launch
+import java.net.URLDecoder
 
 /**
  * Screen for creating and editing tracker enrollments
@@ -51,6 +64,32 @@ fun TrackerEnrollmentScreen(
     val snackbarHostState = remember { SnackbarHostState() }
     val coroutineScope = rememberCoroutineScope()
     var showSaveDialog by remember { mutableStateOf(false) }
+    val listState = rememberLazyListState()
+    val sectionNames = remember(state.trackedEntityAttributes) {
+        buildList {
+            add("Enrollment Information")
+            if (state.trackedEntityAttributes.isNotEmpty()) {
+                add("Personal Information")
+            }
+        }
+    }
+    var currentSectionIndex by remember(sectionNames) { mutableStateOf(0) }
+    if (currentSectionIndex !in sectionNames.indices) {
+        currentSectionIndex = 0
+    }
+    val sectionStartIndexes = remember(sectionNames) {
+        sectionNames.mapIndexed { index, _ ->
+            if (index == 0) 0 else 1
+        }
+    }
+    val scrollToSection: (Int) -> Unit = { index ->
+        if (index in sectionNames.indices) {
+            currentSectionIndex = index
+        }
+    }
+    LaunchedEffect(currentSectionIndex, sectionStartIndexes) {
+        sectionStartIndexes.getOrNull(currentSectionIndex)?.let { listState.animateScrollToItem(it) }
+    }
 
     // Initialize the view model with parameters
     LaunchedEffect(programId, enrollmentId) {
@@ -80,105 +119,224 @@ fun TrackerEnrollmentScreen(
         }
     }
 
-    Scaffold(
-        topBar = {
-            TopAppBar(
-                title = { Text(if (state.isEditMode) "Edit Enrollment" else "New Enrollment") },
-                navigationIcon = {
-                    IconButton(onClick = { navController.popBackStack() }) {
-                        Icon(
-                            imageVector = Icons.Default.ArrowBack,
-                            contentDescription = "Back"
-                        )
-                    }
-                },
-                actions = {
-                    // Sync button (reuse DataEntry pattern)
-                    IconButton(
-                        onClick = { viewModel.syncEnrollment() },
-                        enabled = !state.isSyncing
-                    ) {
-                        Icon(
-                            imageVector = Icons.Default.Sync,
-                            contentDescription = "Sync"
-                        )
-                    }
-                }
+    val title = if (state.isEditMode) "Edit Enrollment" else "New Enrollment"
+    val decodedProgramName = remember(programName) { URLDecoder.decode(programName, "UTF-8") }
+    val progressValue = state.detailedSyncProgress?.overallPercentage?.let { it / 100f }
+        ?: state.navigationProgress?.overallPercentage?.let { it / 100f }
+
+    val syncProgress = state.detailedSyncProgress
+    val overlayUiState: UiState<TrackerEnrollmentState> =
+        if (syncProgress != null) {
+            UiState.Loading(
+                operation = LoadingOperation.Syncing(syncProgress)
             )
-        },
-        floatingActionButton = {
-            FloatingActionButton(
-                onClick = {
-                    if (state.canSave) {
-                        showSaveDialog = true
-                    } else {
-                        coroutineScope.launch {
-                            snackbarHostState.showSnackbar("Please fill all required fields")
-                        }
-                    }
-                },
-                containerColor = if (state.canSave) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.surfaceVariant
-            ) {
+        } else {
+            UiState.Success(state)
+        }
+
+    BaseScreen(
+        title = title,
+        subtitle = decodedProgramName,
+        navController = navController,
+        navigationIcon = {
+            IconButton(onClick = { navController.popBackStack() }) {
                 Icon(
-                    imageVector = Icons.Default.Save,
-                    contentDescription = "Save Enrollment",
-                    tint = if (state.canSave) MaterialTheme.colorScheme.onPrimary else MaterialTheme.colorScheme.onSurfaceVariant
+                    imageVector = Icons.AutoMirrored.Filled.ArrowBack,
+                    contentDescription = "Back"
                 )
             }
         },
-        snackbarHost = { SnackbarHost(snackbarHostState) }
-    ) { paddingValues ->
-        Box(modifier = Modifier.fillMaxSize().padding(paddingValues)) {
-            when {
-                state.isLoading -> {
-                    OverlayLoader(
-                        message = "Loading enrollment...",
-                        progress = state.navigationProgress?.overallPercentage,
-                        progressStep = state.navigationProgress?.phaseDetail
-                    ) {
-                        // Empty content for loading state
-                    }
+        syncStatusController = viewModel.syncController,
+        showProgress = state.isLoading || state.isSyncing,
+        progress = progressValue,
+        actions = {
+            IconButton(
+                onClick = { viewModel.syncEnrollment() },
+                enabled = !state.isSyncing
+            ) {
+                if (state.isSyncing) {
+                    CircularProgressIndicator(
+                        modifier = Modifier.size(20.dp),
+                        strokeWidth = 2.dp
+                    )
+                } else {
+                    Icon(
+                        imageVector = Icons.Default.Sync,
+                        contentDescription = "Sync"
+                    )
                 }
-                state.error != null -> {
-                    ErrorContent(
-                        error = state.error!!,
-                        onRetry = {
-                            if (enrollmentId != null) {
-                                viewModel.loadEnrollment(enrollmentId)
-                            } else {
-                                viewModel.initializeNewEnrollment(programId)
+            }
+        }
+    ) {
+        AdaptiveLoadingOverlay(
+            uiState = overlayUiState,
+            modifier = Modifier.fillMaxSize()
+        ) {
+            val gradientBrush = Brush.verticalGradient(
+                colors = listOf(DHIS2Blue, DHIS2BlueDark)
+            )
+            Box(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .background(gradientBrush)
+            ) {
+                when {
+                    state.isLoading -> {
+                        TrackerEnrollmentFormSkeleton(
+                            modifier = Modifier.fillMaxSize()
+                        )
+                    }
+                    state.error != null -> {
+                        ErrorContent(
+                            error = state.error!!,
+                            onRetry = {
+                                if (enrollmentId != null) {
+                                    viewModel.loadEnrollment(enrollmentId)
+                                } else {
+                                    viewModel.initializeNewEnrollment(programId)
+                                }
+                            }
+                        )
+                    }
+                    else -> {
+                        val formContent: @Composable () -> Unit = {
+                            Column(
+                                modifier = Modifier
+                                    .fillMaxSize()
+                                    .padding(horizontal = 20.dp, vertical = 24.dp)
+                            ) {
+                                Card(
+                                    modifier = Modifier.fillMaxSize(),
+                                    shape = RoundedCornerShape(24.dp),
+                                    colors = CardDefaults.cardColors(containerColor = Color.White),
+                                    elevation = CardDefaults.cardElevation(defaultElevation = 8.dp)
+                                ) {
+                                    Column(
+                                        modifier = Modifier
+                                            .fillMaxSize()
+                                            .padding(20.dp),
+                                        verticalArrangement = Arrangement.spacedBy(16.dp)
+                                    ) {
+                                        Row(
+                                            verticalAlignment = Alignment.CenterVertically,
+                                            horizontalArrangement = Arrangement.spacedBy(12.dp)
+                                        ) {
+                                            Box(
+                                                modifier = Modifier
+                                                    .size(56.dp)
+                                                    .background(DHIS2BlueLight, CircleShape),
+                                                contentAlignment = Alignment.Center
+                                            ) {
+                                                Icon(
+                                                    imageVector = Icons.Default.Person,
+                                                    contentDescription = null,
+                                                    modifier = Modifier.size(28.dp),
+                                                    tint = DHIS2Blue
+                                                )
+                                            }
+                                            Column {
+                                                Text(
+                                                    text = if (state.isEditMode) "Edit Enrollment" else "New Enrollment",
+                                                    style = MaterialTheme.typography.titleMedium,
+                                                    fontWeight = FontWeight.SemiBold
+                                                )
+                                                Text(
+                                                    text = state.programName,
+                                                    style = MaterialTheme.typography.bodySmall,
+                                                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                                                )
+                                            }
+                                        }
+
+                                        Surface(
+                                            color = DHIS2BlueLight.copy(alpha = 0.35f),
+                                            shape = RoundedCornerShape(12.dp)
+                                        ) {
+                                            Text(
+                                                text = "Offline mode supported. Enrollment will sync when connected.",
+                                                style = MaterialTheme.typography.bodySmall,
+                                                color = MaterialTheme.colorScheme.onSurface,
+                                                modifier = Modifier.padding(12.dp)
+                                            )
+                                        }
+
+                                        if (sectionNames.isNotEmpty()) {
+                                            SectionNavigationBar(
+                                                currentSection = Section(sectionNames[currentSectionIndex]),
+                                                currentSubsection = null,
+                                                sectionIndex = currentSectionIndex.coerceAtLeast(0),
+                                                totalSections = sectionNames.size.coerceAtLeast(1),
+                                                onPreviousSection = {
+                                                    scrollToSection((currentSectionIndex - 1).coerceAtLeast(0))
+                                                },
+                                                onNextSection = {
+                                                    scrollToSection(
+                                                        (currentSectionIndex + 1).coerceAtMost(sectionNames.lastIndex)
+                                                    )
+                                                },
+                                                onPreviousSubsection = {},
+                                                onNextSubsection = {},
+                                                hasSubsections = false
+                                            )
+                                        }
+
+                                        EnrollmentFormContent(
+                                            state = state,
+                                            onEnrollmentDateChanged = viewModel::updateEnrollmentDate,
+                                            onIncidentDateChanged = viewModel::updateIncidentDate,
+                                            onAttributeValueChanged = viewModel::updateAttributeValue,
+                                            onOrganisationUnitChanged = viewModel::updateOrganisationUnit,
+                                            listState = listState,
+                                            modifier = Modifier.weight(1f)
+                                        )
+
+                                        Button(
+                                            onClick = {
+                                                if (state.canSave) {
+                                                    showSaveDialog = true
+                                                } else {
+                                                    coroutineScope.launch {
+                                                        snackbarHostState.showSnackbar("Please fill all required fields")
+                                                    }
+                                                }
+                                            },
+                                            enabled = state.canSave,
+                                            modifier = Modifier
+                                                .fillMaxWidth()
+                                                .height(48.dp)
+                                        ) {
+                                            Text(if (state.isEditMode) "Update Enrollment" else "Create Enrollment")
+                                        }
+
+                                        TextButton(
+                                            onClick = { navController.popBackStack() },
+                                            modifier = Modifier.align(Alignment.CenterHorizontally)
+                                        ) {
+                                            Text("Cancel")
+                                        }
+                                    }
+                                }
                             }
                         }
-                    )
+                        if (state.saveInProgress) {
+                            SimpleProgressOverlay(
+                                message = if (state.isEditMode) "Updating enrollment..." else "Creating enrollment...",
+                                modifier = Modifier.fillMaxSize()
+                            ) {
+                                formContent()
+                            }
+                        } else {
+                            formContent()
+                        }
+                    }
                 }
-                else -> {
-                    EnrollmentFormContent(
-                        state = state,
-                        onEnrollmentDateChanged = viewModel::updateEnrollmentDate,
-                        onIncidentDateChanged = viewModel::updateIncidentDate,
-                        onAttributeValueChanged = viewModel::updateAttributeValue,
-                        onOrganisationUnitChanged = viewModel::updateOrganisationUnit
-                    )
-                }
-            }
 
-            // Enhanced sync overlay (reuse DataEntry pattern)
-            DetailedSyncOverlay(
-                progress = state.detailedSyncProgress,
-                onNavigateBack = { navController.popBackStack() },
-                onRetry = { viewModel.syncEnrollment() },
-                onCancel = { viewModel.clearMessages() }
-            ) {
-                // Background content during sync
-            }
-
-            // Save progress overlay
-            if (state.saveInProgress) {
-                OverlayLoader(
-                    message = if (state.isEditMode) "Updating enrollment..." else "Creating enrollment..."
-                ) {
-                    // Background content during save
-                }
+                SnackbarHost(
+                    hostState = snackbarHostState,
+                    modifier = Modifier
+                        .align(Alignment.BottomCenter)
+                        .padding(16.dp)
+                )
             }
         }
     }
@@ -217,46 +375,34 @@ fun TrackerEnrollmentScreen(
 }
 
 @Composable
+private fun TrackerEnrollmentFormSkeleton(modifier: Modifier = Modifier) {
+    Column(
+        modifier = modifier
+            .padding(16.dp),
+        verticalArrangement = Arrangement.spacedBy(16.dp)
+    ) {
+        repeat(3) {
+            ShimmerFormSection()
+        }
+    }
+}
+
+@Composable
 private fun EnrollmentFormContent(
     state: TrackerEnrollmentState,
     onEnrollmentDateChanged: (Date) -> Unit,
     onIncidentDateChanged: (Date?) -> Unit,
     onAttributeValueChanged: (String, String) -> Unit,
-    onOrganisationUnitChanged: (String) -> Unit
+    onOrganisationUnitChanged: (String) -> Unit,
+    listState: androidx.compose.foundation.lazy.LazyListState,
+    modifier: Modifier = Modifier
 ) {
     LazyColumn(
-        modifier = Modifier.fillMaxSize(),
-        contentPadding = PaddingValues(16.dp),
+        state = listState,
+        modifier = modifier.fillMaxSize(),
+        contentPadding = PaddingValues(0.dp),
         verticalArrangement = Arrangement.spacedBy(16.dp)
     ) {
-        // Program Information Header
-        item {
-            Card(
-                modifier = Modifier.fillMaxWidth(),
-                colors = CardDefaults.cardColors(
-                    containerColor = MaterialTheme.colorScheme.primaryContainer
-                )
-            ) {
-                Column(
-                    modifier = Modifier.padding(16.dp)
-                ) {
-                    Text(
-                        text = state.programName,
-                        style = MaterialTheme.typography.headlineSmall,
-                        color = MaterialTheme.colorScheme.onPrimaryContainer,
-                        fontWeight = FontWeight.Bold
-                    )
-                    if (state.isEditMode) {
-                        Text(
-                            text = "Editing existing enrollment",
-                            style = MaterialTheme.typography.bodyMedium,
-                            color = MaterialTheme.colorScheme.onPrimaryContainer.copy(alpha = 0.7f)
-                        )
-                    }
-                }
-            }
-        }
-
         // Enrollment Information Section
         item {
             Card(
@@ -359,11 +505,6 @@ private fun EnrollmentFormContent(
                 )
             }
         }
-
-        // Bottom spacing for FAB
-        item {
-            Spacer(modifier = Modifier.height(80.dp))
-        }
     }
 }
 
@@ -394,7 +535,7 @@ private fun OrganisationUnitSelector(
             },
             modifier = Modifier
                 .fillMaxWidth()
-                .menuAnchor(),
+                .menuAnchor(MenuAnchorType.PrimaryNotEditable, enabled = enabled),
             isError = selectedOrgUnitId.isNullOrBlank()
         )
 
@@ -468,7 +609,18 @@ private fun TrackerAttributeField(
     onValueChanged: (String) -> Unit,
     hasError: Boolean = false
 ) {
-    var textFieldValue by remember(value) { mutableStateOf(TextFieldValue(value)) }
+    // Fix cursor jumping: Use internal state for TextFieldValue, sync only when external value changes
+    var textFieldValue by remember { mutableStateOf(TextFieldValue(value)) }
+
+    // Detect when external value changes (e.g., from ViewModel) and update internal state
+    LaunchedEffect(value) {
+        if (textFieldValue.text != value) {
+            textFieldValue = TextFieldValue(
+                text = value,
+                selection = TextRange(value.length) // Place cursor at end
+            )
+        }
+    }
 
     Card(
         modifier = Modifier.fillMaxWidth()

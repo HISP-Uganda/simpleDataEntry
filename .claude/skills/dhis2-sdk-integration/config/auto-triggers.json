@@ -1,0 +1,36 @@
+{
+  "activation_triggers": {
+    "file_patterns": [
+      "**/*Repository*.kt",
+      "**/*ViewModel*.kt",
+      "**/data/repositoryImpl/**/*.kt",
+      "**/presentation/**/*ViewModel.kt"
+    ],
+    "import_statements": [
+      "import org.hisp.dhis.android.core"
+    ],
+    "code_patterns": [
+      "blockingGet()",
+      "blockingCount()",
+      "blockingDownload()",
+      "blockingUpload()",
+      "blockingIsEmpty()"
+    ],
+    "coroutine_scopes": [
+      "viewModelScope.launch",
+      "lifecycleScope.launch",
+      "GlobalScope.launch"
+    ]
+  },
+  "scan_settings": {
+    "auto_scan_on_save": true,
+    "auto_scan_on_build_error": true,
+    "scan_entire_project_on_init": false,
+    "max_files_per_scan": 10
+  },
+  "notification_settings": {
+    "show_inline_hints": true,
+    "show_notification_badge": true,
+    "auto_fix_confidence_threshold": 0.90
+  }
+}

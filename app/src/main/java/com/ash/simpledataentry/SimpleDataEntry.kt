@@ -29,15 +29,7 @@ class SimpleDataEntry : Application(), Configuration.Provider {
             .build()
 
     private fun initializeApp() {
-
-        CoroutineScope(Dispatchers.IO).launch {
-            try {
-                systemRepository.initializeD2(this@SimpleDataEntry)
-                Log.d("Application", "D2 initialization completed")
-            } catch (e: Exception) {
-                Log.e("Application", "D2 initialization failed", e)
-            }
-        }
-
+        // D2 initialization removed - now handled by MainActivity.onCreate()
+        // This eliminates race condition with multiple concurrent D2 inits
     }
 }

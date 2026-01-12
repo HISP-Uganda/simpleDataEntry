@@ -31,7 +31,7 @@ interface DataEntryRepository {
         value: String
     ): DataValueValidationResult
 
-    suspend fun getAvailablePeriods(datasetId: String): List<Period>
+    suspend fun getAvailablePeriods(datasetId: String, limit: Int = 5, showAll: Boolean = false): List<Period>
     suspend fun getUserOrgUnit(datasetId: String): OrganisationUnit
     suspend fun getUserOrgUnits(datasetId: String): List<OrganisationUnit>
     suspend fun getDefaultAttributeOptionCombo(): String
@@ -51,5 +51,12 @@ interface DataEntryRepository {
     )
 
     suspend fun syncCurrentEntryForm()
+
+    // Option set support for data entry
+    suspend fun getOptionSetForDataElement(dataElementId: String): com.ash.simpledataentry.domain.model.OptionSet?
+    suspend fun getAllOptionSetsForDataset(datasetId: String): Map<String, com.ash.simpledataentry.domain.model.OptionSet>
+
+    // Validation rules for intelligent grouping
+    suspend fun getValidationRulesForDataset(datasetId: String): List<org.hisp.dhis.android.core.validation.ValidationRule>
 }
 

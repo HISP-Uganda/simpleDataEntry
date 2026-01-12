@@ -1,6 +1,6 @@
 package com.ash.simpledataentry.data.repositoryImpl
 
-import com.ash.simpledataentry.data.local.AppDatabase
+import com.ash.simpledataentry.data.DatabaseProvider
 import com.ash.simpledataentry.data.local.SavedAccountEntity
 import com.ash.simpledataentry.data.security.AccountEncryption
 import com.ash.simpledataentry.domain.model.SavedAccount
@@ -14,15 +14,17 @@ import javax.inject.Singleton
 
 @Singleton
 class SavedAccountRepository @Inject constructor(
-    private val database: AppDatabase,
+    private val databaseProvider: DatabaseProvider,
     private val accountEncryption: AccountEncryption
 ) {
-    
+
     companion object {
         const val MAX_SAVED_ACCOUNTS = 5
     }
-    
-    private val savedAccountDao = database.savedAccountDao()
+
+    // Use SHARED database for saved accounts - they should be accessible across all accounts
+    // This fixes the bug where only the current account's saved accounts were visible
+    private val savedAccountDao get() = databaseProvider.getSharedDatabase().savedAccountDao()
     
     suspend fun getAllSavedAccounts(): List<SavedAccount> = withContext(Dispatchers.IO) {
         savedAccountDao.getAllSavedAccounts().map { it.toDomainModel() }

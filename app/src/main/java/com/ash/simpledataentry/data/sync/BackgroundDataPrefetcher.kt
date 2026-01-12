@@ -30,19 +30,19 @@ class BackgroundDataPrefetcher @Inject constructor(
         prefetchJob = CoroutineScope(Dispatchers.IO + SupervisorJob()).launch {
             try {
                 Log.d("BackgroundDataPrefetcher", "Starting background data prefetching...")
-                
+
                 // 1. Pre-warm metadata caches for all available datasets
-                val datasets = datasetDao.getAll()
-                val datasetIds = datasets.map { it.id }
-                
-                Log.d("BackgroundDataPrefetcher", "Pre-warming caches for ${datasetIds.size} datasets")
-                metadataCacheService.preWarmCaches(datasetIds)
-                
-                // 2. Pre-fetch recent data values for commonly used datasets (optional)
-                prefetchRecentDataValues(datasetIds.take(5)) // Limit to top 5 datasets to avoid excessive API calls
-                
-                Log.d("BackgroundDataPrefetcher", "Background prefetching completed successfully")
-                
+                datasetDao.getAll().collect { datasets ->
+                    val datasetIds = datasets.map { it.id }
+
+                    Log.d("BackgroundDataPrefetcher", "Pre-warming caches for ${datasetIds.size} datasets")
+                    metadataCacheService.preWarmCaches(datasetIds)
+
+                    // 2. Pre-fetch recent data values for commonly used datasets (optional)
+                    prefetchRecentDataValues(datasetIds.take(5)) // Limit to top 5 datasets to avoid excessive API calls
+
+                    Log.d("BackgroundDataPrefetcher", "Background prefetching completed successfully")
+                }
             } catch (e: Exception) {
                 Log.w("BackgroundDataPrefetcher", "Background prefetching failed", e)
             }

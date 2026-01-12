@@ -3,6 +3,7 @@ package com.ash.simpledataentry.di
 import android.content.Context
 import androidx.room.Room
 import com.ash.simpledataentry.data.SessionManager
+import com.ash.simpledataentry.data.DatabaseProvider
 import com.ash.simpledataentry.data.repositoryImpl.AuthRepositoryImpl
 import com.ash.simpledataentry.data.repositoryImpl.DataEntryRepositoryImpl
 import com.ash.simpledataentry.data.repositoryImpl.DatasetInstancesRepositoryImpl
@@ -55,6 +56,7 @@ import com.ash.simpledataentry.data.cache.MetadataCacheService
 import com.ash.simpledataentry.data.sync.BackgroundDataPrefetcher
 import com.ash.simpledataentry.data.sync.NetworkStateManager
 import com.ash.simpledataentry.data.sync.SyncQueueManager
+import com.ash.simpledataentry.data.sync.SyncStatusController
 import com.ash.simpledataentry.data.sync.BackgroundSyncManager
 
 @Module
@@ -98,19 +100,94 @@ object AppModule {
         }
     }
 
+    val MIGRATION_6_7 = object : Migration(6, 7) {
+        override fun migrate(database: SupportSQLiteDatabase) {
+            // Create tracker_programs table
+            database.execSQL("""
+                CREATE TABLE IF NOT EXISTS tracker_programs (
+                    id TEXT NOT NULL PRIMARY KEY,
+                    name TEXT NOT NULL,
+                    description TEXT,
+                    trackedEntityType TEXT,
+                    categoryCombo TEXT,
+                    styleIcon TEXT,
+                    styleColor TEXT,
+                    enrollmentDateLabel TEXT,
+                    incidentDateLabel TEXT,
+                    displayIncidentDate INTEGER NOT NULL DEFAULT 0,
+                    onlyEnrollOnce INTEGER NOT NULL DEFAULT 0,
+                    selectEnrollmentDatesInFuture INTEGER NOT NULL DEFAULT 0,
+                    selectIncidentDatesInFuture INTEGER NOT NULL DEFAULT 0,
+                    featureType TEXT NOT NULL DEFAULT 'NONE',
+                    minAttributesRequiredToSearch INTEGER NOT NULL DEFAULT 1,
+                    maxTeiCountToReturn INTEGER NOT NULL DEFAULT 50
+                )
+            """)
 
-    @Provides
-    @Singleton
-    fun provideSessionManager(): SessionManager {
-        return SessionManager()
+            // Create event_programs table
+            database.execSQL("""
+                CREATE TABLE IF NOT EXISTS event_programs (
+                    id TEXT NOT NULL PRIMARY KEY,
+                    name TEXT NOT NULL,
+                    description TEXT,
+                    categoryCombo TEXT,
+                    styleIcon TEXT,
+                    styleColor TEXT,
+                    featureType TEXT NOT NULL DEFAULT 'NONE'
+                )
+            """)
+        }
     }
 
+    val MIGRATION_7_8 = object : Migration(7, 8) {
+        override fun migrate(database: SupportSQLiteDatabase) {
+            // Create tracker_enrollments table for caching enrollment instances
+            database.execSQL("""
+                CREATE TABLE IF NOT EXISTS tracker_enrollments (
+                    id TEXT NOT NULL PRIMARY KEY,
+                    programId TEXT NOT NULL,
+                    trackedEntityInstanceId TEXT NOT NULL,
+                    organisationUnitId TEXT NOT NULL,
+                    organisationUnitName TEXT NOT NULL,
+                    enrollmentDate TEXT,
+                    incidentDate TEXT,
+                    status TEXT NOT NULL,
+                    followUp INTEGER NOT NULL DEFAULT 0,
+                    deleted INTEGER NOT NULL DEFAULT 0,
+                    lastUpdated TEXT
+                )
+            """)
+
+            // Create event_instances table for caching event instances
+            database.execSQL("""
+                CREATE TABLE IF NOT EXISTS event_instances (
+                    id TEXT NOT NULL PRIMARY KEY,
+                    programId TEXT NOT NULL,
+                    programStageId TEXT NOT NULL,
+                    organisationUnitId TEXT NOT NULL,
+                    organisationUnitName TEXT NOT NULL,
+                    eventDate TEXT,
+                    status TEXT NOT NULL,
+                    deleted INTEGER NOT NULL DEFAULT 0,
+                    lastUpdated TEXT,
+                    enrollmentId TEXT
+                )
+            """)
+        }
+    }
+
+    // Note: AccountManager, DatabaseManager, and SessionManager use @Inject constructors
+    // and @Singleton annotations, so Hilt provides them automatically.
+    // No manual @Provides methods needed.
+
     @Provides
     @Singleton
-    fun provideAuthRepository(sessionManager: SessionManager): AuthRepository {
-
-        return AuthRepositoryImpl(sessionManager)
-
+    fun provideAuthRepository(
+        sessionManager: SessionManager,
+        metadataCacheService: MetadataCacheService,
+        backgroundSyncManager: BackgroundSyncManager
+    ): AuthRepository {
+        return AuthRepositoryImpl(sessionManager, metadataCacheService, backgroundSyncManager)
     }
 
 
@@ -132,11 +209,11 @@ object AppModule {
     @Singleton
     fun provideDatasetsRepository(
         sessionManager: SessionManager,
-        datasetDao: DatasetDao,
+        databaseProvider: DatabaseProvider,
         @ApplicationContext context: Context,
         datasetInstancesRepository: DatasetInstancesRepository
     ): DatasetsRepository {
-        return DatasetsRepositoryImpl(sessionManager, datasetDao, context, datasetInstancesRepository)
+        return DatasetsRepositoryImpl(sessionManager, databaseProvider, context, datasetInstancesRepository)
     }
 
     /**
@@ -165,9 +242,9 @@ object AppModule {
     @Singleton
     fun provideDatasetInstancesRepository(
         sessionManager: SessionManager,
-        database: AppDatabase
+        databaseProvider: DatabaseProvider
     ): DatasetInstancesRepository {
-        return DatasetInstancesRepositoryImpl(sessionManager, database)
+        return DatasetInstancesRepositoryImpl(sessionManager, databaseProvider)
     }
 
 
@@ -194,19 +271,11 @@ object AppModule {
     @Singleton
     fun provideMetadataCacheService(
         sessionManager: SessionManager,
-        dataElementDao: DataElementDao,
-        categoryComboDao: CategoryComboDao,
-        categoryOptionComboDao: CategoryOptionComboDao,
-        organisationUnitDao: OrganisationUnitDao,
-        dataValueDao: DataValueDao
+        databaseProvider: DatabaseProvider
     ): MetadataCacheService {
         return MetadataCacheService(
             sessionManager,
-            dataElementDao,
-            categoryComboDao,
-            categoryOptionComboDao,
-            organisationUnitDao,
-            dataValueDao
+            databaseProvider
         )
     }
 
@@ -237,22 +306,25 @@ object AppModule {
     fun provideSyncQueueManager(
         networkStateManager: NetworkStateManager,
         sessionManager: SessionManager,
-        database: AppDatabase,
+        databaseProvider: DatabaseProvider,
         @ApplicationContext context: Context
     ): SyncQueueManager {
-        return SyncQueueManager(networkStateManager, sessionManager, database, context)
+        return SyncQueueManager(networkStateManager, sessionManager, databaseProvider, context)
+    }
+
+    @Provides
+    @Singleton
+    fun provideSyncStatusController(
+        syncQueueManager: SyncQueueManager
+    ): SyncStatusController {
+        return SyncStatusController(syncQueueManager)
     }
 
     @Provides
     @Singleton
     fun provideDataEntryRepository(
         sessionManager: SessionManager,
-        draftDao: DataValueDraftDao,
-        dataElementDao: DataElementDao,
-        categoryComboDao: CategoryComboDao,
-        categoryOptionComboDao: CategoryOptionComboDao,
-        organisationUnitDao: OrganisationUnitDao,
-        dataValueDao: DataValueDao,
+        databaseProvider: DatabaseProvider,
         metadataCacheService: MetadataCacheService,
         networkStateManager: NetworkStateManager,
         syncQueueManager: SyncQueueManager,
@@ -260,13 +332,8 @@ object AppModule {
     ): DataEntryRepository {
         return DataEntryRepositoryImpl(
             sessionManager,
-            draftDao,
-            dataElementDao,
-            categoryComboDao,
-            categoryOptionComboDao,
-            organisationUnitDao,
+            databaseProvider,
             context,
-            dataValueDao,
             metadataCacheService,
             networkStateManager,
             syncQueueManager
@@ -341,50 +408,72 @@ object AppModule {
         return BackgroundSyncManager(context)
     }
 
+    // Note: Global database removed - using DatabaseProvider for account-specific databases
+
     @Provides
-    @Singleton
-    fun provideAppDatabase(@ApplicationContext context: Context): AppDatabase {
-        return Room.databaseBuilder(
-            context.applicationContext,
-            AppDatabase::class.java,
-            "simple_data_entry_db"
-        )
-        .addMigrations(MIGRATION_1_2, MIGRATION_3_4, MIGRATION_4_5)
-        .build()
+    fun provideDataValueDraftDao(databaseProvider: DatabaseProvider): DataValueDraftDao {
+        return databaseProvider.getCurrentDatabase().dataValueDraftDao()
     }
 
     @Provides
-    fun provideDataValueDraftDao(db: AppDatabase): DataValueDraftDao = db.dataValueDraftDao()
-
-    @Provides
-    fun provideDatasetDao(db: AppDatabase): DatasetDao = db.datasetDao()
-
-    @Provides
-    fun provideDataElementDao(db: AppDatabase): DataElementDao = db.dataElementDao()
-
-    @Provides
-    fun provideCategoryComboDao(db: AppDatabase): CategoryComboDao = db.categoryComboDao()
-
-    @Provides
-    fun provideCategoryOptionComboDao(db: AppDatabase): CategoryOptionComboDao = db.categoryOptionComboDao()
-
-    @Provides
-    fun provideOrganisationUnitDao(db: AppDatabase): OrganisationUnitDao = db.organisationUnitDao()
-
-    @Provides
-    fun provideDataValueDao(db: AppDatabase): DataValueDao = db.dataValueDao()
-
-    @Provides
-    fun provideCachedUrlDao(db: AppDatabase): CachedUrlDao = db.cachedUrlDao()
-
-    @Provides
-    @Singleton
-    fun provideLoginUrlCacheRepository(db: AppDatabase): LoginUrlCacheRepository {
-        return LoginUrlCacheRepository(db)
+    fun provideDatasetDao(databaseProvider: DatabaseProvider): DatasetDao {
+        return databaseProvider.getCurrentDatabase().datasetDao()
     }
 
     @Provides
-    fun provideSavedAccountDao(db: AppDatabase): SavedAccountDao = db.savedAccountDao()
+    fun provideDataElementDao(databaseProvider: DatabaseProvider): DataElementDao {
+        return databaseProvider.getCurrentDatabase().dataElementDao()
+    }
+
+    @Provides
+    fun provideCategoryComboDao(databaseProvider: DatabaseProvider): CategoryComboDao {
+        return databaseProvider.getCurrentDatabase().categoryComboDao()
+    }
+
+    @Provides
+    fun provideCategoryOptionComboDao(databaseProvider: DatabaseProvider): CategoryOptionComboDao {
+        return databaseProvider.getCurrentDatabase().categoryOptionComboDao()
+    }
+
+    @Provides
+    fun provideOrganisationUnitDao(databaseProvider: DatabaseProvider): OrganisationUnitDao {
+        return databaseProvider.getCurrentDatabase().organisationUnitDao()
+    }
+
+    @Provides
+    fun provideDataValueDao(databaseProvider: DatabaseProvider): DataValueDao {
+        return databaseProvider.getCurrentDatabase().dataValueDao()
+    }
+
+    @Provides
+    fun provideCachedUrlDao(databaseProvider: DatabaseProvider): CachedUrlDao {
+        return databaseProvider.getCurrentDatabase().cachedUrlDao()
+    }
+
+    @Provides
+    fun provideTrackerProgramDao(databaseProvider: DatabaseProvider): com.ash.simpledataentry.data.local.TrackerProgramDao {
+        return databaseProvider.getCurrentDatabase().trackerProgramDao()
+    }
+
+    @Provides
+    fun provideEventProgramDao(databaseProvider: DatabaseProvider): com.ash.simpledataentry.data.local.EventProgramDao {
+        return databaseProvider.getCurrentDatabase().eventProgramDao()
+    }
+
+    @Provides
+    fun provideTrackerEnrollmentDao(databaseProvider: DatabaseProvider): com.ash.simpledataentry.data.local.TrackerEnrollmentDao {
+        return databaseProvider.getCurrentDatabase().trackerEnrollmentDao()
+    }
+
+    @Provides
+    fun provideEventInstanceDao(databaseProvider: DatabaseProvider): com.ash.simpledataentry.data.local.EventInstanceDao {
+        return databaseProvider.getCurrentDatabase().eventInstanceDao()
+    }
+
+    @Provides
+    fun provideSavedAccountDao(databaseProvider: DatabaseProvider): SavedAccountDao {
+        return databaseProvider.getCurrentDatabase().savedAccountDao()
+    }
 
     @Provides
     @Singleton
@@ -394,11 +483,17 @@ object AppModule {
 
     @Provides
     @Singleton
+    fun provideLoginUrlCacheRepository(databaseProvider: DatabaseProvider): LoginUrlCacheRepository {
+        return LoginUrlCacheRepository(databaseProvider)
+    }
+
+    @Provides
+    @Singleton
     fun provideSavedAccountRepository(
-        db: AppDatabase,
+        databaseProvider: DatabaseProvider,
         accountEncryption: AccountEncryption
     ): SavedAccountRepository {
-        return SavedAccountRepository(db, accountEncryption)
+        return SavedAccountRepository(databaseProvider, accountEncryption)
     }
 
     @Provides
