@@ -1,56 +1,88 @@
-name: Android Release
-
+# Build, sign and upload APK as a GitHub Release asset
 on:
   push:
-    tags:
-      - "v*"
+    branches:
+      - '**'
   workflow_dispatch:
 
 permissions:
   contents: write
 
+name: Build, Sign and Release APK
+
 jobs:
-  build-release:
+  build-and-release:
     runs-on: ubuntu-latest
+    env:
+      SIGNED_APK_DIR: signed-apks
+      RELEASE_TAG: apk-${{ github.sha }}
     steps:
-      - uses: actions/checkout@v4
-
-      - uses: actions/setup-java@v4
+      - name: Checkout code
+        uses: actions/checkout@v4
         with:
-          distribution: "temurin"
-          java-version: "21"
+          fetch-depth: 0
 
-      - uses: gradle/actions/setup-gradle@v4
+      - name: Set up JDK 11
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '11'
 
-      - name: Decode keystore
-        if: ${{ secrets.ANDROID_KEYSTORE_BASE64 != '' }}
+      - name: Cache Gradle
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.gradle/caches
+            ~/.gradle/wrapper
+          key: gradle-${{ runner.os }}-${{ hashFiles('**/*.gradle*', '**/gradle-wrapper.properties') }}
+          restore-keys: |
+            gradle-${{ runner.os }}-
+
+      - name: Decode keystore from secret
         run: |
-          echo "${{ secrets.ANDROID_KEYSTORE_BASE64 }}" | base64 --decode > "$RUNNER_TEMP/keystore.jks"
+          mkdir -p android/app
+          echo "${{ secrets.KEYSTORE_BASE64 }}" | base64 --decode > android/app/keystore.jks
+          ls -l android/app/keystore.jks
+        shell: bash
 
-      - name: Build release APK and AAB
+      - name: Build release APK (signed via injected signing props)
         env:
-          ANDROID_KEYSTORE_PATH: ${{ runner.temp }}/keystore.jks
-          ANDROID_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
-          ANDROID_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
-          ANDROID_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
-        run: ./gradlew assembleRelease bundleRelease
+          KEYSTORE_PASSWORD: ${{ secrets.KEYSTORE_PASSWORD }}
+          KEY_ALIAS: ${{ secrets.KEY_ALIAS }}
+          KEY_PASSWORD: ${{ secrets.KEY_PASSWORD }}
+        run: |
+          # Adjust path if your module is not "app" or if project root differs (React Native android/ vs native)
+          ./gradlew assembleRelease \
+            -Pandroid.injected.signing.store.file=android/app/keystore.jks \
+            -Pandroid.injected.signing.store.password="$KEYSTORE_PASSWORD" \
+            -Pandroid.injected.signing.key.alias="$KEY_ALIAS" \
+            -Pandroid.injected.signing.key.password="$KEY_PASSWORD"
+        shell: bash
 
-      - name: Upload APK artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: simple-data-entry-apk
-          path: app/build/outputs/apk/release/*.apk
+      - name: Gather release APK(s)
+        run: |
+          mkdir -p $SIGNED_APK_DIR
+          APK_PATH=$(find . -type f -path "*/app/build/outputs/apk/release/*release*.apk" | head -n 1)
+          if [ -z "$APK_PATH" ]; then
+            echo "ERROR: release APK not found"
+            exit 1
+          fi
+          BASENAME="app-release-${GITHUB_SHA::7}.apk"
+          cp "$APK_PATH" "$SIGNED_APK_DIR/$BASENAME"
+          echo "Signed APK copied to $SIGNED_APK_DIR/$BASENAME"
+        shell: bash
 
-      - name: Upload AAB artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: simple-data-entry-aab
-          path: app/build/outputs/bundle/release/*.aab
+      - name: Remove keystore file securely
+        run: |
+          shred -u android/app/keystore.jks || rm -f android/app/keystore.jks
+        shell: bash
 
-      - name: Create GitHub Release
-        if: startsWith(github.ref, 'refs/tags/')
-        uses: softprops/action-gh-release@v2
+      - name: Create GitHub Release and upload APK(s)
+        uses: ncipollo/release-action@v1
         with:
-          files: |
-            app/build/outputs/apk/release/*.apk
-            app/build/outputs/bundle/release/*.aab
+          tag: ${{ env.RELEASE_TAG }}
+          name: Signed APK - ${{ github.sha }}
+          body: |
+            Signed APK built for commit ${{ github.sha }} on branch ${{ github.ref_name }}.
+            This release was generated automatically by the CI workflow.
+          files: ${{ env.SIGNED_APK_DIR }}/*.apk
