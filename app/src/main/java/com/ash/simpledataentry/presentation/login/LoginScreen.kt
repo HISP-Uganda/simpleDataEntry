@@ -85,7 +85,6 @@ import com.ash.simpledataentry.R
 import com.ash.simpledataentry.presentation.core.AdaptiveLoadingOverlay
 import com.ash.simpledataentry.presentation.core.LoadingOperation
 import com.ash.simpledataentry.presentation.core.LoadingPhase
-import com.ash.simpledataentry.presentation.core.LoginFormSkeleton
 import com.ash.simpledataentry.presentation.core.NavigationProgress
 import com.ash.simpledataentry.presentation.core.StepLoadingScreen
 import com.ash.simpledataentry.presentation.core.StepLoadingType
@@ -209,15 +208,14 @@ fun LoginScreen(
         }
     }
 
-    // Show a placeholder only for the very first splash, otherwise overlay the form content
-    if (showInitialSplash) {
-        LoginFormSkeleton(modifier = Modifier.fillMaxSize())
-    } else if (stepLoadingInfo != null) {
+    // Show step-based loading from the initial splash onward
+    if (showInitialSplash || stepLoadingInfo != null) {
+        val currentStepInfo = stepLoadingInfo
         StepLoadingScreen(
-            type = stepLoadingInfo.type,
-            currentStep = stepLoadingInfo.stepIndex,
-            progressPercent = stepLoadingInfo.percent,
-            currentLabel = stepLoadingInfo.label,
+            type = StepLoadingType.LOGIN,
+            currentStep = currentStepInfo?.stepIndex ?: 0,
+            progressPercent = currentStepInfo?.percent ?: 0,
+            currentLabel = currentStepInfo?.label ?: "Initializing...",
             modifier = Modifier.fillMaxSize()
         )
     } else {

@@ -33,6 +33,7 @@ import com.ash.simpledataentry.presentation.core.UiError
 import com.ash.simpledataentry.presentation.core.UiState
 import com.ash.simpledataentry.util.toUiError
 import dagger.hilt.android.lifecycle.HiltViewModel
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -205,7 +206,7 @@ class DatasetInstancesViewModel @Inject constructor(
     fun initializeWithProgramId(id: String) {
         if (id.isEmpty()) return
 
-        viewModelScope.launch {
+        viewModelScope.launch(Dispatchers.IO) {
             try {
                 Log.d("DatasetInstancesVM", "Auto-detecting program type for ID: $id using DHIS2 SDK directly")
 
@@ -596,6 +597,36 @@ class DatasetInstancesViewModel @Inject constructor(
         }
     }
 
+    fun syncDatasetInstance(
+        instance: ProgramInstance.DatasetInstance,
+        onResult: (Boolean, String?) -> Unit
+    ) {
+        viewModelScope.launch {
+            try {
+                val result = syncQueueManager.startSyncForInstance(
+                    datasetId = instance.programId,
+                    period = instance.period.id,
+                    orgUnit = instance.organisationUnit.id,
+                    attributeOptionCombo = instance.attributeOptionCombo
+                )
+                result.fold(
+                    onSuccess = {
+                        syncQueueManager.clearErrorState()
+                        loadData()
+                        onResult(true, "Entry synced successfully.")
+                    },
+                    onFailure = { error ->
+                        syncQueueManager.clearErrorState()
+                        onResult(false, error.message ?: "Failed to sync entry.")
+                    }
+                )
+            } catch (e: Exception) {
+                syncQueueManager.clearErrorState()
+                onResult(false, e.message ?: "Failed to sync entry.")
+            }
+        }
+    }
+
     fun manualRefresh() {
         loadData()
     }
@@ -821,23 +852,29 @@ class DatasetInstancesViewModel @Inject constructor(
         val periodHelper = PeriodHelper()
         val instancesWithDrafts = instancesWithDraftsOverride ?: currentData().instancesWithDrafts
 
-        val periodIds = when (filter.periodType) {
-            PeriodFilterType.RELATIVE -> filter.relativePeriod?.let {
-                periodHelper.getPeriodIds(it)
-            } ?: emptyList()
+        val periodRange = when (filter.periodType) {
+            PeriodFilterType.RELATIVE -> filter.relativePeriod?.let { periodHelper.getDateRange(it) }
             PeriodFilterType.CUSTOM_RANGE -> {
                 if (filter.customFromDate != null && filter.customToDate != null) {
-                    periodHelper.getPeriodIds(filter.customFromDate, filter.customToDate)
-                } else emptyList()
+                    Pair(filter.customFromDate, filter.customToDate)
+                } else null
             }
-            else -> emptyList()
+            else -> null
         }
 
         return instances.filter { instance ->
             // Period filtering only applies to dataset instances
             val periodMatches = when (instance) {
                 is ProgramInstance.DatasetInstance -> {
-                    if (filter.periodType == PeriodFilterType.ALL) true else instance.period.id in periodIds
+                    if (periodRange == null) {
+                        true
+                    } else {
+                        periodHelper.isPeriodIdWithinRange(
+                            instance.period.id,
+                            periodRange.first,
+                            periodRange.second
+                        )
+                    }
                 }
                 is ProgramInstance.TrackerEnrollment, is ProgramInstance.EventInstance -> true // No period filtering for tracker/events
             }

@@ -10,13 +10,22 @@ import com.ash.simpledataentry.domain.model.Event
 import com.ash.simpledataentry.domain.model.TrackedEntityAttributeValue
 import com.ash.simpledataentry.domain.repository.DatasetInstancesRepository
 import com.ash.simpledataentry.domain.model.ProgramType
+import com.ash.simpledataentry.presentation.core.UiState
+import com.ash.simpledataentry.presentation.core.LoadingOperation
+import com.ash.simpledataentry.presentation.core.emitLoading
+import com.ash.simpledataentry.presentation.core.emitSuccess
+import com.ash.simpledataentry.presentation.core.emitError
+import com.ash.simpledataentry.util.toUiError
 import dagger.hilt.android.lifecycle.HiltViewModel
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import org.hisp.dhis.android.core.D2
+import org.hisp.dhis.android.core.common.State
 import java.util.*
 import javax.inject.Inject
 
@@ -39,9 +48,7 @@ data class EventTableRow(
     val cells: Map<String, String>
 )
 
-data class TrackerDashboardUiState(
-    val isLoading: Boolean = false,
-    val error: String? = null,
+data class TrackerDashboardData(
     val successMessage: String? = null,
 
     // Enrollment Information
@@ -54,6 +61,7 @@ data class TrackerDashboardUiState(
     val incidentDate: Date? = null,
     val incidentDateLabel: String? = null,
     val enrollmentStatus: String = "",
+    val syncState: State? = null,
     val canAddEvents: Boolean = false,
 
     // Tracked Entity Attributes
@@ -62,6 +70,7 @@ data class TrackerDashboardUiState(
     // Events
     val events: List<Event> = emptyList(),
     val filteredEvents: List<Event> = emptyList(),
+    val eventsByStage: Map<String, List<Event>> = emptyMap(),
 
     // Program Stages (for event creation and filtering)
     val programStages: List<com.ash.simpledataentry.domain.model.ProgramStage> = emptyList(),
@@ -82,8 +91,12 @@ class TrackerDashboardViewModel @Inject constructor(
     private val networkStateManager: NetworkStateManager
 ) : ViewModel() {
 
-    private val _uiState = MutableStateFlow(TrackerDashboardUiState())
-    val uiState: StateFlow<TrackerDashboardUiState> = _uiState.asStateFlow()
+    private val _uiState = MutableStateFlow<UiState<TrackerDashboardData>>(
+        UiState.Loading(LoadingOperation.Initial)
+    )
+    val uiState: StateFlow<UiState<TrackerDashboardData>> = _uiState.asStateFlow()
+
+    private var lastSuccessfulData: TrackerDashboardData? = null
 
     private var d2: D2? = null
 
@@ -96,18 +109,23 @@ class TrackerDashboardViewModel @Inject constructor(
         // Observe sync progress (reuse DataEntry pattern)
         viewModelScope.launch {
             syncQueueManager.detailedProgress.collect { progress ->
-                _uiState.update { it.copy(
+                val current = lastSuccessfulData ?: return@collect
+                val updated = current.copy(
                     detailedSyncProgress = progress,
                     isSyncing = progress != null
-                ) }
+                )
+                lastSuccessfulData = updated
+                if (_uiState.value is UiState.Success) {
+                    _uiState.emitSuccess(updated)
+                }
             }
         }
     }
 
     fun loadEnrollmentDashboard(enrollmentId: String) {
-        viewModelScope.launch {
+        viewModelScope.launch(Dispatchers.IO) {
             try {
-                _uiState.update { it.copy(isLoading = true, error = null, successMessage = null) }
+                _uiState.emitLoading(LoadingOperation.Initial)
 
                 val d2Instance = d2 ?: throw Exception("Not authenticated")
 
@@ -146,8 +164,8 @@ class TrackerDashboardViewModel @Inject constructor(
                 val eventCountsByStage = events.groupBy { it.programStageId }
                     .mapValues { it.value.size }
 
-                _uiState.value = _uiState.value.copy(
-                    isLoading = false,
+                val eventsByStage = events.groupBy { it.programStageId }
+                val data = TrackerDashboardData(
                     enrollmentId = enrollmentId,
                     programId = enrollment.program()!!,
                     programName = program.displayName() ?: program.name() ?: "",
@@ -157,20 +175,21 @@ class TrackerDashboardViewModel @Inject constructor(
                     incidentDate = enrollment.incidentDate(),
                     incidentDateLabel = program.incidentDateLabel(),
                     enrollmentStatus = enrollment.status()?.name ?: "UNKNOWN",
+                    syncState = enrollment.aggregatedSyncState(),
                     canAddEvents = enrollment.status()?.name == "ACTIVE",
                     trackedEntityAttributes = trackedEntityAttributes,
                     events = events,
                     filteredEvents = events,  // Initially show all events
+                    eventsByStage = eventsByStage,
                     programStages = programStages,
                     selectedStageId = null,  // Initially "All Stages"
                     eventCountsByStage = eventCountsByStage
                 )
+                lastSuccessfulData = data
+                _uiState.emitSuccess(data)
 
             } catch (e: Exception) {
-                _uiState.value = _uiState.value.copy(
-                    isLoading = false,
-                    error = "Failed to load enrollment dashboard: ${e.message}"
-                )
+                _uiState.emitError(e.toUiError(), lastSuccessfulData)
             }
         }
     }
@@ -260,11 +279,17 @@ class TrackerDashboardViewModel @Inject constructor(
     }
 
     fun showStageSelectionDialog() {
-        _uiState.update { it.copy(showStageSelectionDialog = true) }
+        val current = lastSuccessfulData ?: return
+        val updated = current.copy(showStageSelectionDialog = true)
+        lastSuccessfulData = updated
+        _uiState.emitSuccess(updated)
     }
 
     fun hideStageSelectionDialog() {
-        _uiState.update { it.copy(showStageSelectionDialog = false) }
+        val current = lastSuccessfulData ?: return
+        val updated = current.copy(showStageSelectionDialog = false)
+        lastSuccessfulData = updated
+        _uiState.emitSuccess(updated)
     }
 
     /**
@@ -272,7 +297,7 @@ class TrackerDashboardViewModel @Inject constructor(
      * @param stageId The program stage ID to filter by, or null for "All Stages"
      */
     fun filterEventsByStage(stageId: String?) {
-        val currentState = _uiState.value
+        val currentState = lastSuccessfulData ?: return
         val filteredEvents = if (stageId == null) {
             // Show all events
             currentState.events
@@ -281,98 +306,102 @@ class TrackerDashboardViewModel @Inject constructor(
             currentState.events.filter { it.programStageId == stageId }
         }
 
-        _uiState.update { it.copy(
+        val updated = currentState.copy(
             selectedStageId = stageId,
             filteredEvents = filteredEvents
-        ) }
+        )
+        lastSuccessfulData = updated
+        _uiState.emitSuccess(updated)
     }
 
     /**
      * Build table columns and rows for event display
      * Reuses EventsTableViewModel pattern with caching for performance
      */
-    fun buildEventTableData(
+    suspend fun buildEventTableData(
         events: List<Event>,
         programStageId: String
     ): Pair<List<EventTableColumn>, List<EventTableRow>> {
-        val d2Instance = d2 ?: return Pair(emptyList(), emptyList())
+        return withContext(Dispatchers.IO) {
+            val d2Instance = d2 ?: return@withContext Pair(emptyList(), emptyList())
 
-        if (events.isEmpty()) {
-            return Pair(emptyList(), emptyList())
-        }
-
-        val dateFormatter = java.text.SimpleDateFormat("dd/MM/yyyy", java.util.Locale.getDefault())
-        val columns = mutableListOf<EventTableColumn>()
-
-        // Add fixed columns
-        columns.add(EventTableColumn("eventDate", "Date", sortable = false))
-        columns.add(EventTableColumn("status", "Status", sortable = false))
-
-        // Load data elements for this program stage and build columns
-        try {
-            val programStageDataElements = d2Instance.programModule()
-                .programStageDataElements()
-                .byProgramStage().eq(programStageId)
-                .blockingGet()
-
-            programStageDataElements.forEach { psde ->
-                val dataElementId = psde.dataElement()?.uid() ?: return@forEach
-
-                // Use cached data element name
-                val dataElementName = dataElementNameCache.getOrPut(dataElementId) {
-                    try {
-                        val de = d2Instance.dataElementModule().dataElements()
-                            .uid(dataElementId)
-                            .blockingGet()
-                        de?.displayName() ?: de?.name() ?: dataElementId
-                    } catch (e: Exception) {
-                        android.util.Log.w("TrackerDashboardVM", "Failed to load data element name: ${e.message}")
-                        dataElementId
-                    }
-                }
-
-                columns.add(
-                    EventTableColumn(
-                        dataElementId,
-                        dataElementName,
-                        sortable = false
-                    )
-                )
+            if (events.isEmpty()) {
+                return@withContext Pair(emptyList(), emptyList())
             }
-        } catch (e: Exception) {
-            android.util.Log.e("TrackerDashboardVM", "Failed to build columns: ${e.message}")
-        }
 
-        // Build table rows
-        val tableRows = events.map { event ->
-            val cells = mutableMapOf<String, String>()
+            val dateFormatter = java.text.SimpleDateFormat("dd/MM/yyyy", java.util.Locale.getDefault())
+            val columns = mutableListOf<EventTableColumn>()
 
-            // Fill fixed column values
-            cells["eventDate"] = event.eventDate?.let { dateFormatter.format(it) } ?: "No date"
-            cells["status"] = event.status
+            // Add fixed columns
+            columns.add(EventTableColumn("eventDate", "Date", sortable = false))
+            columns.add(EventTableColumn("status", "Status", sortable = false))
 
-            // Load data values for this event
+            // Load data elements for this program stage and build columns
             try {
-                val dataValues = d2Instance.trackedEntityModule()
-                    .trackedEntityDataValues()
-                    .byEvent().eq(event.id)
+                val programStageDataElements = d2Instance.programModule()
+                    .programStageDataElements()
+                    .byProgramStage().eq(programStageId)
                     .blockingGet()
 
-                dataValues.forEach { dataValue ->
-                    cells[dataValue.dataElement()!!] = dataValue.value() ?: ""
+                programStageDataElements.forEach { psde ->
+                    val dataElementId = psde.dataElement()?.uid() ?: return@forEach
+
+                    // Use cached data element name
+                    val dataElementName = dataElementNameCache.getOrPut(dataElementId) {
+                        try {
+                            val de = d2Instance.dataElementModule().dataElements()
+                                .uid(dataElementId)
+                                .blockingGet()
+                            de?.displayName() ?: de?.name() ?: dataElementId
+                        } catch (e: Exception) {
+                            android.util.Log.w("TrackerDashboardVM", "Failed to load data element name: ${e.message}")
+                            dataElementId
+                        }
+                    }
+
+                    columns.add(
+                        EventTableColumn(
+                            dataElementId,
+                            dataElementName,
+                            sortable = false
+                        )
+                    )
                 }
             } catch (e: Exception) {
-                android.util.Log.w("TrackerDashboardVM", "Failed to load data values for event: ${e.message}")
+                android.util.Log.e("TrackerDashboardVM", "Failed to build columns: ${e.message}")
             }
 
-            EventTableRow(
-                id = event.id,
-                programStageId = event.programStageId,
-                enrollmentId = event.enrollmentId,
-                cells = cells
-            )
-        }
+            // Build table rows
+            val tableRows = events.map { event ->
+                val cells = mutableMapOf<String, String>()
 
-        return Pair(columns, tableRows)
+                // Fill fixed column values
+                cells["eventDate"] = event.eventDate?.let { dateFormatter.format(it) } ?: "No date"
+                cells["status"] = event.status
+
+                // Load data values for this event
+                try {
+                    val dataValues = d2Instance.trackedEntityModule()
+                        .trackedEntityDataValues()
+                        .byEvent().eq(event.id)
+                        .blockingGet()
+
+                    dataValues.forEach { dataValue ->
+                        cells[dataValue.dataElement()!!] = dataValue.value() ?: ""
+                    }
+                } catch (e: Exception) {
+                    android.util.Log.w("TrackerDashboardVM", "Failed to load data values for event: ${e.message}")
+                }
+
+                EventTableRow(
+                    id = event.id,
+                    programStageId = event.programStageId,
+                    enrollmentId = event.enrollmentId,
+                    cells = cells
+                )
+            }
+
+            Pair(columns, tableRows)
+        }
     }
 }

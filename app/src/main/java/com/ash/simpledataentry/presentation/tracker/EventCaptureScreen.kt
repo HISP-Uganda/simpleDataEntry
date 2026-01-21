@@ -4,7 +4,6 @@ package com.ash.simpledataentry.presentation.tracker
 
 import androidx.activity.compose.BackHandler
 import androidx.compose.animation.AnimatedVisibility
-import androidx.compose.foundation.gestures.animateScrollBy
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
@@ -13,6 +12,8 @@ import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.relocation.BringIntoViewRequester
 import androidx.compose.foundation.relocation.bringIntoViewRequester
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
@@ -20,7 +21,6 @@ import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.Event
 import androidx.compose.material.icons.filled.KeyboardArrowDown
-import androidx.compose.material.icons.filled.Save
 import androidx.compose.material.icons.filled.Sync
 import androidx.compose.material.icons.filled.Warning
 import androidx.compose.foundation.BorderStroke
@@ -40,7 +40,6 @@ import androidx.compose.ui.unit.dp
 import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.navigation.NavController
 import com.ash.simpledataentry.presentation.core.AdaptiveLoadingOverlay
-import com.ash.simpledataentry.presentation.core.ShimmerFormSection
 import com.ash.simpledataentry.presentation.core.DatePickerDialog
 import com.ash.simpledataentry.presentation.core.LoadingOperation
 import com.ash.simpledataentry.presentation.core.UiState
@@ -58,6 +57,7 @@ import com.ash.simpledataentry.domain.model.computeRenderType
 import com.ash.simpledataentry.domain.model.RenderType
 import com.ash.simpledataentry.presentation.core.Section
 import com.ash.simpledataentry.presentation.core.SectionNavigationBar
+import com.ash.simpledataentry.presentation.core.StepLoadingType
 import com.ash.simpledataentry.ui.theme.DHIS2Blue
 import com.ash.simpledataentry.ui.theme.DHIS2BlueDark
 import com.ash.simpledataentry.ui.theme.DHIS2BlueLight
@@ -80,17 +80,7 @@ fun EventCaptureScreen(
     val overlayState = rawOverlayState
     val adaptiveUiState = remember(overlayState) {
         when (overlayState) {
-            is UiState.Loading -> {
-                val operation = overlayState.operation
-                if (operation is LoadingOperation.Syncing ||
-                    operation is LoadingOperation.Saving ||
-                    operation is LoadingOperation.BulkOperation
-                ) {
-                    overlayState
-                } else {
-                    UiState.Success(Unit)
-                }
-            }
+            is UiState.Loading -> overlayState
             else -> UiState.Success(Unit)
         }
     }
@@ -98,11 +88,17 @@ fun EventCaptureScreen(
     val coroutineScope = rememberCoroutineScope()
     val context = LocalContext.current
     val listState = rememberLazyListState()
+    val syncInProgress = overlayState is UiState.Loading &&
+        (overlayState.operation is LoadingOperation.Syncing ||
+            (overlayState.operation is LoadingOperation.Navigation &&
+                overlayState.operation.progress.loadingType == StepLoadingType.SYNC))
 
     var showSaveDialog by remember { mutableStateOf(false) }
     var showSyncDialog by remember { mutableStateOf(false) }
     var showDatePicker by remember { mutableStateOf(false) }
     var showOrgUnitPicker by remember { mutableStateOf(false) }
+    var showPostSaveDialog by remember { mutableStateOf(false) }
+    var showValidationResultDialog by remember { mutableStateOf(false) }
     val pendingNavAction = remember { mutableStateOf<(() -> Unit)?>(null) }
 
     // Initialize event data
@@ -117,6 +113,12 @@ fun EventCaptureScreen(
     BackHandler(enabled = hasUnsavedChanges && !state.saveInProgress) {
         showSaveDialog = true
         pendingNavAction.value = { navController.popBackStack() }
+    }
+
+    LaunchedEffect(state.validationMessage, state.validationErrors) {
+        if (!state.validationMessage.isNullOrBlank()) {
+            showValidationResultDialog = true
+        }
     }
 
     // Navigation icon with unsaved changes protection
@@ -201,8 +203,7 @@ fun EventCaptureScreen(
             title = { Text("Select Organization Unit") },
             text = {
                 LazyColumn {
-                    items(state.availableOrganisationUnits.size) { index ->
-                        val orgUnit = state.availableOrganisationUnits[index]
+                    items(items = state.availableOrganisationUnits, key = { it.id }) { orgUnit ->
                         TextButton(
                             onClick = {
                                 viewModel.updateOrganisationUnit(orgUnit.id)
@@ -223,6 +224,17 @@ fun EventCaptureScreen(
     }
 
     // Show snackbar messages (reuse EditEntry pattern)
+    var lastHandledSaveResult by remember { mutableStateOf<Result<Unit>?>(null) }
+    LaunchedEffect(state.saveResult) {
+        val result = state.saveResult
+        if (result != null && result != lastHandledSaveResult) {
+            lastHandledSaveResult = result
+            if (result.isSuccess) {
+                showPostSaveDialog = true
+            }
+        }
+    }
+
     LaunchedEffect(state.successMessage) {
         state.successMessage?.let {
             snackbarHostState.showSnackbar(it)
@@ -235,6 +247,28 @@ fun EventCaptureScreen(
             snackbarHostState.showSnackbar(it)
             viewModel.clearMessages()
         }
+    }
+
+    if (showPostSaveDialog) {
+        AlertDialog(
+            onDismissRequest = { showPostSaveDialog = false },
+            title = { Text("Saved!") },
+            text = { Text("Do you want to check data quality?") },
+            confirmButton = {
+                TextButton(onClick = {
+                    showPostSaveDialog = false
+                    viewModel.validateEvent()
+                    showValidationResultDialog = true
+                }) {
+                    Text("Yes")
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { showPostSaveDialog = false }) {
+                    Text("No")
+                }
+            }
+        )
     }
 
     val sections = remember(state.dataValues) {
@@ -297,9 +331,9 @@ fun EventCaptureScreen(
                         // Sync button
                         IconButton(
                             onClick = { showSyncDialog = true },
-                            enabled = !state.isSyncing
+                            enabled = !syncInProgress
                         ) {
-                            if (state.isSyncing) {
+                            if (syncInProgress) {
                                 CircularProgressIndicator(
                                     modifier = Modifier.size(24.dp),
                                     strokeWidth = 2.dp,
@@ -318,6 +352,30 @@ fun EventCaptureScreen(
 
             }
         },
+        floatingActionButton = {
+            FloatingActionButton(
+                onClick = {
+                    if (!state.saveInProgress) {
+                        viewModel.saveEvent()
+                    }
+                },
+                containerColor = if (state.saveInProgress) {
+                    MaterialTheme.colorScheme.surfaceVariant
+                } else {
+                    MaterialTheme.colorScheme.primary
+                },
+                contentColor = if (state.saveInProgress) {
+                    MaterialTheme.colorScheme.onSurfaceVariant
+                } else {
+                    MaterialTheme.colorScheme.onPrimary
+                }
+            ) {
+                Icon(
+                    imageVector = Icons.Default.Check,
+                    contentDescription = "Save event"
+                )
+            }
+        },
         snackbarHost = { SnackbarHost(snackbarHostState) }
     ) { paddingValues ->
         AdaptiveLoadingOverlay(
@@ -326,7 +384,7 @@ fun EventCaptureScreen(
         ) {
             when {
                 state.isLoading -> {
-                    Column(
+                    Box(
                         modifier = Modifier
                             .fillMaxSize()
                             .padding(paddingValues)
@@ -335,16 +393,7 @@ fun EventCaptureScreen(
                                     colors = listOf(DHIS2Blue, DHIS2BlueDark)
                                 )
                             )
-                            .padding(vertical = 16.dp)
-                    ) {
-                        repeat(3) {
-                            ShimmerFormSection(
-                                modifier = Modifier
-                                    .fillMaxWidth()
-                                    .padding(horizontal = 16.dp, vertical = 8.dp)
-                            )
-                        }
-                    }
+                    )
                 }
                 state.error != null -> {
                     Column(
@@ -412,65 +461,6 @@ fun EventCaptureScreen(
                                         hasSubsections = false,
                                         modifier = Modifier.padding(bottom = 8.dp)
                                     )
-                                }
-
-                                Row(
-                                    modifier = Modifier
-                                        .fillMaxWidth()
-                                        .padding(horizontal = 8.dp, vertical = 4.dp),
-                                    horizontalArrangement = Arrangement.spacedBy(8.dp),
-                                    verticalAlignment = Alignment.CenterVertically
-                                ) {
-                                    OutlinedButton(
-                                        onClick = { viewModel.saveEvent() },
-                                        enabled = state.canSave && !state.saveInProgress,
-                                        modifier = Modifier.weight(1f)
-                                    ) {
-                                        Icon(
-                                            imageVector = Icons.Default.Save,
-                                            contentDescription = null,
-                                            modifier = Modifier.size(18.dp)
-                                        )
-                                        Spacer(modifier = Modifier.width(6.dp))
-                                        Text("Save")
-                                    }
-
-                                    OutlinedButton(
-                                        onClick = {
-                                            coroutineScope.launch {
-                                                val message = if (state.validationErrors.isEmpty()) {
-                                                    "All required fields are filled."
-                                                } else {
-                                                    state.validationErrors.joinToString("\n")
-                                                }
-                                                snackbarHostState.showSnackbar(message)
-                                            }
-                                        },
-                                        enabled = !state.saveInProgress,
-                                        modifier = Modifier.weight(1f)
-                                    ) {
-                                        Icon(
-                                            imageVector = Icons.Default.Warning,
-                                            contentDescription = null,
-                                            modifier = Modifier.size(18.dp)
-                                        )
-                                        Spacer(modifier = Modifier.width(6.dp))
-                                        Text("Validate")
-                                    }
-
-                                    Button(
-                                        onClick = { viewModel.completeEvent() },
-                                        enabled = state.isEditMode && !state.saveInProgress,
-                                        modifier = Modifier.weight(1f)
-                                    ) {
-                                        Icon(
-                                            imageVector = Icons.Default.Check,
-                                            contentDescription = null,
-                                            modifier = Modifier.size(18.dp)
-                                        )
-                                        Spacer(modifier = Modifier.width(6.dp))
-                                        Text("Complete")
-                                    }
                                 }
 
                                 LazyColumn(
@@ -631,6 +621,58 @@ fun EventCaptureScreen(
             }
         }
     }
+
+    if (showValidationResultDialog && !state.validationMessage.isNullOrBlank()) {
+        EventValidationResultDialog(
+            message = state.validationMessage ?: "Please review the following issues:",
+            errors = state.validationErrors,
+            onComplete = {
+                showValidationResultDialog = false
+                viewModel.completeEvent()
+                viewModel.clearValidationMessage()
+            },
+            onReview = {
+                showValidationResultDialog = false
+                viewModel.clearValidationMessage()
+            }
+        )
+    }
+}
+
+@Composable
+private fun EventValidationResultDialog(
+    message: String,
+    errors: List<String>,
+    onComplete: () -> Unit,
+    onReview: () -> Unit
+) {
+    AlertDialog(
+        onDismissRequest = onReview,
+        title = { Text("Data quality") },
+        text = {
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .verticalScroll(rememberScrollState()),
+                verticalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                Text(text = message, style = MaterialTheme.typography.bodyMedium)
+                errors.forEach { error ->
+                    Text(text = "- $error", style = MaterialTheme.typography.bodySmall)
+                }
+            }
+        },
+        confirmButton = {
+            TextButton(onClick = onComplete) {
+                Text(if (errors.isEmpty()) "Complete" else "Complete anyway")
+            }
+        },
+        dismissButton = {
+            TextButton(onClick = onReview) {
+                Text("Review")
+            }
+        }
+    )
 }
 
 /**

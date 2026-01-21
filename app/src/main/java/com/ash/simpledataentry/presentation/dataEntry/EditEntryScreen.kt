@@ -10,7 +10,7 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.KeyboardArrowDown
-import androidx.compose.material.icons.filled.Save
+import androidx.compose.material.icons.filled.Check
 import androidx.compose.material3.*
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.runtime.*
@@ -40,7 +40,6 @@ import org.hisp.dhis.mobile.ui.designsystem.component.SupportingTextState
 import com.ash.simpledataentry.domain.model.*
 import com.ash.simpledataentry.presentation.core.AdaptiveLoadingOverlay
 import com.ash.simpledataentry.presentation.core.BaseScreen
-import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.lazy.rememberLazyListState
@@ -50,7 +49,6 @@ import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.CheckCircle
 import androidx.compose.material.icons.filled.Warning
 import androidx.compose.ui.platform.LocalContext
-import com.ash.simpledataentry.presentation.core.CompletionProgressOverlay
 import com.ash.simpledataentry.presentation.core.CompletionAction
 import androidx.compose.foundation.relocation.BringIntoViewRequester
 import androidx.compose.foundation.relocation.bringIntoViewRequester
@@ -60,7 +58,6 @@ import com.ash.simpledataentry.presentation.core.SectionNavigationBar
 import com.ash.simpledataentry.presentation.core.Subsection
 import com.ash.simpledataentry.presentation.core.LoadingOperation
 import com.ash.simpledataentry.presentation.core.LoadingProgress
-import com.ash.simpledataentry.presentation.core.ShimmerFormSection
 import com.ash.simpledataentry.presentation.core.UiState
 
 data class Quadruple<A, B, C, D>(val first: A, val second: B, val third: C, val fourth: D)
@@ -70,6 +67,9 @@ data class Quadruple<A, B, C, D>(val first: A, val second: B, val third: C, val 
 fun SectionContent(
     sectionName: String,
     values: List<DataValue>,
+    valuesByCombo: Map<String, List<DataValue>>,
+    valuesByElement: Map<String, List<DataValue>>,
+    dataElementsForSection: List<Pair<String, String>>,
     categoryComboStructures: Map<String, List<Pair<String, List<Pair<String, String>>>>>,
     optionUidsToComboUidByCombo: Map<String, Map<Set<String>, String>>,
     onValueChange: (String, DataValue) -> Unit,
@@ -78,11 +78,12 @@ fun SectionContent(
     onToggle: (List<String>, String) -> Unit
 ) {
     // Get distinct data elements in order
-    val dataElements = values.map { it.dataElement to it.dataElementName }.distinct()
+    val dataElements = if (dataElementsForSection.isNotEmpty()) dataElementsForSection
+    else values.map { it.dataElement to it.dataElementName }.distinct()
 
     // Render each data element as an accordion (first level)
     dataElements.forEach { (dataElement, dataElementName) ->
-        val dataElementValues = values.filter { it.dataElement == dataElement }
+        val dataElementValues = valuesByElement[dataElement].orEmpty()
         val firstValue = dataElementValues.firstOrNull() ?: return@forEach
         val structure = categoryComboStructures[firstValue.categoryOptionCombo] ?: emptyList()
         val optionMap = optionUidsToComboUidByCombo[firstValue.categoryOptionCombo] ?: emptyMap()
@@ -110,6 +111,7 @@ fun SectionContent(
                 CategoryAccordionRecursive(
                     categories = structure,
                     values = dataElementValues,
+                    valuesByCombo = valuesByCombo,
                     onValueChange = onValueChange,
                     optionUidsToComboUid = optionMap,
                     viewModel = viewModel,
@@ -158,7 +160,8 @@ fun DataValueField(
         viewModel.initializeFieldState(dataValue)
     }
     val state by viewModel.state.collectAsState()
-    val fieldState = viewModel.fieldStates[key] ?: TextFieldValue(dataValue.value ?: "")
+    val fieldStates by viewModel.fieldStates.collectAsState()
+    val fieldState = fieldStates[key] ?: TextFieldValue(dataValue.value ?: "")
     val optionSet = state.optionSets[dataValue.dataElement]
     val renderType = state.renderTypes[dataValue.dataElement] ?: optionSet?.computeRenderType()
     val isHidden = state.hiddenFields.contains(dataValue.dataElement)
@@ -438,6 +441,7 @@ fun DataElementAccordion(
 @Composable
 fun CategoryAccordion(
     header: String,
+    hasData: Boolean,
     expanded: Boolean,
     onToggleExpand: () -> Unit,
     content: @Composable () -> Unit
@@ -479,6 +483,14 @@ fun CategoryAccordion(
                     overflow = TextOverflow.Ellipsis,
                     modifier = Modifier.weight(1f)
                 )
+                if (hasData) {
+                    Box(
+                        modifier = Modifier
+                            .size(8.dp)
+                            .background(MaterialTheme.colorScheme.primary, RoundedCornerShape(4.dp))
+                    )
+                    Spacer(modifier = Modifier.width(8.dp))
+                }
                 Icon(
                     imageVector = Icons.Default.KeyboardArrowDown,
                     contentDescription = "Expand/Collapse Category",
@@ -499,6 +511,11 @@ fun CategoryAccordion(
     }
 }
 
+private fun valuesForCombo(
+    valuesByCombo: Map<String, List<DataValue>>,
+    comboUid: String?
+): List<DataValue> = comboUid?.let { valuesByCombo[it].orEmpty() }.orEmpty()
+
 /**
  * Recursively renders nested accordions for N categories, except:
  * - If only one category with exactly two options (especially sex/gender), render side by side.
@@ -510,6 +527,7 @@ fun CategoryAccordion(
 fun CategoryAccordionRecursive(
     categories: List<Pair<String, List<Pair<String, String>>>>,
     values: List<DataValue>,
+    valuesByCombo: Map<String, List<DataValue>>,
     onValueChange: (String, DataValue) -> Unit,
     optionUidsToComboUid: Map<Set<String>, String>,
     viewModel: DataEntryViewModel,
@@ -548,6 +566,14 @@ fun CategoryAccordionRecursive(
     fun optionOnlyPath(path: List<String>): Set<String> {
         return path.filter { !it.startsWith("element_") }.toSet()
     }
+    fun hasDataForOption(optionUid: String): Boolean {
+        val combos = optionUidsToComboUid.filterKeys { it.contains(optionUid) }.values.toSet()
+        return if (combos.isNotEmpty()) {
+            values.any { !it.value.isNullOrBlank() && combos.contains(it.categoryOptionCombo) }
+        } else {
+            values.any { !it.value.isNullOrBlank() }
+        }
+    }
 
     if (restCategories.isEmpty()) {
         // LAST CATEGORY: If <= 3 options, render as a row; if > 3, render each as a nested accordion
@@ -562,7 +588,11 @@ fun CategoryAccordionRecursive(
                     val fullPath = parentPath + optionUid
                     // Use only option UIDs for combo lookup (exclude element_ prefix)
                     val comboUid = optionUidsToComboUid[optionOnlyPath(fullPath)]
-                    val filteredValues = values.filter { it.categoryOptionCombo == comboUid }
+                    // Filter from element-scoped `values` (not section-scoped `valuesByCombo`)
+                    val filteredValues = if (comboUid != null)
+                        values.filter { it.categoryOptionCombo == comboUid }
+                    else
+                        emptyList()
                     Column(modifier = Modifier.weight(1f)) {
                         Text(
                             text = optionName,
@@ -588,13 +618,18 @@ fun CategoryAccordionRecursive(
                 Box(modifier = Modifier.padding(bottom = 8.dp)) {
                     CategoryAccordion(
                         header = optionName,
+                        hasData = hasDataForOption(optionUid),
                         expanded = expanded,
                         onToggleExpand = { onToggle(parentPath, optionUid) }
                     ) {
                         val fullPath = parentPath + optionUid
                         // Use only option UIDs for combo lookup (exclude element_ prefix)
                         val comboUid = optionUidsToComboUid[optionOnlyPath(fullPath)]
-                        val filteredValues = values.filter { it.categoryOptionCombo == comboUid }
+                        // Filter from element-scoped `values` (not section-scoped `valuesByCombo`)
+                        val filteredValues = if (comboUid != null)
+                            values.filter { it.categoryOptionCombo == comboUid }
+                        else
+                            emptyList()
                         // Render DataValueField directly (element name already shown as first accordion)
                         filteredValues.forEach { dataValue ->
                             DataValueField(
@@ -615,16 +650,22 @@ fun CategoryAccordionRecursive(
         Box(modifier = Modifier.padding(bottom = 8.dp)) {
             CategoryAccordion(
                 header = optionName,
+                hasData = hasDataForOption(optionUid),
                 expanded = expanded,
                 onToggleExpand = { onToggle(parentPath, optionUid) }
             ) {
                 val newPath = parentPath + optionUid
                 // Use only option UIDs for combo lookup (exclude element_ prefix)
                 val comboUid = optionUidsToComboUid[optionOnlyPath(newPath)]
-                val filteredValues = if (comboUid != null) values.filter { it.categoryOptionCombo == comboUid } else values
+                // Filter from element-scoped `values` (not section-scoped `valuesByCombo`)
+                val filteredValues = if (comboUid != null)
+                    values.filter { it.categoryOptionCombo == comboUid }
+                else
+                    values  // Keep full element values for intermediate levels
                 CategoryAccordionRecursive(
                     categories = restCategories,
                     values = filteredValues,
+                    valuesByCombo = valuesByCombo,
                     onValueChange = onValueChange,
                     optionUidsToComboUid = optionUidsToComboUid,
                     viewModel = viewModel,
@@ -653,19 +694,19 @@ fun EditEntryScreen(
     val snackbarHostState = remember { SnackbarHostState() }
     val coroutineScope = rememberCoroutineScope()
     var isUIReady by remember { mutableStateOf(false) }
-    val showSaveDialog = remember { mutableStateOf(false) }
     val showSyncDialog = remember { mutableStateOf(false) }
-    var showCompleteDialog by remember { mutableStateOf(false) }
-    val pendingNavAction = remember { mutableStateOf<(() -> Unit)?>(null) }
+    var showPostSaveDialog by remember { mutableStateOf(false) }
 
     val context = LocalContext.current
     val focusManager = LocalFocusManager.current
     val listState = rememberLazyListState()
     val syncProgress = state.detailedSyncProgress
     val navigationProgress = state.navigationProgress
+    val completionProgress = state.completionProgress
     val overlayUiState: UiState<*> = remember(
         syncProgress,
         navigationProgress,
+        state.completionProgress,
         state.saveInProgress,
         state.isEditMode
     ) {
@@ -676,6 +717,10 @@ fun EditEntryScreen(
             navigationProgress != null -> UiState.Loading(
                 LoadingOperation.Navigation(navigationProgress),
                 LoadingProgress(message = navigationProgress.phaseDetail.ifBlank { navigationProgress.phaseTitle })
+            )
+            completionProgress != null -> UiState.Loading(
+                LoadingOperation.Completing(completionProgress),
+                LoadingProgress(message = completionProgress.phaseDetail.ifBlank { completionProgress.phaseTitle })
             )
             state.saveInProgress -> UiState.Loading(
                 LoadingOperation.Saving(),
@@ -691,65 +736,17 @@ fun EditEntryScreen(
         viewModel.updateCurrentValue(value, dataValue.dataElement, dataValue.categoryOptionCombo)
     }
 
-    // --- Proper unsaved changes detection using ViewModel's dirty tracking ---
-    val hasUnsavedChanges = viewModel.hasUnsavedChanges()
-
-    val shouldShowSaveDialog = hasUnsavedChanges && !state.saveInProgress
-
-    // Intercept back press: only show dialog if shouldShowSaveDialog
-    BackHandler(enabled = shouldShowSaveDialog) {
-        showSaveDialog.value = true
-        pendingNavAction.value = { navController.popBackStack() }
-    }
-
-    // Intercept navigation via top bar back button: only show dialog if shouldShowSaveDialog
     val baseScreenNavIcon: @Composable (() -> Unit) = {
         IconButton(onClick = {
-            if (state.saveInProgress) {
-                // Only block navigation while actively saving
-                return@IconButton
-            }
-            if (hasUnsavedChanges) {
-                showSaveDialog.value = true
-                pendingNavAction.value = { navController.popBackStack() }
-            } else {
+            if (!state.saveInProgress) {
                 navController.popBackStack()
             }
         }) {
             Icon(
-                        imageVector = Icons.AutoMirrored.Filled.ArrowBack,
+                imageVector = Icons.AutoMirrored.Filled.ArrowBack,
                 contentDescription = "Back"
             )
         }
-    }
-
-    // Save confirmation dialog: only show if shouldShowSaveDialog
-    if (showSaveDialog.value && shouldShowSaveDialog) {
-        AlertDialog(
-            onDismissRequest = { showSaveDialog.value = false },
-            title = { Text("Unsaved Changes") },
-            text = { Text("You have unsaved changes. Save before leaving?") },
-            confirmButton = {
-                TextButton(onClick = {
-                    showSaveDialog.value = false
-                    viewModel.saveAllDataValues(context)
-                    pendingNavAction.value?.invoke()
-                }) { Text("Save") }
-            },
-            dismissButton = {
-                Row {
-                    TextButton(onClick = {
-                        showSaveDialog.value = false
-                        // Discard: clear only current session changes, preserve existing drafts
-                        viewModel.clearCurrentSessionChanges()
-                        pendingNavAction.value?.invoke()
-                    }) { Text("Discard") }
-                    TextButton(onClick = {
-                        showSaveDialog.value = false
-                    }) { Text("Cancel") }
-                }
-            }
-        )
     }
 
     // Sync confirmation dialog - using the same one as datasetInstances
@@ -770,44 +767,24 @@ fun EditEntryScreen(
         )
     }
 
-    // Enhanced completion action dialog
-    if (showCompleteDialog) {
-        CompletionActionDialog(
-            isCurrentlyComplete = state.isCompleted,
-            onAction = { action ->
-                showCompleteDialog = false
-                when (action) {
-                    CompletionAction.VALIDATE_AND_COMPLETE -> {
-                        viewModel.startValidationForCompletion()
-                    }
-                    CompletionAction.COMPLETE_WITHOUT_VALIDATION -> {
-                        viewModel.completeDatasetAfterValidation { success, message ->
-                            coroutineScope.launch {
-                                if (success) {
-                                    snackbarHostState.showSnackbar(message ?: "Dataset marked as complete.")
-                                } else {
-                                    snackbarHostState.showSnackbar(message ?: "Failed to mark as complete.")
-                                }
-                            }
-                        }
-                    }
-                    CompletionAction.RERUN_VALIDATION -> {
-                        viewModel.startValidationForCompletion()
-                    }
-                    CompletionAction.MARK_INCOMPLETE -> {
-                        viewModel.markDatasetIncomplete { success, message ->
-                            coroutineScope.launch {
-                                if (success) {
-                                    snackbarHostState.showSnackbar(message ?: "Dataset marked as incomplete.")
-                                } else {
-                                    snackbarHostState.showSnackbar(message ?: "Failed to mark as incomplete.")
-                                }
-                            }
-                        }
-                    }
+    if (showPostSaveDialog) {
+        AlertDialog(
+            onDismissRequest = { showPostSaveDialog = false },
+            title = { Text("Saved!") },
+            text = { Text("Do you want to check data quality?") },
+            confirmButton = {
+                TextButton(onClick = {
+                    showPostSaveDialog = false
+                    viewModel.startValidationForCompletion()
+                }) {
+                    Text("Yes")
                 }
             },
-            onDismiss = { showCompleteDialog = false }
+            dismissButton = {
+                TextButton(onClick = { showPostSaveDialog = false }) {
+                    Text("No")
+                }
+            }
         )
     }
 
@@ -858,7 +835,7 @@ fun EditEntryScreen(
         }
     }
 
-    LaunchedEffect(state.currentSectionIndex, state.dataValues) {
+    LaunchedEffect(state.currentSectionIndex) {
         if (state.dataValues.isNotEmpty() && state.currentSectionIndex >= 0 && state.currentSectionIndex < state.totalSections) {
             coroutineScope.launch {
                 // Ensure the list is populated before trying to scroll
@@ -904,7 +881,7 @@ fun EditEntryScreen(
     LaunchedEffect(state.saveResult) {
         state.saveResult?.let {
             if (it.isSuccess) {
-                snackbarHostState.showSnackbar("All data saved successfully.")
+                showPostSaveDialog = true
             } else {
                 snackbarHostState.showSnackbar(it.exceptionOrNull()?.message ?: "Failed to save some fields.")
             }
@@ -945,7 +922,7 @@ fun EditEntryScreen(
     }
     BaseScreen(
         title = entryTitle,
-        subtitle = "Data entry form",
+        subtitle = null,
         navController = navController,
         navigationIcon = baseScreenNavIcon,
         // PHASE 4: Wire up progress indicator for form loading and sync operations
@@ -977,181 +954,127 @@ fun EditEntryScreen(
                     )
                 }
             }
+        },
+        floatingActionButton = {
+            FloatingActionButton(
+                onClick = {
+                    if (!state.saveInProgress) {
+                        viewModel.saveAllDataValues(context)
+                    }
+                },
+                containerColor = if (state.saveInProgress) {
+                    MaterialTheme.colorScheme.surfaceVariant
+                } else {
+                    MaterialTheme.colorScheme.primary
+                },
+                contentColor = if (state.saveInProgress) {
+                    MaterialTheme.colorScheme.onSurfaceVariant
+                } else {
+                    MaterialTheme.colorScheme.onPrimary
+                }
+            ) {
+                Icon(
+                    imageVector = Icons.Default.Check,
+                    contentDescription = "Save entry"
+                )
+            }
         }
     ) {
         AdaptiveLoadingOverlay(
             uiState = overlayUiState,
             modifier = Modifier.fillMaxSize()
         ) {
-            CompletionProgressOverlay(
-                progress = state.completionProgress,
-                onCancel = { viewModel.dismissSyncOverlay() },
-                modifier = Modifier.fillMaxSize()
-            ) {
-                if (state.isLoading || !isUIReady) {
-                    Column(
-                        modifier = Modifier
-                            .fillMaxSize()
-                            .padding(vertical = 16.dp)
-                    ) {
-                        repeat(3) {
-                            ShimmerFormSection(
-                                modifier = Modifier
-                                    .fillMaxWidth()
-                                    .padding(horizontal = 16.dp, vertical = 8.dp)
-                            )
-                        }
+            val sectionNames = remember(state.dataElementGroupedSections) {
+                state.dataElementGroupedSections.keys.toList()
+            }
+            val currentSectionName = sectionNames.getOrNull(state.currentSectionIndex) ?: "Section"
+            val subsectionGroups = remember(state.sectionGroupingStrategies, currentSectionName) {
+                state.sectionGroupingStrategies[currentSectionName]
+                    ?.filter { it.shouldRenderAsGroup() }
+                    ?.filter { it.groupTitle.isNotBlank() }
+                    ?.filter {
+                        it.groupType != GroupType.RADIO_GROUP &&
+                            it.groupType != GroupType.CHECKBOX_GROUP
                     }
-                } else {
-                    val sectionNames = remember(state.dataElementGroupedSections) {
-                        state.dataElementGroupedSections.keys.toList()
-                    }
-                    val currentSectionName = sectionNames.getOrNull(state.currentSectionIndex) ?: "Section"
-                    val subsectionGroups = remember(state.sectionGroupingStrategies, currentSectionName) {
-                        state.sectionGroupingStrategies[currentSectionName]
-                            ?.filter { it.shouldRenderAsGroup() }
-                            ?.filter { it.groupTitle.isNotBlank() }
-                            ?.filter {
-                                it.groupType != GroupType.RADIO_GROUP &&
-                                    it.groupType != GroupType.CHECKBOX_GROUP
-                            }
-                            ?.filter { !it.groupTitle.equals("related fields", ignoreCase = true) }
-                            ?.distinctBy { it.groupTitle }
-                            ?: emptyList()
-                    }
-                    val subsectionTitles = remember(subsectionGroups) {
-                        subsectionGroups.map { it.groupTitle }
-                    }
-                    var subsectionIndex by remember(currentSectionName, subsectionTitles) { mutableStateOf(0) }
-                    if (subsectionIndex !in subsectionTitles.indices) {
-                        subsectionIndex = 0
-                    }
-                    val focusSubsection: (Int) -> Unit = focusSubsection@{ index ->
-                        val group = subsectionGroups.getOrNull(index) ?: return@focusSubsection
-                        val targetElementId = group.members.firstOrNull()?.dataElement ?: return@focusSubsection
-                        val elementKey = "element_$targetElementId"
-                        expandedAccordions.value = mapOf(emptyList<String>() to elementKey)
-                    }
-                    LaunchedEffect(state.currentSectionIndex, state.dataElementGroupedSections) {
-                        val sectionName = sectionNames.getOrNull(state.currentSectionIndex) ?: return@LaunchedEffect
-                        val elementGroups = state.dataElementGroupedSections[sectionName] ?: return@LaunchedEffect
-                        val firstElementId = elementGroups.keys.firstOrNull() ?: return@LaunchedEffect
-                        val elementKey = "element_$firstElementId"
-                        if (expandedAccordions.value[emptyList()] != elementKey) {
-                            expandedAccordions.value = mapOf(emptyList<String>() to elementKey)
-                        }
-                    }
+                    ?.filter { !it.groupTitle.equals("related fields", ignoreCase = true) }
+                    ?.distinctBy { it.groupTitle }
+                    ?: emptyList()
+            }
+            val subsectionTitles = remember(subsectionGroups) {
+                subsectionGroups.map { it.groupTitle }
+            }
+            var subsectionIndex by remember(currentSectionName, subsectionTitles) { mutableStateOf(0) }
+            if (subsectionIndex !in subsectionTitles.indices) {
+                subsectionIndex = 0
+            }
+            val focusSubsection: (Int) -> Unit = focusSubsection@{ index ->
+                val group = subsectionGroups.getOrNull(index) ?: return@focusSubsection
+                val targetElementId = group.members.firstOrNull()?.dataElement ?: return@focusSubsection
+                val elementKey = "element_$targetElementId"
+                expandedAccordions.value = mapOf(emptyList<String>() to elementKey)
+            }
+            var initializedSectionIndex by remember(currentParams) { mutableStateOf<Int?>(null) }
+            LaunchedEffect(state.currentSectionIndex, currentParams, state.dataElementGroupedSections.isNotEmpty()) {
+                if (state.dataElementGroupedSections.isEmpty()) return@LaunchedEffect
+                val sectionName = sectionNames.getOrNull(state.currentSectionIndex) ?: return@LaunchedEffect
+                val elementGroups = state.dataElementGroupedSections[sectionName] ?: return@LaunchedEffect
+                val firstElementId = elementGroups.keys.firstOrNull() ?: return@LaunchedEffect
+                val elementKey = "element_$firstElementId"
+                val shouldReset = initializedSectionIndex != state.currentSectionIndex ||
+                    expandedAccordions.value[emptyList()] == null
+                if (shouldReset && expandedAccordions.value[emptyList()] != elementKey) {
+                    expandedAccordions.value = mapOf(emptyList<String>() to elementKey)
+                }
+                initializedSectionIndex = state.currentSectionIndex
+            }
 
-                    Box(modifier = Modifier.fillMaxSize()) {
-                        Column(
-                            modifier = Modifier
-                                .fillMaxSize()
-                                .background(MaterialTheme.colorScheme.background)
-                                .padding(bottom = 16.dp)
-                        ) {
-                            Surface(
-                                color = MaterialTheme.colorScheme.primary
+            Box(modifier = Modifier.fillMaxSize()) {
+                Column(
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .background(MaterialTheme.colorScheme.background)
+                ) {
+                    SectionNavigationBar(
+                        currentSection = Section(currentSectionName),
+                        currentSubsection = subsectionTitles.getOrNull(subsectionIndex)
+                            ?.let { Subsection(it) },
+                        sectionIndex = state.currentSectionIndex.coerceAtLeast(0),
+                        totalSections = state.totalSections.coerceAtLeast(1),
+                        onPreviousSection = { viewModel.goToPreviousSection() },
+                        onNextSection = { viewModel.goToNextSection() },
+                        onPreviousSubsection = {
+                            val nextIndex = (subsectionIndex - 1).coerceAtLeast(0)
+                            subsectionIndex = nextIndex
+                            focusSubsection(nextIndex)
+                        },
+                        onNextSubsection = {
+                            val nextIndex = (subsectionIndex + 1).coerceAtMost(subsectionTitles.lastIndex)
+                            subsectionIndex = nextIndex
+                            focusSubsection(nextIndex)
+                        },
+                        hasSubsections = subsectionTitles.isNotEmpty()
+                    )
+
+                    val showFormContent = !state.isLoading && isUIReady
+                    when {
+                        !showFormContent -> {
+                            Box(modifier = Modifier.weight(1f))
+                        }
+                        state.dataValues.isEmpty() -> {
+                            Text(
+                                text = "No data elements found for this dataset/period/org unit.",
+                                color = MaterialTheme.colorScheme.error,
+                                modifier = Modifier.align(Alignment.CenterHorizontally)
+                            )
+                            Spacer(modifier = Modifier.height(80.dp))
+                        }
+                        else -> {
+                            LazyColumn(
+                                state = listState,
+                                verticalArrangement = Arrangement.spacedBy(8.dp),
+                                modifier = Modifier.weight(1f),
+                                contentPadding = PaddingValues(bottom = 88.dp)
                             ) {
-                                Row(
-                                    modifier = Modifier
-                                        .fillMaxWidth()
-                                        .padding(horizontal = 16.dp, vertical = 12.dp),
-                                    horizontalArrangement = Arrangement.spacedBy(12.dp),
-                                    verticalAlignment = Alignment.CenterVertically
-                                ) {
-                                    androidx.compose.material3.Button(
-                                        onClick = { viewModel.saveAllDataValues(context) },
-                                        enabled = !state.saveInProgress,
-                                        colors = androidx.compose.material3.ButtonDefaults.buttonColors(
-                                            containerColor = Color.White.copy(alpha = 0.2f),
-                                            contentColor = Color.White
-                                        ),
-                                        modifier = Modifier.weight(1f),
-                                        shape = RoundedCornerShape(16.dp)
-                                    ) {
-                                        Icon(
-                                            imageVector = Icons.Default.Save,
-                                            contentDescription = null,
-                                            modifier = Modifier.size(18.dp)
-                                        )
-                                        Spacer(modifier = Modifier.width(8.dp))
-                                        Text("Save")
-                                    }
-
-                                    androidx.compose.material3.Button(
-                                        onClick = { viewModel.startValidationForCompletion() },
-                                        enabled = !state.isValidating && !state.isLoading,
-                                        colors = androidx.compose.material3.ButtonDefaults.buttonColors(
-                                            containerColor = Color.White.copy(alpha = 0.2f),
-                                            contentColor = Color.White
-                                        ),
-                                        modifier = Modifier.weight(1f),
-                                        shape = RoundedCornerShape(16.dp)
-                                    ) {
-                                        Icon(
-                                            imageVector = Icons.Default.Warning,
-                                            contentDescription = null,
-                                            modifier = Modifier.size(18.dp)
-                                        )
-                                        Spacer(modifier = Modifier.width(8.dp))
-                                        Text("Validate")
-                                    }
-
-                                    androidx.compose.material3.Button(
-                                        onClick = { showCompleteDialog = true },
-                                        enabled = !state.isLoading && !state.isValidating && state.completionProgress == null,
-                                        colors = androidx.compose.material3.ButtonDefaults.buttonColors(
-                                            containerColor = Color.White.copy(alpha = 0.2f),
-                                            contentColor = Color.White
-                                        ),
-                                        modifier = Modifier.weight(1f),
-                                        shape = RoundedCornerShape(16.dp)
-                                    ) {
-                                        Icon(
-                                            imageVector = Icons.Default.Check,
-                                            contentDescription = null,
-                                            modifier = Modifier.size(18.dp)
-                                        )
-                                        Spacer(modifier = Modifier.width(8.dp))
-                                        Text("Complete")
-                                    }
-                                }
-                            }
-
-                            SectionNavigationBar(
-                                currentSection = Section(currentSectionName),
-                                currentSubsection = subsectionTitles.getOrNull(subsectionIndex)
-                                    ?.let { Subsection(it) },
-                                sectionIndex = state.currentSectionIndex.coerceAtLeast(0),
-                                totalSections = state.totalSections.coerceAtLeast(1),
-                                onPreviousSection = { viewModel.goToPreviousSection() },
-                                onNextSection = { viewModel.goToNextSection() },
-                                onPreviousSubsection = {
-                                    val nextIndex = (subsectionIndex - 1).coerceAtLeast(0)
-                                    subsectionIndex = nextIndex
-                                    focusSubsection(nextIndex)
-                                },
-                                onNextSubsection = {
-                                    val nextIndex = (subsectionIndex + 1).coerceAtMost(subsectionTitles.lastIndex)
-                                    subsectionIndex = nextIndex
-                                    focusSubsection(nextIndex)
-                                },
-                                hasSubsections = subsectionTitles.isNotEmpty()
-                            )
-
-                            if (state.dataValues.isEmpty()) {
-                                Text(
-                                    text = "No data elements found for this dataset/period/org unit.",
-                                    color = MaterialTheme.colorScheme.error,
-                                    modifier = Modifier.align(Alignment.CenterHorizontally)
-                                )
-                                Spacer(modifier = Modifier.height(80.dp))
-                            } else {
-                                LazyColumn(
-                                    state = listState,
-                                    verticalArrangement = Arrangement.spacedBy(8.dp),
-                                    modifier = Modifier.weight(1f)
-                                ) {
                                     // Render sections as top-level accordions with proper scrolling integration
                                     itemsIndexed(
                                         items = state.dataElementGroupedSections.entries.toList(),
@@ -1323,6 +1246,9 @@ fun EditEntryScreen(
                                                         SectionContent(
                                                             sectionName = sectionName,
                                                             values = sectionValues,
+                                                            valuesByCombo = state.valuesByCombo,
+                                                            valuesByElement = state.valuesByElement,
+                                                            dataElementsForSection = state.dataElementsBySection[sectionName].orEmpty(),
                                                             categoryComboStructures = state.categoryComboStructures,
                                                             optionUidsToComboUidByCombo = state.optionUidsToComboUid,
                                                             onValueChange = onValueChange,
@@ -1386,4 +1312,5 @@ fun EditEntryScreen(
                     )
                 }
             }
-        }}}
+        }
+    }

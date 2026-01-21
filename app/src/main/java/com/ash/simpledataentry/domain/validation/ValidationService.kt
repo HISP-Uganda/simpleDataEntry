@@ -6,8 +6,11 @@ import com.ash.simpledataentry.domain.model.*
 import com.ash.simpledataentry.domain.model.ValidationResult
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
+import org.hisp.dhis.android.core.dataelement.DataElementOperand
 import org.hisp.dhis.android.core.validation.ValidationRule
 import org.hisp.dhis.android.core.validation.ValidationRuleImportance
+import org.hisp.dhis.android.core.validation.engine.ValidationResultViolation
+import java.util.concurrent.atomic.AtomicReference
 // Research: ValidationResult class doesn't exist at org.hisp.dhis.android.core.validation.ValidationResult
 // Let's try to find the actual validation result types  
 import javax.inject.Inject
@@ -240,10 +243,13 @@ class ValidationService @Inject constructor(
             try {
                 Log.d(tag, "Attempting DHIS2 SDK validation engine...")
                 
-                val sdkValidationResult = d2.validationModule()
-                    .validationEngine()
-                    .validate(datasetId, period, organisationUnit, attributeOptionCombo)
-                    .blockingGet()
+                val sdkValidationResult = runValidationEngine(
+                    d2 = d2,
+                    datasetId = datasetId,
+                    period = period,
+                    organisationUnit = organisationUnit,
+                    attributeOptionCombo = attributeOptionCombo
+                )
                 
                 // Enhanced SDK validation result debugging
                 Log.d(tag, "=== SDK VALIDATION RESULT ANALYSIS ===")
@@ -449,7 +455,7 @@ class ValidationService @Inject constructor(
     }
     
     private fun processSdkValidationResult(
-        violations: List<Any>, // Use Any since we don't know the exact type
+        violations: List<ValidationResultViolation>,
         validationRules: List<ValidationRule>,
         startTime: Long
     ): ValidationSummary {
@@ -458,12 +464,19 @@ class ValidationService @Inject constructor(
         
         violations.forEach { violation ->
             try {
-                // Try to extract information from violation object using reflection
-                val validationRule = violation.javaClass.getMethod("validationRule").invoke(violation) as? ValidationRule
+                val validationRule = violation.validationRule()
                 val ruleName = validationRule?.name() ?: "Unknown Rule"
                 val ruleUid = validationRule?.uid() ?: "unknown"
-                
-                val description = "Validation rule '$ruleName' failed validation check"
+                val instruction = validationRule?.instruction()?.takeIf { it.isNotBlank() }
+                val leftDescription = validationRule?.leftSide()?.description()?.takeIf { it.isNotBlank() }
+                val rightDescription = validationRule?.rightSide()?.description()?.takeIf { it.isNotBlank() }
+                val operator = validationRule?.operator()?.name
+                val description = when {
+                    instruction != null -> instruction
+                    leftDescription != null && rightDescription != null && operator != null ->
+                        "$leftDescription $operator $rightDescription"
+                    else -> "Validation rule '$ruleName' failed validation check"
+                }
                 
                 val severity = when (validationRule?.importance()) {
                     ValidationRuleImportance.HIGH -> ValidationSeverity.ERROR
@@ -472,13 +485,15 @@ class ValidationService @Inject constructor(
                     null -> ValidationSeverity.WARNING
                 }
                 
-                val affectedDataElements = extractDataElementsFromRule(validationRule)
+                val affectedDataElements = extractDataElementsFromViolation(violation, validationRule)
                 val affectedDataElementNames = try {
                     getDataElementFormNames(affectedDataElements)
                 } catch (e: Exception) {
                     Log.w(tag, "Failed to get form names during validation: ${e.message}")
                     affectedDataElements
                 }
+                val leftValue = violation.leftSideEvaluation()?.value()?.toString()
+                val rightValue = violation.rightSideEvaluation()?.value()?.toString()
 
                 val validationIssue = ValidationIssue(
                     ruleId = ruleUid,
@@ -486,7 +501,10 @@ class ValidationService @Inject constructor(
                     description = description,
                     severity = severity,
                     affectedDataElements = affectedDataElements,
-                    affectedDataElementNames = affectedDataElementNames
+                    affectedDataElementNames = affectedDataElementNames,
+                    leftSideValue = leftValue,
+                    rightSideValue = rightValue,
+                    operator = operator
                 )
                 
                 when (severity) {
@@ -526,6 +544,70 @@ class ValidationService @Inject constructor(
             executionTimeMs = executionTime,
             validationResult = finalValidationResult
         )
+    }
+
+    private fun runValidationEngine(
+        d2: org.hisp.dhis.android.core.D2,
+        datasetId: String,
+        period: String,
+        organisationUnit: String,
+        attributeOptionCombo: String
+    ): org.hisp.dhis.android.core.validation.engine.ValidationResult? {
+        val resultRef = AtomicReference<org.hisp.dhis.android.core.validation.engine.ValidationResult?>()
+        val errorRef = AtomicReference<Throwable?>()
+
+        val worker = Thread(
+            null,
+            Runnable {
+                try {
+                    val result = d2.validationModule()
+                        .validationEngine()
+                        .blockingValidate(datasetId, period, organisationUnit, attributeOptionCombo)
+                    resultRef.set(result)
+                } catch (t: Throwable) {
+                    errorRef.set(t)
+                }
+            },
+            "validation-engine-worker",
+            4L * 1024L * 1024L
+        )
+
+        worker.start()
+        worker.join()
+
+        val error = errorRef.get()
+        if (error != null) {
+            if (error is StackOverflowError) {
+                throw error
+            }
+            throw RuntimeException(error)
+        }
+
+        return resultRef.get()
+    }
+
+    private fun extractDataElementsFromViolation(
+        violation: ValidationResultViolation,
+        validationRule: ValidationRule?
+    ): List<String> {
+        val operands = try {
+            violation.dataElementUids().toList()
+        } catch (e: Exception) {
+            emptyList<DataElementOperand>()
+        }
+        if (operands.isNotEmpty()) {
+            val uids = operands.mapNotNull { operand ->
+                val elementUid = operand.dataElement()?.uid()
+                if (elementUid.isNullOrBlank()) {
+                    null
+                } else {
+                    val categoryUid = operand.categoryOptionCombo()?.uid()
+                    if (categoryUid.isNullOrBlank()) elementUid else "$elementUid.$categoryUid"
+                }
+            }
+            if (uids.isNotEmpty()) return uids.distinct()
+        }
+        return extractDataElementsFromRule(validationRule)
     }
     
     private fun extractDataElementsFromRule(validationRule: ValidationRule?): List<String> {

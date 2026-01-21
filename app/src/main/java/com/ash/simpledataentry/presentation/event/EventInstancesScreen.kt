@@ -31,6 +31,8 @@ import androidx.navigation.NavController
 import com.ash.simpledataentry.domain.model.SyncStatus
 import com.ash.simpledataentry.presentation.core.BaseScreen
 import com.ash.simpledataentry.presentation.core.AdaptiveLoadingOverlay
+import com.ash.simpledataentry.presentation.core.LoadingOperation
+import com.ash.simpledataentry.presentation.core.ShimmerLoadingList
 import com.ash.simpledataentry.presentation.core.UiState
 import com.ash.simpledataentry.ui.theme.StatusCompleted
 import com.ash.simpledataentry.ui.theme.StatusCompletedLight
@@ -73,17 +75,24 @@ fun EventInstancesScreen(
         viewModel.refreshData()
     }
 
-    // Extract data safely from UiState
-    val data = when (val state = uiState) {
-        is UiState.Success -> state.data
-        is UiState.Error -> state.previousData ?: com.ash.simpledataentry.presentation.event.EventInstancesData()
-        is UiState.Loading -> com.ash.simpledataentry.presentation.event.EventInstancesData()
+    var lastSuccessData by remember { mutableStateOf<EventInstancesData?>(null) }
+    val currentUiState = uiState
+    val data = when (currentUiState) {
+        is UiState.Success -> currentUiState.data.also { lastSuccessData = it }
+        is UiState.Error -> currentUiState.previousData?.also { lastSuccessData = it } ?: lastSuccessData
+        is UiState.Loading -> lastSuccessData
     }
+    val showInitialShimmer = currentUiState is UiState.Loading &&
+        currentUiState.operation is LoadingOperation.Initial &&
+        data == null
+    val hasBlockingOverlay = currentUiState is UiState.Loading &&
+        currentUiState.operation !is LoadingOperation.Initial &&
+        data != null
     val filteredEvents = if (searchQuery.isBlank()) {
-        data.events
+        data?.events.orEmpty()
     } else {
         val query = searchQuery.trim().lowercase(Locale.getDefault())
-        data.events.filter { event ->
+        data?.events.orEmpty().filter { event ->
             event.organisationUnit.name.lowercase(Locale.getDefault()).contains(query) ||
                 event.state.name.lowercase(Locale.getDefault()).contains(query) ||
                 event.syncStatus.name.lowercase(Locale.getDefault()).contains(query)
@@ -92,8 +101,8 @@ fun EventInstancesScreen(
     val subtitle = if (filteredEvents.size == 1) "1 event" else "${filteredEvents.size} events"
 
     // Show success messages via snackbar
-    LaunchedEffect(data.syncMessage) {
-        data.syncMessage?.let {
+    LaunchedEffect(data?.syncMessage) {
+        data?.syncMessage?.let {
             snackbarHostState.showSnackbar(
                 message = it,
                 duration = SnackbarDuration.Short
@@ -108,7 +117,8 @@ fun EventInstancesScreen(
         actions = {
             // Sync button
             val isLoading = uiState is UiState.Loading
-            val isSyncing = (uiState as? UiState.Success)?.backgroundOperation != null
+            val isSyncing = uiState is UiState.Loading &&
+                (uiState as UiState.Loading).operation !is LoadingOperation.Initial
 
             IconButton(
                 onClick = {
@@ -151,10 +161,7 @@ fun EventInstancesScreen(
         },
     ) {
         Box(modifier = Modifier.fillMaxSize()) {
-            AdaptiveLoadingOverlay(
-                uiState = uiState,
-                modifier = Modifier.fillMaxSize()
-            ) {
+            val content: @Composable () -> Unit = {
                 Column(modifier = Modifier.fillMaxSize()) {
                     Row(
                         modifier = Modifier
@@ -209,100 +216,120 @@ fun EventInstancesScreen(
                             )
                         }
                     }
-                // Content with data
-                when {
-                    filteredEvents.isEmpty() -> {
-                        Column(
-                            modifier = Modifier
-                                .fillMaxSize()
-                                .padding(16.dp),
-                            horizontalAlignment = Alignment.CenterHorizontally,
-                            verticalArrangement = Arrangement.Center
-                        ) {
-                            Text(
-                                text = "No events found",
-                                style = MaterialTheme.typography.bodyLarge,
-                                color = MaterialTheme.colorScheme.onSurface
+                    // Content with data
+                    when {
+                        showInitialShimmer -> {
+                            ShimmerLoadingList(
+                                itemCount = 6,
+                                modifier = Modifier.fillMaxSize()
                             )
-                            Spacer(modifier = Modifier.height(8.dp))
-                            Text(
-                                text = "Tap + to create a new event",
-                                style = MaterialTheme.typography.bodyMedium,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant
-                            )
-                            Text(
-                                text = "If you expect events here, sync to refresh.",
-                                style = MaterialTheme.typography.bodySmall,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant
-                            )
-                            Button(
-                                onClick = { viewModel.syncEvents() }
-                            ) {
-                                Text("Sync now")
-                            }
                         }
-                    }
-                    else -> {
-                        if (useCardView) {
-                            LazyColumn(
+                        filteredEvents.isEmpty() -> {
+                            Column(
                                 modifier = Modifier
                                     .fillMaxSize()
-                                    .padding(horizontal = 16.dp, vertical = 8.dp),
-                                verticalArrangement = Arrangement.spacedBy(8.dp)
+                                    .padding(16.dp),
+                                horizontalAlignment = Alignment.CenterHorizontally,
+                                verticalArrangement = Arrangement.Center
                             ) {
-                                items(filteredEvents) { event ->
-                                    EventCard(
-                                        event = event,
-                                        onClick = {
+                                Text(
+                                    text = "No events found",
+                                    style = MaterialTheme.typography.bodyLarge,
+                                    color = MaterialTheme.colorScheme.onSurface
+                                )
+                                Spacer(modifier = Modifier.height(8.dp))
+                                Text(
+                                    text = "Tap + to create a new event",
+                                    style = MaterialTheme.typography.bodyMedium,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                                )
+                                Text(
+                                    text = "If you expect events here, sync to refresh.",
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                                )
+                                Button(
+                                    onClick = { viewModel.syncEvents() }
+                                ) {
+                                    Text("Sync now")
+                                }
+                            }
+                        }
+                        else -> {
+                            if (useCardView) {
+                                LazyColumn(
+                                    modifier = Modifier
+                                        .fillMaxSize()
+                                        .padding(horizontal = 16.dp, vertical = 8.dp),
+                                    verticalArrangement = Arrangement.spacedBy(8.dp)
+                                ) {
+                                    items(items = filteredEvents, key = { it.id }) { event ->
+                                        EventCard(
+                                            event = event,
+                                            onClick = {
+                                                val encodedProgramId = URLEncoder.encode(programId, "UTF-8")
+                                                val encodedProgramName = URLEncoder.encode(programName, "UTF-8")
+                                                navController.navigate("EditStandaloneEvent/$encodedProgramId/$encodedProgramName/${event.id}") {
+                                                    launchSingleTop = true
+                                                }
+                                            }
+                                        )
+                                    }
+                                }
+                            } else {
+                                LaunchedEffect(filteredEvents, useCardView) {
+                                    if (!useCardView) {
+                                        viewModel.loadLineList(filteredEvents)
+                                    }
+                                }
+                                val lineListLoading = data?.lineListLoading == true
+                                val lineListColumns = data?.lineListColumns.orEmpty()
+                                val lineListRows = data?.lineListRows.orEmpty()
+                                if (lineListLoading) {
+                                    LinearProgressIndicator(
+                                        modifier = Modifier
+                                            .fillMaxWidth()
+                                            .padding(horizontal = 16.dp, vertical = 8.dp)
+                                    )
+                                }
+                                if (lineListColumns.isNotEmpty() && lineListRows.isNotEmpty()) {
+                                    CompactEventTable(
+                                        columns = lineListColumns,
+                                        rows = lineListRows,
+                                        onRowClick = { row ->
                                             val encodedProgramId = URLEncoder.encode(programId, "UTF-8")
                                             val encodedProgramName = URLEncoder.encode(programName, "UTF-8")
-                                            navController.navigate("EditStandaloneEvent/$encodedProgramId/$encodedProgramName/${event.id}") {
+                                            navController.navigate("EditStandaloneEvent/$encodedProgramId/$encodedProgramName/${row.id}") {
                                                 launchSingleTop = true
                                             }
-                                        }
+                                        },
+                                        modifier = Modifier
+                                            .fillMaxSize()
+                                            .padding(horizontal = 16.dp, vertical = 8.dp)
+                                    )
+                                } else if (!lineListLoading) {
+                                    Text(
+                                        text = "No line list data available",
+                                        style = MaterialTheme.typography.bodyMedium,
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                        modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp)
                                     )
                                 }
                             }
-                        } else {
-                            LaunchedEffect(filteredEvents, useCardView) {
-                                if (!useCardView) {
-                                    viewModel.loadLineList(filteredEvents)
-                                }
-                            }
-                            if (data.lineListLoading) {
-                                LinearProgressIndicator(
-                                    modifier = Modifier
-                                        .fillMaxWidth()
-                                        .padding(horizontal = 16.dp, vertical = 8.dp)
-                                )
-                            }
-                            if (data.lineListColumns.isNotEmpty() && data.lineListRows.isNotEmpty()) {
-                                CompactEventTable(
-                                    columns = data.lineListColumns,
-                                    rows = data.lineListRows,
-                                    onRowClick = { row ->
-                                        val encodedProgramId = URLEncoder.encode(programId, "UTF-8")
-                                        val encodedProgramName = URLEncoder.encode(programName, "UTF-8")
-                                        navController.navigate("EditStandaloneEvent/$encodedProgramId/$encodedProgramName/${row.id}") {
-                                            launchSingleTop = true
-                                        }
-                                    },
-                                    modifier = Modifier
-                                        .fillMaxSize()
-                                        .padding(horizontal = 16.dp, vertical = 8.dp)
-                                )
-                            } else if (!data.lineListLoading) {
-                                Text(
-                                    text = "No line list data available",
-                                    style = MaterialTheme.typography.bodyMedium,
-                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                    modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp)
-                                )
-                            }
                         }
                     }
                 }
+            }
+
+            if (hasBlockingOverlay) {
+                AdaptiveLoadingOverlay(
+                    uiState = uiState,
+                    modifier = Modifier.fillMaxSize()
+                ) {
+                    content()
                 }
+            } else {
+                content()
             }
 
             // Sync dialog

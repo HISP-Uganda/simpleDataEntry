@@ -33,10 +33,9 @@ import com.ash.simpledataentry.presentation.core.BaseScreen
 import com.ash.simpledataentry.presentation.core.DatePickerDialog
 import com.ash.simpledataentry.presentation.core.Section
 import com.ash.simpledataentry.presentation.core.SectionNavigationBar
-import com.ash.simpledataentry.presentation.core.ShimmerFormSection
 import com.ash.simpledataentry.presentation.core.SimpleProgressOverlay
-import com.ash.simpledataentry.presentation.core.LoadingOperation
-import com.ash.simpledataentry.presentation.core.UiState
+import com.ash.simpledataentry.presentation.core.StepLoadingType
+import com.ash.simpledataentry.presentation.core.ValidationErrorDialog
 import com.ash.simpledataentry.domain.model.TrackedEntityAttributeValue
 import com.ash.simpledataentry.ui.theme.DHIS2Blue
 import com.ash.simpledataentry.ui.theme.DHIS2BlueDark
@@ -61,6 +60,7 @@ fun TrackerEnrollmentScreen(
     viewModel: TrackerEnrollmentViewModel = hiltViewModel()
 ) {
     val state by viewModel.state.collectAsState()
+    val uiState by viewModel.uiState.collectAsState()
     val snackbarHostState = remember { SnackbarHostState() }
     val coroutineScope = rememberCoroutineScope()
     var showSaveDialog by remember { mutableStateOf(false) }
@@ -123,16 +123,11 @@ fun TrackerEnrollmentScreen(
     val decodedProgramName = remember(programName) { URLDecoder.decode(programName, "UTF-8") }
     val progressValue = state.detailedSyncProgress?.overallPercentage?.let { it / 100f }
         ?: state.navigationProgress?.overallPercentage?.let { it / 100f }
+    val syncInProgress = state.detailedSyncProgress != null ||
+        state.isSyncing ||
+        state.navigationProgress?.loadingType == StepLoadingType.SYNC
 
     val syncProgress = state.detailedSyncProgress
-    val overlayUiState: UiState<TrackerEnrollmentState> =
-        if (syncProgress != null) {
-            UiState.Loading(
-                operation = LoadingOperation.Syncing(syncProgress)
-            )
-        } else {
-            UiState.Success(state)
-        }
 
     BaseScreen(
         title = title,
@@ -147,14 +142,14 @@ fun TrackerEnrollmentScreen(
             }
         },
         syncStatusController = viewModel.syncController,
-        showProgress = state.isLoading || state.isSyncing,
+        showProgress = state.isLoading || syncInProgress || state.navigationProgress != null,
         progress = progressValue,
         actions = {
             IconButton(
                 onClick = { viewModel.syncEnrollment() },
-                enabled = !state.isSyncing
+                enabled = !syncInProgress && !state.isLoading
             ) {
-                if (state.isSyncing) {
+                if (syncInProgress) {
                     CircularProgressIndicator(
                         modifier = Modifier.size(20.dp),
                         strokeWidth = 2.dp
@@ -169,7 +164,7 @@ fun TrackerEnrollmentScreen(
         }
     ) {
         AdaptiveLoadingOverlay(
-            uiState = overlayUiState,
+            uiState = uiState,
             modifier = Modifier.fillMaxSize()
         ) {
             val gradientBrush = Brush.verticalGradient(
@@ -182,7 +177,7 @@ fun TrackerEnrollmentScreen(
             ) {
                 when {
                     state.isLoading -> {
-                        TrackerEnrollmentFormSkeleton(
+                        Box(
                             modifier = Modifier.fillMaxSize()
                         )
                     }
@@ -372,18 +367,14 @@ fun TrackerEnrollmentScreen(
             }
         )
     }
-}
 
-@Composable
-private fun TrackerEnrollmentFormSkeleton(modifier: Modifier = Modifier) {
-    Column(
-        modifier = modifier
-            .padding(16.dp),
-        verticalArrangement = Arrangement.spacedBy(16.dp)
-    ) {
-        repeat(3) {
-            ShimmerFormSection()
-        }
+    if (!state.validationMessage.isNullOrBlank() && state.validationErrors.isNotEmpty()) {
+        ValidationErrorDialog(
+            title = "Validation issues",
+            message = state.validationMessage ?: "Please review the following issues:",
+            errors = state.validationErrors,
+            onDismiss = { viewModel.clearValidationMessage() }
+        )
     }
 }
 
@@ -484,14 +475,24 @@ private fun EnrollmentFormContent(
             }
 
             // Individual attribute items using DHIS2 UI components
-            items(state.trackedEntityAttributes) { attribute ->
+            items(items = state.trackedEntityAttributes, key = { it.id }) { attribute ->
+                val programRuleEffect = state.programRuleEffect
+                if (programRuleEffect?.hiddenFields?.contains(attribute.id) == true) {
+                    return@items
+                }
+                val warningMessage = programRuleEffect?.fieldWarnings?.get(attribute.id)
+                val errorMessage = programRuleEffect?.fieldErrors?.get(attribute.id)
+                val isMandatory = attribute.mandatory || (programRuleEffect?.mandatoryFields?.contains(attribute.id) == true)
                 TrackerAttributeField(
                     attribute = attribute,
                     value = state.attributeValues[attribute.id] ?: "",
                     onValueChanged = { newValue ->
                         onAttributeValueChanged(attribute.id, newValue)
                     },
-                    hasError = state.validationErrors.any { it.contains(attribute.displayName) }
+                    hasError = errorMessage != null || state.validationErrors.any { it.contains(attribute.displayName) },
+                    isMandatory = isMandatory,
+                    warningMessage = warningMessage,
+                    errorMessage = errorMessage
                 )
             }
         }
@@ -607,7 +608,10 @@ private fun TrackerAttributeField(
     attribute: com.ash.simpledataentry.domain.model.TrackedEntityAttribute,
     value: String,
     onValueChanged: (String) -> Unit,
-    hasError: Boolean = false
+    hasError: Boolean = false,
+    isMandatory: Boolean = false,
+    warningMessage: String? = null,
+    errorMessage: String? = null
 ) {
     // Fix cursor jumping: Use internal state for TextFieldValue, sync only when external value changes
     var textFieldValue by remember { mutableStateOf(TextFieldValue(value)) }
@@ -632,7 +636,7 @@ private fun TrackerAttributeField(
             when (attribute.valueType) {
                 "INTEGER", "POSITIVE_INTEGER", "NEGATIVE_INTEGER", "ZERO_OR_POSITIVE_INTEGER" -> {
                     InputNumber(
-                        title = if (attribute.mandatory) "${attribute.displayName} *" else attribute.displayName,
+                        title = if (isMandatory) "${attribute.displayName} *" else attribute.displayName,
                         inputTextFieldValue = textFieldValue,
                         onValueChanged = { newValue ->
                             newValue?.let {
@@ -640,7 +644,7 @@ private fun TrackerAttributeField(
                                 onValueChanged(it.text)
                             }
                         },
-                        state = if (hasError) InputShellState.ERROR else InputShellState.UNFOCUSED,
+                        state = if (hasError || errorMessage != null) InputShellState.ERROR else InputShellState.UNFOCUSED,
                         supportingText = listOfNotNull(
                             attribute.description?.let {
                                 SupportingTextData(
@@ -650,6 +654,22 @@ private fun TrackerAttributeField(
                             }
                         )
                     )
+                    errorMessage?.let {
+                        Text(
+                            text = it,
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.error,
+                            modifier = Modifier.padding(top = 4.dp)
+                        )
+                    }
+                    warningMessage?.let {
+                        Text(
+                            text = it,
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.tertiary,
+                            modifier = Modifier.padding(top = 4.dp)
+                        )
+                    }
                 }
                 "BOOLEAN", "TRUE_ONLY" -> {
                     // Switch for boolean values
@@ -660,7 +680,7 @@ private fun TrackerAttributeField(
                     ) {
                         Column(modifier = Modifier.weight(1f)) {
                             Text(
-                                text = if (attribute.mandatory) "${attribute.displayName} *" else attribute.displayName,
+                                text = if (isMandatory) "${attribute.displayName} *" else attribute.displayName,
                                 style = MaterialTheme.typography.bodyLarge
                             )
                             if (attribute.description != null) {
@@ -678,11 +698,27 @@ private fun TrackerAttributeField(
                             }
                         )
                     }
+                    errorMessage?.let {
+                        Text(
+                            text = it,
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.error,
+                            modifier = Modifier.padding(top = 4.dp)
+                        )
+                    }
+                    warningMessage?.let {
+                        Text(
+                            text = it,
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.tertiary,
+                            modifier = Modifier.padding(top = 4.dp)
+                        )
+                    }
                 }
                 else -> {
                     // Text input for all other types
                     InputText(
-                        title = if (attribute.mandatory) "${attribute.displayName} *" else attribute.displayName,
+                        title = if (isMandatory) "${attribute.displayName} *" else attribute.displayName,
                         inputTextFieldValue = textFieldValue,
                         onValueChanged = { newValue ->
                             newValue?.let {
@@ -690,7 +726,7 @@ private fun TrackerAttributeField(
                                 onValueChanged(it.text)
                             }
                         },
-                        state = if (hasError) InputShellState.ERROR else InputShellState.UNFOCUSED,
+                        state = if (hasError || errorMessage != null) InputShellState.ERROR else InputShellState.UNFOCUSED,
                         supportingText = listOfNotNull(
                             attribute.description?.let {
                                 SupportingTextData(
@@ -700,6 +736,22 @@ private fun TrackerAttributeField(
                             }
                         )
                     )
+                    errorMessage?.let {
+                        Text(
+                            text = it,
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.error,
+                            modifier = Modifier.padding(top = 4.dp)
+                        )
+                    }
+                    warningMessage?.let {
+                        Text(
+                            text = it,
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.tertiary,
+                            modifier = Modifier.padding(top = 4.dp)
+                        )
+                    }
                 }
             }
         }

@@ -16,9 +16,9 @@ import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.unit.dp
 import com.ash.simpledataentry.domain.model.FilterState
 import com.ash.simpledataentry.domain.model.PeriodFilterType
-import com.ash.simpledataentry.domain.model.RelativePeriod
 import com.ash.simpledataentry.domain.model.SyncStatus
-import com.ash.simpledataentry.util.PeriodHelper
+import com.ash.simpledataentry.presentation.core.DateRangePickerDialog
+import org.hisp.dhis.android.core.common.RelativePeriod
 import java.text.SimpleDateFormat
 import java.util.*
 
@@ -31,6 +31,7 @@ fun PeriodFilterDialog(
 ) {
     var filterState by remember { mutableStateOf(currentFilter) }
     val dateFormatter = SimpleDateFormat("MMM dd, yyyy", Locale.getDefault())
+    var showDateRangePicker by remember { mutableStateOf(false) }
 
     AlertDialog(
         onDismissRequest = onDismiss,
@@ -144,7 +145,8 @@ fun PeriodFilterDialog(
                                         onExpandedChange = { expanded = !expanded }
                                     ) {
                                         OutlinedTextField(
-                                            value = filterState.relativePeriod?.displayName ?: "Select Period",
+                                            value = filterState.relativePeriod?.let { relativePeriodLabel(it) }
+                                                ?: "Select Period",
                                             onValueChange = {},
                                             readOnly = true,
                                             label = { Text("Period") },
@@ -160,7 +162,7 @@ fun PeriodFilterDialog(
                                         ) {
                                             RelativePeriod.values().forEach { period ->
                                                 DropdownMenuItem(
-                                                    text = { Text(period.displayName) },
+                                                    text = { Text(relativePeriodLabel(period)) },
                                                     onClick = {
                                                         filterState = filterState.copy(relativePeriod = period)
                                                         expanded = false
@@ -216,7 +218,7 @@ fun PeriodFilterDialog(
                                         readOnly = true,
                                         modifier = Modifier.fillMaxWidth(),
                                         trailingIcon = {
-                                            IconButton(onClick = { /* TODO: Open date picker */ }) {
+                                            IconButton(onClick = { showDateRangePicker = true }) {
                                                 Icon(Icons.Default.DateRange, contentDescription = "Select date")
                                             }
                                         }
@@ -229,7 +231,7 @@ fun PeriodFilterDialog(
                                         readOnly = true,
                                         modifier = Modifier.fillMaxWidth(),
                                         trailingIcon = {
-                                            IconButton(onClick = { /* TODO: Open date picker */ }) {
+                                            IconButton(onClick = { showDateRangePicker = true }) {
                                                 Icon(Icons.Default.DateRange, contentDescription = "Select date")
                                             }
                                         }
@@ -348,4 +350,71 @@ fun PeriodFilterDialog(
             }
         }
     )
+
+    if (showDateRangePicker) {
+        DateRangePickerDialog(
+            initialStartDate = filterState.customFromDate,
+            initialEndDate = filterState.customToDate,
+            onDateRangeSelected = { startDate, endDate ->
+                filterState = filterState.copy(
+                    periodType = PeriodFilterType.CUSTOM_RANGE,
+                    customFromDate = startDate,
+                    customToDate = endDate,
+                    relativePeriod = null
+                )
+                showDateRangePicker = false
+            },
+            onDismissRequest = { showDateRangePicker = false }
+        )
+    }
+}
+
+private fun relativePeriodLabel(period: RelativePeriod): String {
+    return when (period) {
+        RelativePeriod.TODAY -> "Today"
+        RelativePeriod.YESTERDAY -> "Yesterday"
+        RelativePeriod.LAST_3_DAYS -> "Last 3 days"
+        RelativePeriod.LAST_7_DAYS -> "Last 7 days"
+        RelativePeriod.LAST_14_DAYS -> "Last 14 days"
+        RelativePeriod.LAST_30_DAYS -> "Last 30 days"
+        RelativePeriod.LAST_60_DAYS -> "Last 60 days"
+        RelativePeriod.LAST_90_DAYS -> "Last 90 days"
+        RelativePeriod.LAST_180_DAYS -> "Last 180 days"
+        RelativePeriod.THIS_WEEK -> "This week"
+        RelativePeriod.LAST_WEEK -> "Last week"
+        RelativePeriod.LAST_4_WEEKS -> "Last 4 weeks"
+        RelativePeriod.LAST_12_WEEKS -> "Last 12 weeks"
+        RelativePeriod.LAST_52_WEEKS -> "Last 52 weeks"
+        RelativePeriod.THIS_MONTH -> "This month"
+        RelativePeriod.LAST_MONTH -> "Last month"
+        RelativePeriod.LAST_3_MONTHS -> "Last 3 months"
+        RelativePeriod.LAST_6_MONTHS -> "Last 6 months"
+        RelativePeriod.LAST_12_MONTHS -> "Last 12 months"
+        RelativePeriod.THIS_BIMONTH -> "This bi-month"
+        RelativePeriod.LAST_BIMONTH -> "Last bi-month"
+        RelativePeriod.LAST_6_BIMONTHS -> "Last 6 bi-months"
+        RelativePeriod.THIS_QUARTER -> "This quarter"
+        RelativePeriod.LAST_QUARTER -> "Last quarter"
+        RelativePeriod.LAST_4_QUARTERS -> "Last 4 quarters"
+        RelativePeriod.THIS_SIX_MONTH -> "This six-month"
+        RelativePeriod.LAST_SIX_MONTH -> "Last six-month"
+        RelativePeriod.LAST_2_SIXMONTHS -> "Last 2 six-months"
+        RelativePeriod.THIS_YEAR -> "This year"
+        RelativePeriod.LAST_YEAR -> "Last year"
+        RelativePeriod.LAST_5_YEARS -> "Last 5 years"
+        RelativePeriod.LAST_10_YEARS -> "Last 10 years"
+        RelativePeriod.THIS_FINANCIAL_YEAR -> "This financial year"
+        RelativePeriod.LAST_FINANCIAL_YEAR -> "Last financial year"
+        RelativePeriod.LAST_5_FINANCIAL_YEARS -> "Last 5 financial years"
+        RelativePeriod.LAST_10_FINANCIAL_YEARS -> "Last 10 financial years"
+        RelativePeriod.WEEKS_THIS_YEAR -> "Weeks this year"
+        RelativePeriod.MONTHS_THIS_YEAR -> "Months this year"
+        RelativePeriod.BIMONTHS_THIS_YEAR -> "Bi-months this year"
+        RelativePeriod.QUARTERS_THIS_YEAR -> "Quarters this year"
+        RelativePeriod.MONTHS_LAST_YEAR -> "Months last year"
+        RelativePeriod.QUARTERS_LAST_YEAR -> "Quarters last year"
+        RelativePeriod.THIS_BIWEEK -> "This bi-week"
+        RelativePeriod.LAST_BIWEEK -> "Last bi-week"
+        RelativePeriod.LAST_4_BIWEEKS -> "Last 4 bi-weeks"
+    }
 }

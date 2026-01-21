@@ -39,7 +39,10 @@ fun ProgramStageSelectionDialog(
                 modifier = Modifier.fillMaxWidth(),
                 verticalArrangement = Arrangement.spacedBy(8.dp)
             ) {
-                items(programStages.sortedBy { it.sortOrder }) { stage ->
+                items(
+                    items = programStages.sortedBy { it.sortOrder },
+                    key = { it.id }
+                ) { stage ->
                     ProgramStageCard(
                         stage = stage,
                         eventCount = existingEventCounts[stage.id] ?: 0,

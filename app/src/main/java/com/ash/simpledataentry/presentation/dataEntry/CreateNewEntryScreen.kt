@@ -2,6 +2,7 @@ package com.ash.simpledataentry.presentation.dataEntry
 
 import android.R
 import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -24,9 +25,15 @@ import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.MenuAnchorType
 import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.PlainTooltip
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
+import androidx.compose.material3.TooltipBox
+import androidx.compose.material3.TooltipDefaults
+import androidx.compose.material3.rememberTooltipState
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.ChevronRight
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
@@ -46,6 +53,7 @@ import androidx.navigation.NavController
 import com.ash.simpledataentry.domain.model.OrganisationUnit
 import com.ash.simpledataentry.domain.model.Period
 import com.ash.simpledataentry.presentation.core.BaseScreen
+import com.ash.simpledataentry.presentation.core.OrgUnitTreePickerDialog
 import com.ash.simpledataentry.ui.theme.DHIS2Blue
 import com.ash.simpledataentry.ui.theme.DHIS2BlueDark
 import com.ash.simpledataentry.ui.theme.DHIS2BlueLight
@@ -69,7 +77,7 @@ fun CreateNewEntryScreen(
     var selectedOrgUnit by remember { mutableStateOf<OrganisationUnit?>(null) }
     var defaultAttributeOptionCombo by remember { mutableStateOf("") }
     var expandedPeriod by remember { mutableStateOf(false) }
-    var expandedOrgUnit by remember { mutableStateOf(false) }
+    var showOrgUnitPicker by remember { mutableStateOf(false) }
     var isLoading by remember { mutableStateOf(true) }
     var error by remember { mutableStateOf<String?>(null) }
     var attributeOptionCombos by remember { mutableStateOf<List<Pair<String, String>>>(emptyList()) }
@@ -202,36 +210,22 @@ fun CreateNewEntryScreen(
                                 )
                             }
 
-                            // Organization Unit Dropdown
-                            ExposedDropdownMenuBox(
-                                expanded = expandedOrgUnit,
-                                onExpandedChange = { expandedOrgUnit = !expandedOrgUnit }
-                            ) {
-                                OutlinedTextField(
-                                    value = selectedOrgUnit?.name ?: "Select Organization Unit",
-                                    onValueChange = {},
-                                    readOnly = true,
-                                    label = { Text("Organization Unit") },
-                                    trailingIcon = { ExposedDropdownMenuDefaults.TrailingIcon(expanded = expandedOrgUnit) },
-                                    modifier = Modifier
-                                        .fillMaxWidth()
-                                        .menuAnchor(MenuAnchorType.PrimaryNotEditable, enabled = true)
-                                )
-                                ExposedDropdownMenu(
-                                    expanded = expandedOrgUnit,
-                                    onDismissRequest = { expandedOrgUnit = false }
-                                ) {
-                                    orgUnits.forEach { orgUnit ->
-                                        DropdownMenuItem(
-                                            text = { Text(orgUnit.name) },
-                                            onClick = {
-                                                selectedOrgUnit = orgUnit
-                                                expandedOrgUnit = false
-                                            }
-                                        )
-                                    }
-                                }
-                            }
+                            // Organization Unit Picker (tree view)
+                            OutlinedTextField(
+                                value = selectedOrgUnit?.name ?: "Select Organization Unit",
+                                onValueChange = {},
+                                readOnly = true,
+                                label = { Text("Organization Unit") },
+                                trailingIcon = {
+                                    Icon(
+                                        imageVector = Icons.Default.ChevronRight,
+                                        contentDescription = null
+                                    )
+                                },
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .clickable { showOrgUnitPicker = true }
+                            )
 
                             ExposedDropdownMenuBox(
                                 expanded = expandedPeriod,
@@ -324,24 +318,36 @@ fun CreateNewEntryScreen(
                                 }
                             }
 
-                            Button(
-                                onClick = {
-                                    val encodedDatasetName = java.net.URLEncoder.encode(datasetName, "UTF-8")
-                                    val encodedPeriod = java.net.URLEncoder.encode(selectedPeriod, "UTF-8")
-                                    val encodedOrgUnit = java.net.URLEncoder.encode(selectedOrgUnit!!.id, "UTF-8")
-                                    val encodedAttributeOptionCombo = java.net.URLEncoder.encode(resolvedAttributeOptionCombo, "UTF-8")
-                                    navController.navigate(
-                                        "EditEntry/$datasetId/$encodedPeriod/$encodedOrgUnit/$encodedAttributeOptionCombo/$encodedDatasetName"
-                                    ) {
-                                        popUpTo("CreateDataEntry/$datasetId/$datasetName") { inclusive = true }
+                            val tooltipState = rememberTooltipState()
+                            val tooltipMessage = "Select an organization unit, period, and attribute option combo to continue."
+                            TooltipBox(
+                                positionProvider = TooltipDefaults.rememberPlainTooltipPositionProvider(),
+                                tooltip = {
+                                    if (!canContinue) {
+                                        PlainTooltip { Text(tooltipMessage) }
                                     }
                                 },
-                                enabled = canContinue,
-                                modifier = Modifier
-                                    .fillMaxWidth()
-                                    .height(48.dp)
+                                state = tooltipState
                             ) {
-                                Text("Continue")
+                                Button(
+                                    onClick = {
+                                        val encodedDatasetName = java.net.URLEncoder.encode(datasetName, "UTF-8")
+                                        val encodedPeriod = java.net.URLEncoder.encode(selectedPeriod, "UTF-8")
+                                        val encodedOrgUnit = java.net.URLEncoder.encode(selectedOrgUnit!!.id, "UTF-8")
+                                        val encodedAttributeOptionCombo = java.net.URLEncoder.encode(resolvedAttributeOptionCombo, "UTF-8")
+                                        navController.navigate(
+                                            "EditEntry/$datasetId/$encodedPeriod/$encodedOrgUnit/$encodedAttributeOptionCombo/$encodedDatasetName"
+                                        ) {
+                                            popUpTo("CreateDataEntry/$datasetId/$datasetName") { inclusive = true }
+                                        }
+                                    },
+                                    enabled = canContinue,
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .height(48.dp)
+                                ) {
+                                    Text("Continue")
+                                }
                             }
 
                             TextButton(
@@ -354,6 +360,18 @@ fun CreateNewEntryScreen(
                     }
                 }
             }
+        }
+
+        if (showOrgUnitPicker) {
+            OrgUnitTreePickerDialog(
+                orgUnits = orgUnits,
+                selectedOrgUnitId = selectedOrgUnit?.id,
+                onOrgUnitSelected = { orgUnit ->
+                    selectedOrgUnit = orgUnit
+                    showOrgUnitPicker = false
+                },
+                onDismiss = { showOrgUnitPicker = false }
+            )
         }
     }
 }

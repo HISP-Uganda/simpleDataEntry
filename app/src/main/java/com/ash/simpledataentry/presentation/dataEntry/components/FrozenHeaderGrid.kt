@@ -5,7 +5,7 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
-import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
@@ -51,7 +51,7 @@ fun FrozenHeaderGrid(
         LazyColumn(
             modifier = Modifier.fillMaxSize()
         ) {
-            items(rows) { rowCells ->
+            itemsIndexed(rows, key = { index, _ -> index }) { _, rowCells ->
                 Row(
                     modifier = Modifier
                         .fillMaxWidth()

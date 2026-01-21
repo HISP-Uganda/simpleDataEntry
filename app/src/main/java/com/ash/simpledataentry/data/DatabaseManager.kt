@@ -46,7 +46,8 @@ class DatabaseManager @Inject constructor(
             com.ash.simpledataentry.di.AppModule.MIGRATION_3_4,
             com.ash.simpledataentry.di.AppModule.MIGRATION_4_5,
             com.ash.simpledataentry.di.AppModule.MIGRATION_6_7,
-            com.ash.simpledataentry.di.AppModule.MIGRATION_7_8
+            com.ash.simpledataentry.di.AppModule.MIGRATION_7_8,
+            com.ash.simpledataentry.di.AppModule.MIGRATION_8_9
         )
         .build()
 

@@ -9,7 +9,10 @@ import com.ash.simpledataentry.domain.repository.DatasetInstancesRepository
 import com.ash.simpledataentry.data.SessionManager
 import com.ash.simpledataentry.presentation.core.UiState
 import com.ash.simpledataentry.presentation.core.LoadingOperation
-import com.ash.simpledataentry.presentation.core.BackgroundOperation
+import com.ash.simpledataentry.presentation.core.LoadingPhase
+import com.ash.simpledataentry.presentation.core.LoadingProgress
+import com.ash.simpledataentry.presentation.core.NavigationProgress
+import com.ash.simpledataentry.presentation.core.StepLoadingType
 import com.ash.simpledataentry.util.toUiError
 import dagger.hilt.android.lifecycle.HiltViewModel
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -154,9 +157,19 @@ class EventInstancesViewModel @Inject constructor(
 
         viewModelScope.launch {
             try {
-                // Use backgroundOperation for non-blocking sync
                 val currentData = getCurrentData()
-                _uiState.value = UiState.Success(currentData, BackgroundOperation.Syncing)
+                _uiState.value = UiState.Loading(
+                    LoadingOperation.Navigation(
+                        NavigationProgress(
+                            phase = LoadingPhase.INITIALIZING,
+                            overallPercentage = 5,
+                            phaseTitle = "Preparing sync",
+                            phaseDetail = "Preparing event sync...",
+                            loadingType = StepLoadingType.SYNC
+                        )
+                    ),
+                    LoadingProgress(message = "Preparing event sync...")
+                )
 
                 // Sync event instances and data
                 val result = datasetInstancesRepository.syncProgramInstances(
@@ -165,6 +178,18 @@ class EventInstancesViewModel @Inject constructor(
                 )
 
                 if (result.isSuccess) {
+                    _uiState.value = UiState.Loading(
+                        LoadingOperation.Navigation(
+                            NavigationProgress(
+                                phase = LoadingPhase.PROCESSING_DATA,
+                                overallPercentage = 85,
+                                phaseTitle = "Refreshing data",
+                                phaseDetail = "Updating local event data...",
+                                loadingType = StepLoadingType.SYNC
+                            )
+                        ),
+                        LoadingProgress(message = "Updating local event data...")
+                    )
                     val syncData = currentData.copy(syncMessage = "Sync completed successfully")
                     _uiState.value = UiState.Success(syncData)
                     // Refresh data after sync

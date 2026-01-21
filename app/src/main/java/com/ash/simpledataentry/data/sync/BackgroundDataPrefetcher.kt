@@ -79,26 +79,29 @@ class BackgroundDataPrefetcher @Inject constructor(
                 .blockingGet()
                 .take(2) // Limit to first 2 org units
             
-            // Pre-fetch data values for recent periods and datasets
-            datasetIds.forEach { datasetId ->
-                recentPeriods.forEach { period ->
-                    userOrgUnits.forEach { orgUnit ->
-                        try {
-                            // This will trigger the SDK to cache the data values locally
-                            d2Instance.dataValueModule().dataValues()
-                                .byDataSetUid(datasetId)
-                                .byPeriod().eq(period.periodId())
-                                .byOrganisationUnitUid().eq(orgUnit.uid())
-                                .blockingGet()
-                            
-                            // Small delay to avoid overwhelming the server
-                            delay(100)
-                            
-                        } catch (e: Exception) {
-                            Log.w("BackgroundDataPrefetcher", "Failed to prefetch data for dataset $datasetId, period ${period.periodId()}", e)
-                        }
-                    }
+            val prefetchJobs = datasetIds.flatMap { datasetId ->
+                recentPeriods.flatMap { period ->
+                    userOrgUnits.map { orgUnit -> Triple(datasetId, period, orgUnit) }
                 }
+            }
+
+            prefetchJobs.chunked(10).forEach { batch ->
+                coroutineScope {
+                    batch.map { (datasetId, period, orgUnit) ->
+                        async(Dispatchers.IO) {
+                            try {
+                                d2Instance.dataValueModule().dataValues()
+                                    .byDataSetUid(datasetId)
+                                    .byPeriod().eq(period.periodId())
+                                    .byOrganisationUnitUid().eq(orgUnit.uid())
+                                    .blockingGet()
+                            } catch (e: Exception) {
+                                Log.w("BackgroundDataPrefetcher", "Failed to prefetch data for dataset $datasetId, period ${period.periodId()}", e)
+                            }
+                        }
+                    }.awaitAll()
+                }
+                delay(50)
             }
             
             Log.d("BackgroundDataPrefetcher", "Data values prefetching completed")

@@ -5,11 +5,16 @@ import android.util.Log
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.ash.simpledataentry.domain.model.ProgramInstance
+import com.ash.simpledataentry.domain.model.OrganisationUnit
 import com.ash.simpledataentry.domain.repository.DatasetInstancesRepository
+import com.ash.simpledataentry.domain.repository.DataEntryRepository
 import com.ash.simpledataentry.data.SessionManager
 import com.ash.simpledataentry.presentation.core.UiState
 import com.ash.simpledataentry.presentation.core.LoadingOperation
-import com.ash.simpledataentry.presentation.core.BackgroundOperation
+import com.ash.simpledataentry.presentation.core.LoadingPhase
+import com.ash.simpledataentry.presentation.core.LoadingProgress
+import com.ash.simpledataentry.presentation.core.NavigationProgress
+import com.ash.simpledataentry.presentation.core.StepLoadingType
 import com.ash.simpledataentry.util.toUiError
 import dagger.hilt.android.lifecycle.HiltViewModel
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -29,6 +34,7 @@ data class TrackerEnrollmentsData(
 @HiltViewModel
 class TrackerEnrollmentsViewModel @Inject constructor(
     private val datasetInstancesRepository: DatasetInstancesRepository,
+    private val dataEntryRepository: DataEntryRepository,
     private val sessionManager: SessionManager,
     private val app: Application
 ) : ViewModel() {
@@ -126,9 +132,19 @@ class TrackerEnrollmentsViewModel @Inject constructor(
 
         viewModelScope.launch {
             try {
-                // Use backgroundOperation for non-blocking sync
                 val currentData = getCurrentData()
-                _uiState.value = UiState.Success(currentData, BackgroundOperation.Syncing)
+                _uiState.value = UiState.Loading(
+                    LoadingOperation.Navigation(
+                        NavigationProgress(
+                            phase = LoadingPhase.INITIALIZING,
+                            overallPercentage = 5,
+                            phaseTitle = "Preparing sync",
+                            phaseDetail = "Preparing enrollment sync...",
+                            loadingType = StepLoadingType.SYNC
+                        )
+                    ),
+                    LoadingProgress(message = "Preparing enrollment sync...")
+                )
 
                 // Sync tracker enrollments and data
                 val result = datasetInstancesRepository.syncProgramInstances(
@@ -137,6 +153,18 @@ class TrackerEnrollmentsViewModel @Inject constructor(
                 )
 
                 if (result.isSuccess) {
+                    _uiState.value = UiState.Loading(
+                        LoadingOperation.Navigation(
+                            NavigationProgress(
+                                phase = LoadingPhase.PROCESSING_DATA,
+                                overallPercentage = 85,
+                                phaseTitle = "Refreshing data",
+                                phaseDetail = "Updating local enrollments...",
+                                loadingType = StepLoadingType.SYNC
+                            )
+                        ),
+                        LoadingProgress(message = "Updating local enrollments...")
+                    )
                     val syncData = currentData.copy(syncMessage = "Sync completed successfully")
                     _uiState.value = UiState.Success(syncData)
                     // Refresh data after sync
@@ -158,5 +186,9 @@ class TrackerEnrollmentsViewModel @Inject constructor(
 
     companion object {
         private const val TAG = "TrackerEnrollmentsVM"
+    }
+
+    suspend fun getUserOrgUnits(programId: String): List<OrganisationUnit> {
+        return dataEntryRepository.getUserOrgUnits(programId)
     }
 }

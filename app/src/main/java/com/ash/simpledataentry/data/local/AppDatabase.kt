@@ -26,7 +26,7 @@ import com.ash.simpledataentry.data.local.DataValueDao
         TrackerEnrollmentEntity::class,
         EventInstanceEntity::class
     ],
-    version = 8,  // Incremented for tracker enrollment and event instance tables
+    version = 9,  // Incremented for index additions on metadata tables
     exportSchema = false
 )
 abstract class AppDatabase : RoomDatabase() {

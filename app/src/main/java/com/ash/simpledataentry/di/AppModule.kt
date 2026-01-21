@@ -176,6 +176,17 @@ object AppModule {
         }
     }
 
+    val MIGRATION_8_9 = object : Migration(8, 9) {
+        override fun migrate(database: SupportSQLiteDatabase) {
+            database.execSQL(
+                "CREATE INDEX IF NOT EXISTS index_data_elements_categoryComboId ON data_elements(categoryComboId)"
+            )
+            database.execSQL(
+                "CREATE INDEX IF NOT EXISTS index_category_option_combos_categoryComboId ON category_option_combos(categoryComboId)"
+            )
+        }
+    }
+
     // Note: AccountManager, DatabaseManager, and SessionManager use @Inject constructors
     // and @Singleton annotations, so Hilt provides them automatically.
     // No manual @Provides methods needed.

@@ -45,7 +45,8 @@ import com.ash.simpledataentry.ui.theme.DatasetAccent
 enum class StepLoadingType {
     LOGIN,
     ENTRY,
-    SYNC
+    SYNC,
+    VALIDATION
 }
 
 private data class StepLoadingStep(val label: String)
@@ -76,6 +77,12 @@ fun StepLoadingScreen(
             StepLoadingStep("Uploading local changes..."),
             StepLoadingStep("Fetching updates..."),
             StepLoadingStep("Syncing complete!")
+        )
+        StepLoadingType.VALIDATION -> listOf(
+            StepLoadingStep("Preparing validation..."),
+            StepLoadingStep("Running validation rules..."),
+            StepLoadingStep("Reviewing results..."),
+            StepLoadingStep("Finalizing...")
         )
     }
 
@@ -119,6 +126,7 @@ fun StepLoadingScreen(
                     isComplete -> Icons.Default.CheckCircle
                     type == StepLoadingType.SYNC -> Icons.Default.CloudDownload
                     type == StepLoadingType.ENTRY -> Icons.Default.DynamicForm
+                    type == StepLoadingType.VALIDATION -> Icons.Default.CheckCircle
                     else -> Icons.Default.Storage
                 }
                 Icon(
@@ -136,6 +144,7 @@ fun StepLoadingScreen(
                     StepLoadingType.LOGIN -> "Setting Up Your Workspace"
                     StepLoadingType.ENTRY -> "Preparing Form"
                     StepLoadingType.SYNC -> "Syncing Data"
+                    StepLoadingType.VALIDATION -> "Validating Data"
                 },
                 style = MaterialTheme.typography.titleLarge,
                 color = Color.White

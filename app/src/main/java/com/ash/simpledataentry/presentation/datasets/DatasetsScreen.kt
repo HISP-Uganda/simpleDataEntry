@@ -101,7 +101,6 @@ import com.ash.simpledataentry.presentation.datasets.components.ProgramType
 import com.ash.simpledataentry.presentation.core.AdaptiveLoadingOverlay
 import com.ash.simpledataentry.presentation.core.UiState
 import com.ash.simpledataentry.presentation.core.LoadingOperation
-import com.ash.simpledataentry.presentation.core.BackgroundOperation
 import com.ash.simpledataentry.ui.theme.DHIS2BlueDeep
 import com.ash.simpledataentry.ui.theme.DatasetAccent
 import com.ash.simpledataentry.ui.theme.DatasetAccentLight
@@ -312,6 +311,7 @@ fun DatasetsScreen(
     val snackbarHostState = remember { SnackbarHostState() }
     var showDeleteConfirmation by remember { mutableStateOf(false) }
     var showFilterSection by remember { mutableStateOf(false) }
+    val activeAccountLabel by viewModel.activeAccountLabel.collectAsState()
     val subtitle = when ((uiState as? UiState.Success)?.data?.currentProgramType ?: DomainProgramType.ALL) {
         DomainProgramType.ALL -> "All programs"
         DomainProgramType.DATASET -> "Datasets"
@@ -319,10 +319,13 @@ fun DatasetsScreen(
         DomainProgramType.EVENT -> "Event programs"
     }
     val syncState by viewModel.syncController.appSyncState.collectAsState()
+    val backgroundSyncRunning by viewModel.backgroundSyncRunning.collectAsState()
+    val isRefreshingAfterSync by viewModel.isRefreshingAfterSync.collectAsState()
     val lastSyncLabel = syncState.lastSync?.let { formatRelativeTime(it) } ?: "Never"
     val syncStatusLabel = when {
-        syncState.isRunning -> "Syncing now"
+        backgroundSyncRunning || syncState.isRunning -> "Sync in progress"
         !syncState.error.isNullOrBlank() -> "Sync error"
+        isRefreshingAfterSync -> "Updating list"
         else -> "Up to date"
     }
 
@@ -333,11 +336,22 @@ fun DatasetsScreen(
         drawerContent = {
             ModalDrawerSheet {
                 Spacer(modifier = Modifier.height(16.dp))
-                Text(
-                    text = "Menu",
-                    style = MaterialTheme.typography.headlineMedium,
-                    modifier = Modifier.padding(horizontal = 16.dp, vertical = 16.dp)
-                )
+                val headerTitle = activeAccountLabel ?: "Menu"
+                val headerSubtitle = if (activeAccountLabel == null) "" else "Menu"
+                Column(modifier = Modifier.padding(horizontal = 16.dp, vertical = 12.dp)) {
+                    Text(
+                        text = headerTitle,
+                        style = MaterialTheme.typography.titleMedium,
+                        color = MaterialTheme.colorScheme.onSurface
+                    )
+                    if (headerSubtitle.isNotBlank()) {
+                        Text(
+                            text = headerSubtitle,
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    }
+                }
 
                 NavigationDrawerItem(
                     icon = { Icon(Icons.Default.Settings, contentDescription = null) },
@@ -416,8 +430,8 @@ fun DatasetsScreen(
             subtitle = subtitle,
             navController = navController,
             actions = {
-                // Background loading indicator during download-only sync
-                if ((uiState as? UiState.Success)?.backgroundOperation is BackgroundOperation.Syncing) {
+                // Background loading indicator during sync
+                if (syncState.isRunning) {
                     CircularProgressIndicator(
                         modifier = Modifier.size(20.dp),
                         strokeWidth = 2.dp,
@@ -651,7 +665,7 @@ fun DatasetsScreen(
                             contentPadding = PaddingValues(16.dp),
                             verticalArrangement = Arrangement.spacedBy(8.dp)
                         ) {
-                            items(programs) { program ->
+                            items(items = programs, key = { it.id }) { program ->
                                 Card(
                                     modifier = Modifier.fillMaxWidth(),
                                     colors = CardDefaults.cardColors(
