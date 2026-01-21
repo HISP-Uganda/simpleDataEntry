@@ -75,7 +75,8 @@ fun SectionContent(
     onValueChange: (String, DataValue) -> Unit,
     viewModel: DataEntryViewModel,
     expandedAccordions: Map<List<String>, String?>,
-    onToggle: (List<String>, String) -> Unit
+    onToggle: (List<String>, String) -> Unit,
+    onElementSelected: (String) -> Unit
 ) {
     // Get distinct data elements in order
     val dataElements = if (dataElementsForSection.isNotEmpty()) dataElementsForSection
@@ -97,7 +98,10 @@ fun SectionContent(
             header = dataElementName,
             hasData = hasData,
             expanded = isExpanded,
-            onToggleExpand = { onToggle(emptyList(), elementKey) }
+            onToggleExpand = {
+                onToggle(emptyList(), elementKey)
+                onElementSelected(dataElement)
+            }
         ) {
             if (structure.isEmpty()) {
                 // No category combo - render field directly
@@ -166,6 +170,7 @@ fun DataValueField(
     val renderType = state.renderTypes[dataValue.dataElement] ?: optionSet?.computeRenderType()
     val isHidden = state.hiddenFields.contains(dataValue.dataElement)
     val isDisabledByRule = state.disabledFields.contains(dataValue.dataElement)
+    val isDisabledByMetadata = state.metadataDisabledFields.contains(dataValue.dataElement)
     val isMandatoryByRule = state.mandatoryFields.contains(dataValue.dataElement)
     val warning = state.fieldWarnings[dataValue.dataElement]
     val error = state.fieldErrors[dataValue.dataElement]
@@ -173,7 +178,11 @@ fun DataValueField(
 
     if (isHidden) return
 
-    val effectiveEnabled = enabled && !isDisabledByRule
+    val effectiveEnabled = enabled &&
+        state.isEntryEditable &&
+        !state.isCompleted &&
+        !isDisabledByRule &&
+        !isDisabledByMetadata
 
     Column(
         modifier = Modifier
@@ -956,27 +965,61 @@ fun EditEntryScreen(
             }
         },
         floatingActionButton = {
-            FloatingActionButton(
-                onClick = {
-                    if (!state.saveInProgress) {
-                        viewModel.saveAllDataValues(context)
-                    }
-                },
-                containerColor = if (state.saveInProgress) {
-                    MaterialTheme.colorScheme.surfaceVariant
-                } else {
-                    MaterialTheme.colorScheme.primary
-                },
-                contentColor = if (state.saveInProgress) {
-                    MaterialTheme.colorScheme.onSurfaceVariant
-                } else {
-                    MaterialTheme.colorScheme.onPrimary
-                }
-            ) {
-                Icon(
-                    imageVector = Icons.Default.Check,
-                    contentDescription = "Save entry"
+            if (state.isCompleted) {
+                ExtendedFloatingActionButton(
+                    onClick = {
+                        if (!state.saveInProgress && state.isEntryEditable) {
+                            viewModel.markDatasetIncomplete { success, message ->
+                                coroutineScope.launch {
+                                    snackbarHostState.showSnackbar(
+                                        message ?: if (success) "Report reopened for editing." else "Failed to reopen report."
+                                    )
+                                }
+                            }
+                        }
+                    },
+                    text = { Text("Reopen for editing") },
+                    icon = {
+                        Icon(
+                            imageVector = Icons.Default.CheckCircle,
+                            contentDescription = "Reopen report"
+                        )
+                    },
+                    containerColor = if (state.isEntryEditable) {
+                        MaterialTheme.colorScheme.primary
+                    } else {
+                        MaterialTheme.colorScheme.surfaceVariant
+                    },
+                    contentColor = if (state.isEntryEditable) {
+                        MaterialTheme.colorScheme.onPrimary
+                    } else {
+                        MaterialTheme.colorScheme.onSurfaceVariant
+                    },
+                    expanded = true
                 )
+            } else {
+                FloatingActionButton(
+                    onClick = {
+                        if (!state.saveInProgress && state.isEntryEditable) {
+                            viewModel.saveAllDataValues(context)
+                        }
+                    },
+                    containerColor = if (state.saveInProgress || !state.isEntryEditable) {
+                        MaterialTheme.colorScheme.surfaceVariant
+                    } else {
+                        MaterialTheme.colorScheme.primary
+                    },
+                    contentColor = if (state.saveInProgress || !state.isEntryEditable) {
+                        MaterialTheme.colorScheme.onSurfaceVariant
+                    } else {
+                        MaterialTheme.colorScheme.onPrimary
+                    }
+                ) {
+                    Icon(
+                        imageVector = Icons.Default.Check,
+                        contentDescription = "Save entry"
+                    )
+                }
             }
         }
     ) {
@@ -1034,6 +1077,69 @@ fun EditEntryScreen(
                         .fillMaxSize()
                         .background(MaterialTheme.colorScheme.background)
                 ) {
+                    val nonEditableMessage = when (state.nonEditableReason) {
+                        org.hisp.dhis.android.core.dataset.DataSetNonEditableReason.CLOSED ->
+                            "Reporting period is closed. This report is read-only."
+                        org.hisp.dhis.android.core.dataset.DataSetNonEditableReason.EXPIRED ->
+                            "Reporting period is expired. This report is read-only."
+                        org.hisp.dhis.android.core.dataset.DataSetNonEditableReason.NO_DATASET_DATA_WRITE_ACCESS ->
+                            "You do not have write access for this dataset."
+                        org.hisp.dhis.android.core.dataset.DataSetNonEditableReason.NO_ATTRIBUTE_OPTION_COMBO_ACCESS ->
+                            "You do not have access to the selected attribute option combo."
+                        org.hisp.dhis.android.core.dataset.DataSetNonEditableReason.ORGUNIT_IS_NOT_IN_CAPTURE_SCOPE ->
+                            "Organisation unit is not in data capture scope."
+                        org.hisp.dhis.android.core.dataset.DataSetNonEditableReason.ATTRIBUTE_OPTION_COMBO_NO_ASSIGN_TO_ORGUNIT ->
+                            "Attribute option combo is not assigned to this organisation unit."
+                        org.hisp.dhis.android.core.dataset.DataSetNonEditableReason.PERIOD_IS_NOT_IN_ORGUNIT_RANGE ->
+                            "Period is not within the organisation unit range."
+                        org.hisp.dhis.android.core.dataset.DataSetNonEditableReason.PERIOD_IS_NOT_IN_ATTRIBUTE_OPTION_RANGE ->
+                            "Period is not within the attribute option range."
+                        null -> null
+                    }
+
+                    if (!state.isEntryEditable) {
+                        Card(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(horizontal = 16.dp, vertical = 8.dp),
+                            colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant),
+                            border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline.copy(alpha = 0.3f))
+                        ) {
+                            Column(modifier = Modifier.padding(12.dp)) {
+                                Text(
+                                    text = "Editing locked",
+                                    style = MaterialTheme.typography.titleSmall,
+                                    color = MaterialTheme.colorScheme.onSurface
+                                )
+                                Text(
+                                    text = nonEditableMessage ?: "This report is read-only based on server metadata.",
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                                )
+                            }
+                        }
+                    } else if (state.isCompleted) {
+                        Card(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(horizontal = 16.dp, vertical = 8.dp),
+                            colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant)
+                        ) {
+                            Column(modifier = Modifier.padding(12.dp)) {
+                                Text(
+                                    text = "Report completed",
+                                    style = MaterialTheme.typography.titleSmall,
+                                    color = MaterialTheme.colorScheme.onSurface
+                                )
+                                Text(
+                                    text = "Reopen to edit this report.",
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                                )
+                            }
+                        }
+                    }
+
                     SectionNavigationBar(
                         currentSection = Section(currentSectionName),
                         currentSubsection = subsectionTitles.getOrNull(subsectionIndex)
@@ -1073,7 +1179,7 @@ fun EditEntryScreen(
                                 state = listState,
                                 verticalArrangement = Arrangement.spacedBy(8.dp),
                                 modifier = Modifier.weight(1f),
-                                contentPadding = PaddingValues(bottom = 88.dp)
+                                contentPadding = PaddingValues(bottom = 64.dp)
                             ) {
                                     // Render sections as top-level accordions with proper scrolling integration
                                     itemsIndexed(
@@ -1118,6 +1224,7 @@ fun EditEntryScreen(
                                                     .heightIn(min = 72.dp, max = 96.dp)
                                                     .clickable {
                                                         viewModel.setCurrentSectionIndex(sectionIndex)
+                                                        subsectionIndex = 0
                                                         if (!sectionIsExpanded) {
                                                             coroutineScope.launch {
                                                                 bringIntoViewRequester.bringIntoView()
@@ -1254,7 +1361,18 @@ fun EditEntryScreen(
                                                             onValueChange = onValueChange,
                                                             viewModel = viewModel,
                                                             expandedAccordions = expandedAccordions.value,
-                                                            onToggle = onAccordionToggle
+                                                            onToggle = onAccordionToggle,
+                                                            onElementSelected = { dataElementId ->
+                                                                val targetTitle = subsectionGroups
+                                                                    .firstOrNull { group ->
+                                                                        group.members.any { it.dataElement == dataElementId }
+                                                                    }
+                                                                    ?.groupTitle
+                                                                val targetIndex = subsectionTitles.indexOf(targetTitle)
+                                                                if (targetIndex >= 0) {
+                                                                    subsectionIndex = targetIndex
+                                                                }
+                                                            }
                                                         )
                                                     }
                                                 }
@@ -1262,7 +1380,6 @@ fun EditEntryScreen(
                                         }
                                     }
                                 }
-                                Spacer(modifier = Modifier.height(80.dp)) // Space for the section navigator
                             }
                         }
                     }

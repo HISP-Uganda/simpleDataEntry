@@ -71,6 +71,8 @@ class DatasetsViewModel @Inject constructor(
     val syncController: SyncStatusController = syncStatusController
     private val _activeAccountLabel = MutableStateFlow<String?>(null)
     val activeAccountLabel: StateFlow<String?> = _activeAccountLabel.asStateFlow()
+    private val _activeAccountSubtitle = MutableStateFlow<String?>(null)
+    val activeAccountSubtitle: StateFlow<String?> = _activeAccountSubtitle.asStateFlow()
     private val _backgroundSyncRunning = MutableStateFlow(false)
     val backgroundSyncRunning: StateFlow<Boolean> = _backgroundSyncRunning.asStateFlow()
     private val _isRefreshingAfterSync = MutableStateFlow(false)
@@ -85,6 +87,7 @@ class DatasetsViewModel @Inject constructor(
                 if (accountId == null) {
                     resetToInitialState()
                     _activeAccountLabel.value = null
+                    _activeAccountSubtitle.value = null
                 } else {
                     // Account switched or restored - reload programs from correct database
                     Log.d("DatasetsViewModel", "Account changed/restored: $accountId - reloading programs")
@@ -99,8 +102,7 @@ class DatasetsViewModel @Inject constructor(
                 .asFlow()
                 .map { workInfos ->
                     workInfos.any { info ->
-                        info.state == WorkInfo.State.RUNNING ||
-                            info.state == WorkInfo.State.ENQUEUED
+                        info.state == WorkInfo.State.RUNNING
                     }
                 }
                 .distinctUntilChanged()
@@ -135,10 +137,8 @@ class DatasetsViewModel @Inject constructor(
 
     private suspend fun refreshActiveAccountLabel() {
         val account = savedAccountRepository.getActiveAccount()
-        _activeAccountLabel.value = account?.let { saved ->
-            val display = saved.displayName.ifBlank { "${saved.username}@${saved.serverUrl}" }
-            display
-        }
+        _activeAccountLabel.value = account?.username
+        _activeAccountSubtitle.value = account?.serverUrl
     }
 
     /**

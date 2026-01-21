@@ -535,6 +535,13 @@ class DatasetInstancesRepositoryImpl @Inject constructor(
                     .uid(programId)
                     .blockingGet()
                 val programName = program?.displayName() ?: program?.name() ?: "Unknown Program"
+                val stageNameById = d2.programModule().programStages()
+                    .byProgramUid().eq(programId)
+                    .blockingGet()
+                    .associate { stage ->
+                        val name = stage.displayName() ?: stage.name() ?: stage.uid()
+                        stage.uid() to name
+                    }
 
                 // Map Room entities to domain models
                 entities.map { entity ->
@@ -543,11 +550,15 @@ class DatasetInstancesRepositoryImpl @Inject constructor(
                             val cachedEvents = eventInstanceDao.getByEnrollment(entity.id)
                             if (cachedEvents.isNotEmpty()) {
                                 cachedEvents.map { eventEntity ->
+                                    val stageName = stageNameById[eventEntity.programStageId]
+                                        ?: eventEntity.programStageId
                                     com.ash.simpledataentry.domain.model.Event(
                                         id = eventEntity.id,
                                         programId = eventEntity.programId,
                                         programStageId = eventEntity.programStageId,
+                                        programStageName = stageName,
                                         enrollmentId = eventEntity.enrollmentId,
+                                        programStage = eventEntity.programStageId,
                                         organisationUnitId = eventEntity.organisationUnitId,
                                         organisationUnit = eventEntity.organisationUnitName,
                                         status = eventEntity.status,
@@ -559,11 +570,15 @@ class DatasetInstancesRepositoryImpl @Inject constructor(
                                     .byEnrollmentUid().eq(entity.id)
                                     .blockingGet()
                                     .map { event ->
+                                        val stageId = event.programStage() ?: ""
+                                        val stageName = stageNameById[stageId] ?: stageId
                                         com.ash.simpledataentry.domain.model.Event(
                                             id = event.uid(),
                                             programId = event.program() ?: programId,
-                                            programStageId = event.programStage() ?: "",
+                                            programStageId = stageId,
+                                            programStageName = stageName,
                                             enrollmentId = event.enrollment(),
+                                            programStage = stageId,
                                             organisationUnitId = event.organisationUnit() ?: "",
                                             status = event.status()?.name ?: "UNKNOWN",
                                             deleted = event.deleted() ?: false

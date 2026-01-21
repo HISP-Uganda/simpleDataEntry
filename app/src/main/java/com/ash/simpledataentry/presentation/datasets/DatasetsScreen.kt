@@ -312,6 +312,7 @@ fun DatasetsScreen(
     var showDeleteConfirmation by remember { mutableStateOf(false) }
     var showFilterSection by remember { mutableStateOf(false) }
     val activeAccountLabel by viewModel.activeAccountLabel.collectAsState()
+    val activeAccountSubtitle by viewModel.activeAccountSubtitle.collectAsState()
     val subtitle = when ((uiState as? UiState.Success)?.data?.currentProgramType ?: DomainProgramType.ALL) {
         DomainProgramType.ALL -> "All programs"
         DomainProgramType.DATASET -> "Datasets"
@@ -337,7 +338,7 @@ fun DatasetsScreen(
             ModalDrawerSheet {
                 Spacer(modifier = Modifier.height(16.dp))
                 val headerTitle = activeAccountLabel ?: "Menu"
-                val headerSubtitle = if (activeAccountLabel == null) "" else "Menu"
+                val headerSubtitle = activeAccountSubtitle.orEmpty()
                 Column(modifier = Modifier.padding(horizontal = 16.dp, vertical = 12.dp)) {
                     Text(
                         text = headerTitle,

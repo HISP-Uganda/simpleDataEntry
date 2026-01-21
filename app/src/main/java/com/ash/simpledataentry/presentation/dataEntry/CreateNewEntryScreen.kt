@@ -31,6 +31,8 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.TooltipBox
 import androidx.compose.material3.TooltipDefaults
+import androidx.compose.material3.SnackbarHost
+import androidx.compose.material3.SnackbarHostState
 import androidx.compose.material3.rememberTooltipState
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.ChevronRight
@@ -40,6 +42,7 @@ import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -62,6 +65,7 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
+import kotlinx.coroutines.launch
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -86,6 +90,8 @@ fun CreateNewEntryScreen(
     var showAllPeriods by remember { mutableStateOf(false) }
     val state by viewModel.state.collectAsState()
     val decodedDatasetName = remember(datasetName) { URLDecoder.decode(datasetName, "UTF-8") }
+    val snackbarHostState = remember { SnackbarHostState() }
+    val coroutineScope = rememberCoroutineScope()
 
     LaunchedEffect(datasetId, showAllPeriods) {
         try {
@@ -224,7 +230,18 @@ fun CreateNewEntryScreen(
                                 },
                                 modifier = Modifier
                                     .fillMaxWidth()
-                                    .clickable { showOrgUnitPicker = true }
+                                    .clickable {
+                                        if (orgUnits.size <= 1) {
+                                            coroutineScope.launch {
+                                                snackbarHostState.showSnackbar(
+                                                    message = selectedOrgUnit?.let { "Using ${it.name}" }
+                                                        ?: "No organisation units available."
+                                                )
+                                            }
+                                        } else {
+                                            showOrgUnitPicker = true
+                                        }
+                                    }
                             )
 
                             ExposedDropdownMenuBox(
@@ -329,24 +346,33 @@ fun CreateNewEntryScreen(
                                 },
                                 state = tooltipState
                             ) {
-                                Button(
-                                    onClick = {
-                                        val encodedDatasetName = java.net.URLEncoder.encode(datasetName, "UTF-8")
-                                        val encodedPeriod = java.net.URLEncoder.encode(selectedPeriod, "UTF-8")
-                                        val encodedOrgUnit = java.net.URLEncoder.encode(selectedOrgUnit!!.id, "UTF-8")
-                                        val encodedAttributeOptionCombo = java.net.URLEncoder.encode(resolvedAttributeOptionCombo, "UTF-8")
-                                        navController.navigate(
-                                            "EditEntry/$datasetId/$encodedPeriod/$encodedOrgUnit/$encodedAttributeOptionCombo/$encodedDatasetName"
-                                        ) {
-                                            popUpTo("CreateDataEntry/$datasetId/$datasetName") { inclusive = true }
-                                        }
-                                    },
-                                    enabled = canContinue,
+                                Box(
                                     modifier = Modifier
                                         .fillMaxWidth()
                                         .height(48.dp)
+                                        .clickable(enabled = !canContinue) {
+                                            coroutineScope.launch { tooltipState.show() }
+                                        }
                                 ) {
-                                    Text("Continue")
+                                    Button(
+                                        onClick = {
+                                            val encodedDatasetName = java.net.URLEncoder.encode(datasetName, "UTF-8")
+                                            val encodedPeriod = java.net.URLEncoder.encode(selectedPeriod, "UTF-8")
+                                            val encodedOrgUnit = java.net.URLEncoder.encode(selectedOrgUnit!!.id, "UTF-8")
+                                            val encodedAttributeOptionCombo = java.net.URLEncoder.encode(resolvedAttributeOptionCombo, "UTF-8")
+                                            navController.navigate(
+                                                "EditEntry/$datasetId/$encodedPeriod/$encodedOrgUnit/$encodedAttributeOptionCombo/$encodedDatasetName"
+                                            ) {
+                                                popUpTo("CreateDataEntry/$datasetId/$datasetName") { inclusive = true }
+                                            }
+                                        },
+                                        enabled = canContinue,
+                                        modifier = Modifier
+                                            .fillMaxWidth()
+                                            .height(48.dp)
+                                    ) {
+                                        Text("Continue")
+                                    }
                                 }
                             }
 
@@ -360,6 +386,15 @@ fun CreateNewEntryScreen(
                     }
                 }
             }
+        }
+
+        Box(
+            modifier = Modifier
+                .fillMaxSize()
+                .padding(bottom = 12.dp),
+            contentAlignment = Alignment.BottomCenter
+        ) {
+            SnackbarHost(hostState = snackbarHostState)
         }
 
         if (showOrgUnitPicker) {

@@ -531,7 +531,9 @@ class DataEntryRepositoryImpl @Inject constructor(
             val combos = d2.categoryModule().categoryOptionCombos()
                 .byCategoryComboUid().eq(categoryComboUid)
                 .blockingGet()
-            combos.map { it.uid() to (it.displayName() ?: it.uid()) }
+            combos
+                .sortedBy { (it.displayName() ?: it.uid()).lowercase() }
+                .map { it.uid() to (it.displayName() ?: it.uid()) }
         }
     }
 

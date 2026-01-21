@@ -23,7 +23,7 @@ import com.ash.simpledataentry.domain.repository.DataEntryRepository
 import com.ash.simpledataentry.domain.repository.DatasetInstancesRepository
 import com.ash.simpledataentry.util.NetworkUtils
 import com.ash.simpledataentry.util.PeriodHelper
-import com.ash.simpledataentry.data.local.DataValueDraftDao
+import com.ash.simpledataentry.data.DatabaseProvider
 import com.ash.simpledataentry.data.sync.SyncQueueManager
 import com.ash.simpledataentry.presentation.core.LoadingOperation
 import com.ash.simpledataentry.presentation.core.LoadingPhase
@@ -60,7 +60,7 @@ class DatasetInstancesViewModel @Inject constructor(
     private val dataEntryRepository: DataEntryRepository,
     private val datasetInstacesRepository: DatasetInstancesRepository,
     private val datasetsRepository: com.ash.simpledataentry.domain.repository.DatasetsRepository,
-    private val draftDao: DataValueDraftDao,
+    private val databaseProvider: DatabaseProvider,
     private val syncQueueManager: SyncQueueManager,
     private val sessionManager: com.ash.simpledataentry.data.SessionManager,
     private val syncStatusController: SyncStatusController,
@@ -90,6 +90,8 @@ class DatasetInstancesViewModel @Inject constructor(
     private var lastSuccessfulData: DatasetInstancesData? = null
     private var pendingSuccessMessage: String? = null
     private var isSyncOverlayVisible = false
+    private var userSyncInProgress = false
+    private val draftDao get() = databaseProvider.getCurrentDatabase().dataValueDraftDao()
 
     private fun currentData(): DatasetInstancesData {
         return when (val state = _uiState.value) {
@@ -126,7 +128,7 @@ class DatasetInstancesViewModel @Inject constructor(
         // Observe sync progress from SyncQueueManager
         viewModelScope.launch {
             syncQueueManager.detailedProgress.collect { progress ->
-                if (progress != null) {
+                if (progress != null && userSyncInProgress) {
                     isSyncOverlayVisible = true
                     _uiState.value = UiState.Loading(
                         operation = LoadingOperation.Syncing(progress),
@@ -135,8 +137,9 @@ class DatasetInstancesViewModel @Inject constructor(
                             message = progress.phaseDetail
                         )
                     )
-                } else if (isSyncOverlayVisible) {
+                } else if (progress == null && isSyncOverlayVisible) {
                     isSyncOverlayVisible = false
+                    userSyncInProgress = false
                     lastSuccessfulData?.let { setSuccessData(it) } ?: run {
                         _uiState.value = UiState.Loading(LoadingOperation.Initial)
                     }
@@ -558,6 +561,7 @@ class DatasetInstancesViewModel @Inject constructor(
                         )
                     }
                     com.ash.simpledataentry.domain.model.ProgramType.DATASET -> {
+                        userSyncInProgress = true
                         // Use the enhanced SyncQueueManager for dataset synchronization
                         val syncResult = syncQueueManager.startSync(forceSync = uploadFirst)
                         syncResult.fold(
@@ -593,6 +597,10 @@ class DatasetInstancesViewModel @Inject constructor(
                     error = e.toUiError(),
                     previousData = previousData
                 )
+            } finally {
+                if (currentProgramType == com.ash.simpledataentry.domain.model.ProgramType.DATASET) {
+                    userSyncInProgress = false
+                }
             }
         }
     }
@@ -603,6 +611,7 @@ class DatasetInstancesViewModel @Inject constructor(
     ) {
         viewModelScope.launch {
             try {
+                userSyncInProgress = true
                 val result = syncQueueManager.startSyncForInstance(
                     datasetId = instance.programId,
                     period = instance.period.id,
@@ -623,6 +632,8 @@ class DatasetInstancesViewModel @Inject constructor(
             } catch (e: Exception) {
                 syncQueueManager.clearErrorState()
                 onResult(false, e.message ?: "Failed to sync entry.")
+            } finally {
+                userSyncInProgress = false
             }
         }
     }

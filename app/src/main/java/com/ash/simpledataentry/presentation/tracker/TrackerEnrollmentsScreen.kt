@@ -6,6 +6,9 @@ import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.horizontalScroll
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.selection.selectable
 import androidx.compose.foundation.selection.selectableGroup
 import androidx.compose.foundation.shape.CircleShape
@@ -17,6 +20,8 @@ import androidx.compose.material.icons.filled.FilterList
 import androidx.compose.material.icons.filled.Person
 import androidx.compose.material.icons.filled.Search
 import androidx.compose.material.icons.filled.Sync
+import androidx.compose.material.icons.filled.ViewList
+import androidx.compose.material.icons.filled.ViewModule
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
@@ -214,24 +219,16 @@ fun TrackerEnrollmentsScreen(
                                 }
                             )
                         }
-                    }
 
-                    Row(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .padding(horizontal = 16.dp, vertical = 4.dp),
-                        horizontalArrangement = Arrangement.spacedBy(8.dp)
-                    ) {
-                        FilterChip(
-                            selected = !isLineList,
-                            onClick = { isLineList = false },
-                            label = { Text("Cards") }
-                        )
-                        FilterChip(
-                            selected = isLineList,
-                            onClick = { isLineList = true },
-                            label = { Text("Line list") }
-                        )
+                        IconButton(
+                            onClick = { isLineList = !isLineList }
+                        ) {
+                            Icon(
+                                imageVector = if (isLineList) Icons.Default.ViewModule else Icons.Default.ViewList,
+                                contentDescription = "Toggle list view",
+                                tint = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                        }
                     }
                     // Content with data
                     when {
@@ -448,7 +445,7 @@ private fun EnrollmentCard(
                     )
                     if (!idValue.isNullOrBlank()) {
                         Text(
-                            text = idValue,
+                            text = idValue.orEmpty(),
                             style = MaterialTheme.typography.bodySmall,
                             color = MaterialTheme.colorScheme.onSurfaceVariant,
                             maxLines = 1
@@ -456,7 +453,7 @@ private fun EnrollmentCard(
                     }
                     if (!phoneValue.isNullOrBlank()) {
                         Text(
-                            text = phoneValue,
+                            text = phoneValue.orEmpty(),
                             style = MaterialTheme.typography.bodySmall,
                             color = MaterialTheme.colorScheme.onSurfaceVariant,
                             maxLines = 1
@@ -665,6 +662,7 @@ private fun TrackerEnrollmentFilterDialog(
                 modifier = Modifier
                     .fillMaxWidth()
                     .heightIn(max = 600.dp)
+                    .verticalScroll(rememberScrollState())
                     .padding(vertical = 8.dp),
                 verticalArrangement = Arrangement.spacedBy(16.dp)
             ) {
@@ -973,6 +971,19 @@ private fun EnrollmentLineList(
     enrollments: List<com.ash.simpledataentry.domain.model.ProgramInstance.TrackerEnrollment>,
     onEnrollmentClick: (com.ash.simpledataentry.domain.model.ProgramInstance.TrackerEnrollment) -> Unit
 ) {
+    val scrollState = rememberScrollState()
+    val stageColumns = remember(enrollments) {
+        enrollments
+            .flatMap { enrollment ->
+                enrollment.events.map { event ->
+                    event.programStageName ?: event.programStage.ifBlank { "Stage" }
+                }
+            }
+            .distinct()
+    }
+    val columnWidth = 120.dp
+    val nameColumnWidth = 180.dp
+
     LazyColumn(
         modifier = Modifier
             .fillMaxSize()
@@ -989,26 +1000,49 @@ private fun EnrollmentLineList(
                     text = "Name",
                     style = MaterialTheme.typography.labelSmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    modifier = Modifier.weight(0.35f)
+                    modifier = Modifier.width(nameColumnWidth)
                 )
-                Text(
-                    text = "Org Unit",
-                    style = MaterialTheme.typography.labelSmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    modifier = Modifier.weight(0.25f)
-                )
-                Text(
-                    text = "Status",
-                    style = MaterialTheme.typography.labelSmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    modifier = Modifier.weight(0.2f)
-                )
-                Text(
-                    text = "Sync",
-                    style = MaterialTheme.typography.labelSmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    modifier = Modifier.weight(0.2f)
-                )
+                Row(
+                    modifier = Modifier
+                        .horizontalScroll(scrollState)
+                        .padding(start = 8.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Text(
+                        text = "Org Unit",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        modifier = Modifier.width(columnWidth)
+                    )
+                    Text(
+                        text = "Status",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        modifier = Modifier.width(columnWidth)
+                    )
+                    Text(
+                        text = "Sync",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        modifier = Modifier.width(columnWidth)
+                    )
+                    Text(
+                        text = "Events",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        modifier = Modifier.width(columnWidth)
+                    )
+                    stageColumns.forEach { stageName ->
+                        Text(
+                            text = stageName,
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            modifier = Modifier.width(columnWidth),
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis
+                        )
+                    }
+                }
             }
             Divider()
         }
@@ -1021,6 +1055,10 @@ private fun EnrollmentLineList(
                 else -> "Active"
             }
             val syncLabel = if (enrollment.syncStatus == SyncStatus.SYNCED) "Synced" else "Not synced"
+            val stageCounts = enrollment.events
+                .groupingBy { it.programStageName ?: it.programStage.ifBlank { "Stage" } }
+                .eachCount()
+            val totalEvents = enrollment.events.size
 
             Row(
                 modifier = Modifier
@@ -1032,45 +1070,66 @@ private fun EnrollmentLineList(
                 Text(
                     text = displayName,
                     style = MaterialTheme.typography.bodyMedium,
-                    modifier = Modifier.weight(0.35f),
+                    modifier = Modifier.width(nameColumnWidth),
                     maxLines = 1,
                     overflow = TextOverflow.Ellipsis
                 )
-                Text(
-                    text = enrollment.organisationUnit.name,
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    modifier = Modifier.weight(0.25f),
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis
-                )
-                Box(modifier = Modifier.weight(0.2f)) {
-                    StatusChip(
-                        text = completionLabel,
-                        containerColor = when (enrollment.state) {
-                            com.ash.simpledataentry.domain.model.ProgramInstanceState.COMPLETED -> StatusCompletedLight
-                            com.ash.simpledataentry.domain.model.ProgramInstanceState.CANCELLED -> MaterialTheme.colorScheme.errorContainer
-                            else -> StatusDraftLight
-                        },
-                        contentColor = when (enrollment.state) {
-                            com.ash.simpledataentry.domain.model.ProgramInstanceState.COMPLETED -> StatusCompleted
-                            com.ash.simpledataentry.domain.model.ProgramInstanceState.CANCELLED -> MaterialTheme.colorScheme.onErrorContainer
-                            else -> StatusDraft
-                        }
+                Row(
+                    modifier = Modifier
+                        .horizontalScroll(scrollState)
+                        .padding(start = 8.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Text(
+                        text = enrollment.organisationUnit.name,
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        modifier = Modifier.width(columnWidth),
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis
                     )
-                }
-                Box(modifier = Modifier.weight(0.2f)) {
-                    StatusChip(
-                        text = syncLabel,
-                        containerColor = when (enrollment.syncStatus) {
-                            SyncStatus.SYNCED -> StatusSyncedLight
-                            else -> StatusDraftLight
-                        },
-                        contentColor = when (enrollment.syncStatus) {
-                            SyncStatus.SYNCED -> StatusSynced
-                            else -> StatusDraft
-                        }
+                    Box(modifier = Modifier.width(columnWidth)) {
+                        StatusChip(
+                            text = completionLabel,
+                            containerColor = when (enrollment.state) {
+                                com.ash.simpledataentry.domain.model.ProgramInstanceState.COMPLETED -> StatusCompletedLight
+                                com.ash.simpledataentry.domain.model.ProgramInstanceState.CANCELLED -> MaterialTheme.colorScheme.errorContainer
+                                else -> StatusDraftLight
+                            },
+                            contentColor = when (enrollment.state) {
+                                com.ash.simpledataentry.domain.model.ProgramInstanceState.COMPLETED -> StatusCompleted
+                                com.ash.simpledataentry.domain.model.ProgramInstanceState.CANCELLED -> MaterialTheme.colorScheme.onErrorContainer
+                                else -> StatusDraft
+                            }
+                        )
+                    }
+                    Box(modifier = Modifier.width(columnWidth)) {
+                        StatusChip(
+                            text = syncLabel,
+                            containerColor = when (enrollment.syncStatus) {
+                                SyncStatus.SYNCED -> StatusSyncedLight
+                                else -> StatusDraftLight
+                            },
+                            contentColor = when (enrollment.syncStatus) {
+                                SyncStatus.SYNCED -> StatusSynced
+                                else -> StatusDraft
+                            }
+                        )
+                    }
+                    Text(
+                        text = totalEvents.toString(),
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        modifier = Modifier.width(columnWidth)
                     )
+                    stageColumns.forEach { stageName ->
+                        Text(
+                            text = stageCounts[stageName]?.toString() ?: "0",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            modifier = Modifier.width(columnWidth)
+                        )
+                    }
                 }
             }
             Divider()
