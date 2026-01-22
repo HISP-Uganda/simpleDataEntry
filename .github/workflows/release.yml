@@ -88,10 +88,15 @@ jobs:
           name: simple-data-entry-aab
           path: app/build/outputs/bundle/release/*.aab
 
-      - name: Create GitHub Release
+      - name: Create GitHub Release and attach APK/AAB
         if: ${{ startsWith(github.ref, 'refs/tags/') }}
-        uses: softprops/action-gh-release@v2
+        uses: ncipollo/release-action@v1
         with:
+          
+          tag: ${{ github.ref_name }}
+          name: "Release ${{ github.ref_name }}"
+          body: |
+            Release created by workflow run ${{ github.run_id }} for commit ${{ github.sha }}.
           files: |
             app/build/outputs/apk/release/*.apk
             app/build/outputs/bundle/release/*.aab
