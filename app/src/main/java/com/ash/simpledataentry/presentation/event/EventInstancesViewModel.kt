@@ -43,7 +43,8 @@ data class EventInstancesData(
     val lineListColumns: List<EventTableColumn> = emptyList(),
     val lineListRows: List<EventTableRow> = emptyList(),
     val lineListLoading: Boolean = false,
-    val lineListEventIds: List<String> = emptyList()
+    val lineListEventIds: List<String> = emptyList(),
+    val visibleLineListColumnIds: Set<String> = emptySet()
 )
 
 @HiltViewModel
@@ -225,9 +226,30 @@ class EventInstancesViewModel @Inject constructor(
                 lineListColumns = columns,
                 lineListRows = rows,
                 lineListLoading = false,
-                lineListEventIds = eventIds
+                lineListEventIds = eventIds,
+                visibleLineListColumnIds = mergeVisibleColumns(columns.map { it.id }.toSet())
             )
             _uiState.value = UiState.Success(updatedData)
+        }
+    }
+
+    fun updateVisibleLineListColumns(visibleColumnIds: Set<String>) {
+        val current = getCurrentData()
+        val filtered = visibleColumnIds.intersect(current.lineListColumns.map { it.id }.toSet())
+        _uiState.value = UiState.Success(
+            current.copy(visibleLineListColumnIds = filtered)
+        )
+    }
+
+    private fun mergeVisibleColumns(columnIds: Set<String>): Set<String> {
+        val current = getCurrentData().visibleLineListColumnIds
+        if (columnIds.isEmpty()) return emptySet()
+        if (current.isEmpty()) return columnIds
+        val kept = current.intersect(columnIds)
+        return if (kept.isEmpty()) {
+            columnIds
+        } else {
+            kept + (columnIds - current)
         }
     }
 

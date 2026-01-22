@@ -252,7 +252,7 @@ fun ReportIssuesScreen(
                     
                     val intent = Intent(Intent.ACTION_SENDTO).apply {
                         data = Uri.parse("mailto:")
-                        putExtra(Intent.EXTRA_EMAIL, arrayOf("support@dhis2dataentry.com"))
+                        putExtra(Intent.EXTRA_EMAIL, arrayOf("info@hispuganda.org"))
                         putExtra(Intent.EXTRA_SUBJECT, subject)
                         putExtra(Intent.EXTRA_TEXT, body)
                     }

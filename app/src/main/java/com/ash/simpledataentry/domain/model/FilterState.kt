@@ -40,6 +40,23 @@ data class DatasetInstanceFilterState(
     }
 }
 
+data class EventInstanceFilterState(
+    val periodType: PeriodFilterType = PeriodFilterType.ALL,
+    val relativePeriod: RelativePeriod? = null,
+    val customFromDate: Date? = null,
+    val customToDate: Date? = null,
+    val syncStatus: SyncStatus = SyncStatus.ALL,
+    val completionStatus: CompletionStatus = CompletionStatus.ALL,
+    val searchQuery: String = ""
+) {
+    fun hasActiveFilters(): Boolean {
+        return periodType != PeriodFilterType.ALL ||
+            syncStatus != SyncStatus.ALL ||
+            completionStatus != CompletionStatus.ALL ||
+            searchQuery.isNotBlank()
+    }
+}
+
 enum class PeriodFilterType {
     ALL,
     RELATIVE,

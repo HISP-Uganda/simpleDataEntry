@@ -234,6 +234,11 @@ fun AboutScreen(
                         color = MaterialTheme.colorScheme.onSecondaryContainer
                     )
                     Text(
+                        text = "Developed by HISP Uganda",
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = MaterialTheme.colorScheme.onSecondaryContainer
+                    )
+                    Text(
                         text = "DHIS2 is a product of HISP (Health Information Systems Programme)",
                         style = MaterialTheme.typography.bodyMedium,
                         color = MaterialTheme.colorScheme.onSecondaryContainer
