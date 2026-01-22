@@ -1,23 +1,19 @@
-# Build, sign and upload APK as a GitHub Release asset
 on:
   push:
-    branches:
-      - '**'
+    tags:
+      - "v*"
   workflow_dispatch:
 
 permissions:
-  contents: write
+  contents: write  
 
-name: Build, Sign and Release APK
+name: Android Release
 
 jobs:
   build-and-release:
     runs-on: ubuntu-latest
-    env:
-      SIGNED_APK_DIR: signed-apks
-      RELEASE_TAG: apk-${{ github.sha }}
     steps:
-      - name: Checkout code
+      - name: Checkout
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
@@ -28,61 +24,60 @@ jobs:
           distribution: temurin
           java-version: '21'
 
-      - name: Stop any existing Gradle daemons
-        run: ./gradlew --stop || true
-      - name: Cache Gradle
-        uses: actions/cache@v4
-        with:
-          path: |
-            ~/.gradle/caches
-            ~/.gradle/wrapper
-          key: gradle-${{ runner.os }}-${{ hashFiles('**/*.gradle*', '**/gradle-wrapper.properties') }}
-          restore-keys: |
-            gradle-${{ runner.os }}-
+      - name: Set up Gradle
+        uses: gradle/actions/setup-gradle@v4
 
       - name: Decode keystore (if provided)
         run: |
           if [ -z "${{ secrets.KEYSTORE_BASE64 }}" ]; then
-            echo "KEYSTORE_BASE64 not set — skipping keystore decode (build will be unsigned)"
+            echo "KEYSTORE_BASE64 not set — continuing without keystore (build will be unsigned)"
             exit 0
           fi
-          # create runner temp directory path and decode keystore there
+          mkdir -p "$RUNNER_TEMP"
           echo "${{ secrets.KEYSTORE_BASE64 }}" | base64 --decode > "$RUNNER_TEMP/keystore.jks"
+          chmod 600 "$RUNNER_TEMP/keystore.jks"
           echo "Keystore decoded to $RUNNER_TEMP/keystore.jks"
-      - name: Build release APK and AAB
+
+      - name: Debug: verify files before build
+        run: |
+          echo "JAVA_HOME=$JAVA_HOME"
+          java -version
+          ./gradlew -version
+
+      - name: Build release APK and AAB (signed if keystore present)
         env:
+          ANDROID_KEYSTORE_PATH: $RUNNER_TEMP/keystore.jks
           ANDROID_KEYSTORE_PASSWORD: ${{ secrets.KEYSTORE_PASSWORD }}
           ANDROID_KEY_ALIAS: ${{ secrets.KEY_ALIAS }}
           ANDROID_KEY_PASSWORD: ${{ secrets.KEY_PASSWORD }}
         run: |
-          # If keystore was decoded, RUNNER_TEMP/keystore.jks exists. Use injected signing props so no keystore info is committed.
-          STORE_FILE="$RUNNER_TEMP/keystore.jks"
+          STORE="$ANDROID_KEYSTORE_PATH"
           STORE_ARG=""
-          if [ -f "$STORE_FILE" ]; then
-            STORE_ARG="-Pandroid.injected.signing.store.file=$STORE_FILE -Pandroid.injected.signing.store.password=$ANDROID_KEYSTORE_PASSWORD -Pandroid.injected.signing.key.alias=$ANDROID_KEY_ALIAS -Pandroid.injected.signing.key.password=$ANDROID_KEY_PASSWORD"
-            echo "Signing with keystore at $STORE_FILE"
+          if [ -f "$STORE" ]; then
+            # Use Android's injected signing properties so you don't have to commit the keystore
+            STORE_ARG="-Pandroid.injected.signing.store.file=$STORE -Pandroid.injected.signing.store.password=$ANDROID_KEYSTORE_PASSWORD -Pandroid.injected.signing.key.alias=$ANDROID_KEY_ALIAS -Pandroid.injected.signing.key.password=$ANDROID_KEY_PASSWORD"
+            echo "Will sign using keystore at $STORE"
           else
-            echo "No keystore found at $STORE_FILE; building unsigned artifacts"
-          fi
-          # Force Gradle to use the setup-java JDK on the runner in case project has local overrides
-          ./gradlew assembleRelease bundleRelease -Dorg.gradle.java.home="$JAVA_HOME" $STORE_ARG
-      - name: Remove keystore file if present
-        if: always()
-        run: |
-          if [ -f "$RUNNER_TEMP/keystore.jks" ]; then
-            shred -u "$RUNNER_TEMP/keystore.jks" || rm -f "$RUNNER_TEMP/keystore.jks"
-            echo "Keystore removed"
-          else
-            echo "No keystore to remove"
+            echo "No keystore found at $STORE; building unsigned artifacts"
           fi
 
-      - name: Upload APK artifact
+          # Force Gradle to use the runner JDK and do a clean build
+          ./gradlew --no-daemon clean assembleRelease bundleRelease -Dorg.gradle.java.home="$JAVA_HOME" $STORE_ARG
+
+      - name: Show built artifacts (debug)
+        run: |
+          echo "APK files:"
+          ls -al app/build/outputs/apk/release || true
+          echo "AAB files:"
+          ls -al app/build/outputs/bundle/release || true
+
+      - name: Upload APK artifact (Actions artifact - optional)
         uses: actions/upload-artifact@v4
         with:
           name: simple-data-entry-apk
           path: app/build/outputs/apk/release/*.apk
 
-      - name: Upload AAB artifact
+      - name: Upload AAB artifact (Actions artifact - optional)
         uses: actions/upload-artifact@v4
         with:
           name: simple-data-entry-aab
@@ -92,7 +87,6 @@ jobs:
         if: ${{ startsWith(github.ref, 'refs/tags/') }}
         uses: ncipollo/release-action@v1
         with:
-          
           tag: ${{ github.ref_name }}
           name: "Release ${{ github.ref_name }}"
           body: |
@@ -100,3 +94,16 @@ jobs:
           files: |
             app/build/outputs/apk/release/*.apk
             app/build/outputs/bundle/release/*.aab
+      
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+
+      - name: Remove decoded keystore (always)
+        if: always()
+        run: |
+          if [ -f "$RUNNER_TEMP/keystore.jks" ]; then
+            shred -u "$RUNNER_TEMP/keystore.jks" || rm -f "$RUNNER_TEMP/keystore.jks"
+            echo "Keystore removed"
+          else
+            echo "No keystore to remove"
+          fi
