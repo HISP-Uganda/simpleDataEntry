@@ -94,9 +94,7 @@ jobs:
           files: |
             app/build/outputs/apk/release/*.apk
             app/build/outputs/bundle/release/*.aab
-
-        env:
-          GITHUB_TOKEN: ${{ github.token }}
+          token: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Remove decoded keystore (always)
         if: always()
