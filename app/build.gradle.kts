@@ -14,6 +14,7 @@ android {
         targetSdk = 35
         versionCode = 1
         versionName = "1.0"
+        setProperty("archivesBaseName", "Simple-Data-Entry-v${versionName}")
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }
@@ -36,15 +37,6 @@ android {
     }
     buildFeatures {
         compose = true
-    }
-
-    applicationVariants.all {
-        val variant = this
-        variant.outputs.all {
-            val output = this as com.android.build.gradle.internal.api.BaseVariantOutputImpl
-            val versionName = variant.versionName
-            output.outputFileName = "Simple-Data-Entry-${variant.buildType.name}-v${versionName}.apk"
-        }
     }
 }
 
