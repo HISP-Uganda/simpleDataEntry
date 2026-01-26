@@ -1,19 +1,20 @@
+# Build, sign and upload APK as a GitHub Release asset
 on:
   push:
     tags:
-      - "v*"
+      - 'v*'
   workflow_dispatch:
 
 permissions:
   contents: write
 
-name: Android Release
+name: Build, Sign and Release APK
 
 jobs:
   build-and-release:
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout
+      - name: Checkout code
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
@@ -24,79 +25,45 @@ jobs:
           distribution: temurin
           java-version: '21'
 
-      - name: Set up Gradle
-        uses: gradle/actions/setup-gradle@v4
+      - name: Stop any existing Gradle daemons
+        run: ./gradlew --stop || true
+
+      - name: Cache Gradle
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.gradle/caches
+            ~/.gradle/wrapper
+          key: gradle-${{ runner.os }}-${{ hashFiles('**/*.gradle*', '**/gradle-wrapper.properties') }}
+          restore-keys: |
+            gradle-${{ runner.os }}-
 
       - name: Decode keystore (if provided)
         run: |
           if [ -z "${{ secrets.KEYSTORE_BASE64 }}" ]; then
-            echo "KEYSTORE_BASE64 not set — continuing without keystore (build will be unsigned)"
+            echo "KEYSTORE_BASE64 not set - skipping keystore decode (build will be unsigned)"
             exit 0
           fi
-          mkdir -p "$RUNNER_TEMP"
           echo "${{ secrets.KEYSTORE_BASE64 }}" | base64 --decode > "$RUNNER_TEMP/keystore.jks"
-          chmod 600 "$RUNNER_TEMP/keystore.jks"
           echo "Keystore decoded to $RUNNER_TEMP/keystore.jks"
 
-      - name: Debug: verify files before build
-        run: |
-          echo "JAVA_HOME=$JAVA_HOME"
-          java -version
-          ./gradlew -version
-
-      - name: Build release APK and AAB (signed if keystore present)
+      - name: Build release APK and AAB
         env:
-          ANDROID_KEYSTORE_PATH: $RUNNER_TEMP/keystore.jks
           ANDROID_KEYSTORE_PASSWORD: ${{ secrets.KEYSTORE_PASSWORD }}
           ANDROID_KEY_ALIAS: ${{ secrets.KEY_ALIAS }}
           ANDROID_KEY_PASSWORD: ${{ secrets.KEY_PASSWORD }}
         run: |
-          STORE="$ANDROID_KEYSTORE_PATH"
+          STORE_FILE="$RUNNER_TEMP/keystore.jks"
           STORE_ARG=""
-          if [ -f "$STORE" ]; then
-            # Use Android's injected signing properties so you don't have to commit the keystore
-            STORE_ARG="-Pandroid.injected.signing.store.file=$STORE -Pandroid.injected.signing.store.password=$ANDROID_KEYSTORE_PASSWORD -Pandroid.injected.signing.key.alias=$ANDROID_KEY_ALIAS -Pandroid.injected.signing.key.password=$ANDROID_KEY_PASSWORD"
-            echo "Will sign using keystore at $STORE"
+          if [ -f "$STORE_FILE" ]; then
+            STORE_ARG="-Pandroid.injected.signing.store.file=$STORE_FILE -Pandroid.injected.signing.store.password=$ANDROID_KEYSTORE_PASSWORD -Pandroid.injected.signing.key.alias=$ANDROID_KEY_ALIAS -Pandroid.injected.signing.key.password=$ANDROID_KEY_PASSWORD"
+            echo "Signing with keystore at $STORE_FILE"
           else
-            echo "No keystore found at $STORE; building unsigned artifacts"
+            echo "No keystore found at $STORE_FILE; building unsigned artifacts"
           fi
+          ./gradlew assembleRelease bundleRelease -Dorg.gradle.java.home="$JAVA_HOME" $STORE_ARG
 
-          # Force Gradle to use the runner JDK and do a clean build
-          ./gradlew --no-daemon clean assembleRelease bundleRelease -Dorg.gradle.java.home="$JAVA_HOME" $STORE_ARG
-
-      - name: Show built artifacts (debug)
-        run: |
-          echo "APK files:"
-          ls -al app/build/outputs/apk/release || true
-          echo "AAB files:"
-          ls -al app/build/outputs/bundle/release || true
-
-      - name: Upload APK artifact (Actions artifact - optional)
-        uses: actions/upload-artifact@v4
-        with:
-          name: simple-data-entry-apk
-          path: app/build/outputs/apk/release/*.apk
-
-      - name: Upload AAB artifact (Actions artifact - optional)
-        uses: actions/upload-artifact@v4
-        with:
-          name: simple-data-entry-aab
-          path: app/build/outputs/bundle/release/*.aab
-
-      - name: Create GitHub Release and attach APK/AAB
-        if: ${{ startsWith(github.ref, 'refs/tags/') }}
-        uses: ncipollo/release-action@v1
-        with:
-          tag: ${{ github.ref_name }}
-          name: "Release ${{ github.ref_name }}"
-          body: |
-            Release created by workflow run ${{ github.run_id }} for commit ${{ github.sha }}.
-          files: |
-            app/build/outputs/apk/release/*.apk
-            app/build/outputs/bundle/release/*.aab
-          token: ${{ secrets.GITHUB_TOKEN }}
-
-      - name: Remove decoded keystore (always)
+      - name: Remove keystore file if present
         if: always()
         run: |
           if [ -f "$RUNNER_TEMP/keystore.jks" ]; then
@@ -105,3 +72,27 @@ jobs:
           else
             echo "No keystore to remove"
           fi
+
+      - name: Upload APK artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: simple-data-entry-apk
+          path: app/build/outputs/apk/release/*.apk
+
+      - name: Upload AAB artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: simple-data-entry-aab
+          path: app/build/outputs/bundle/release/*.aab
+
+      - name: Create GitHub Release and attach APK/AAB
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: ncipollo/release-action@v1
+        with:
+          tag: ${{ github.ref_name }}
+          name: Release ${{ github.ref_name }}
+          body: |
+            Release created by workflow run ${{ github.run_id }} for commit ${{ github.sha }}.
+          files: |
+            app/build/outputs/apk/release/*.apk
+            app/build/outputs/bundle/release/*.aab
