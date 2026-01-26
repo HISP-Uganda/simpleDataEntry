@@ -4,6 +4,8 @@ plugins {
     alias(libs.plugins.kotlin.compose)
 }
 
+base.archivesName.set("Simple-Data-Entry")
+
 android {
     namespace = "com.ash.simpledataentry"
     compileSdk = 35
@@ -14,7 +16,6 @@ android {
         targetSdk = 35
         versionCode = 1
         versionName = "1.0"
-        setProperty("archivesBaseName", "Simple-Data-Entry-v${versionName}")
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }
