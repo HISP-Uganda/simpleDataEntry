@@ -93,6 +93,5 @@ jobs:
           name: Release ${{ github.ref_name }}
           body: |
             Release created by workflow run ${{ github.run_id }} for commit ${{ github.sha }}.
-          files: |
-            app/build/outputs/apk/release/*.apk
-            app/build/outputs/bundle/release/*.aab
+          artifacts: "app/build/outputs/apk/release/*.apk,app/build/outputs/bundle/release/*.aab"
+          allowUpdates: true

@@ -37,6 +37,15 @@ android {
     buildFeatures {
         compose = true
     }
+
+    applicationVariants.all {
+        val variant = this
+        variant.outputs.all {
+            val output = this as com.android.build.gradle.internal.api.BaseVariantOutputImpl
+            val versionName = variant.versionName
+            output.outputFileName = "Simple-Data-Entry-${variant.buildType.name}-v${versionName}.apk"
+        }
+    }
 }
 
 dependencies {
