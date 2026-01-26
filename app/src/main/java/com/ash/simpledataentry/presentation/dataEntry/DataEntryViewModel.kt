@@ -5,10 +5,9 @@ import android.os.Build
 import android.util.Log
 import androidx.annotation.RequiresApi
 import androidx.compose.foundation.layout.size
-import androidx.compose.runtime.mutableStateMapOf
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
-import com.ash.simpledataentry.data.local.DataValueDraftDao
+import com.ash.simpledataentry.data.DatabaseProvider
 import com.ash.simpledataentry.data.local.DataValueDraftEntity
 import com.ash.simpledataentry.data.repositoryImpl.ValidationRepository
 import com.ash.simpledataentry.domain.model.*
@@ -31,6 +30,8 @@ import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.flow.*
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import org.hisp.dhis.android.core.dataset.DataSetEditableStatus
+import org.hisp.dhis.android.core.dataset.DataSetNonEditableReason
 import javax.inject.Inject
 
 data class DataEntryState(
@@ -74,6 +75,12 @@ data class DataEntryState(
     val completionAction: com.ash.simpledataentry.presentation.core.CompletionAction? = null,
     val optionSets: Map<String, com.ash.simpledataentry.domain.model.OptionSet> = emptyMap(), // Option sets by data element ID
     val renderTypes: Map<String, com.ash.simpledataentry.domain.model.RenderType> = emptyMap(), // Computed render types by data element ID
+    val valuesByCombo: Map<String, List<DataValue>> = emptyMap(),
+    val valuesByElement: Map<String, List<DataValue>> = emptyMap(),
+    val dataElementsBySection: Map<String, List<Pair<String, String>>> = emptyMap(),
+    val isEntryEditable: Boolean = true,
+    val nonEditableReason: DataSetNonEditableReason? = null,
+    val metadataDisabledFields: Set<String> = emptySet(),
 
     // Program rule effects (currently for tracker/event, can be extended to aggregate)
     val hiddenFields: Set<String> = emptySet(),
@@ -103,7 +110,7 @@ class DataEntryViewModel @Inject constructor(
     private val application: Application,
     private val repository: DataEntryRepository,
     private val useCases: DataEntryUseCases,
-    private val draftDao: DataValueDraftDao,
+    private val databaseProvider: DatabaseProvider,
     private val validationRepository: ValidationRepository,
     private val syncQueueManager: SyncQueueManager,
     private val networkStateManager: NetworkStateManager,
@@ -117,6 +124,7 @@ class DataEntryViewModel @Inject constructor(
     val uiState: StateFlow<UiState<DataEntryState>> = _uiState.asStateFlow()
     private var lastSuccessfulState: DataEntryState? = null
     val syncController: SyncStatusController = syncStatusController
+    private val draftDao get() = databaseProvider.getCurrentDatabase().dataValueDraftDao()
 
     private fun emitSuccessState() {
         val current = _state.value
@@ -167,18 +175,20 @@ class DataEntryViewModel @Inject constructor(
     }
 
     // --- BEGIN: Per-field TextFieldValue state ---
-    private val _fieldStates = mutableStateMapOf<String, androidx.compose.ui.text.input.TextFieldValue>()
-    val fieldStates: Map<String, androidx.compose.ui.text.input.TextFieldValue> get() = _fieldStates
+    private val _fieldStates = MutableStateFlow<Map<String, androidx.compose.ui.text.input.TextFieldValue>>(emptyMap())
+    val fieldStates: StateFlow<Map<String, androidx.compose.ui.text.input.TextFieldValue>> = _fieldStates.asStateFlow()
     private fun fieldKey(dataElement: String, categoryOptionCombo: String): String = "$dataElement|$categoryOptionCombo"
     fun initializeFieldState(dataValue: DataValue) {
         val key = fieldKey(dataValue.dataElement, dataValue.categoryOptionCombo)
-        if (!_fieldStates.containsKey(key)) {
-            _fieldStates[key] = androidx.compose.ui.text.input.TextFieldValue(dataValue.value ?: "")
+        if (!_fieldStates.value.containsKey(key)) {
+            _fieldStates.update { current ->
+                current + (key to androidx.compose.ui.text.input.TextFieldValue(dataValue.value ?: ""))
+            }
         }
     }
     fun onFieldValueChange(newValue: androidx.compose.ui.text.input.TextFieldValue, dataValue: DataValue) {
         val key = fieldKey(dataValue.dataElement, dataValue.categoryOptionCombo)
-        _fieldStates[key] = newValue
+        _fieldStates.update { current -> current + (key to newValue) }
         updateCurrentValue(newValue.text, dataValue.dataElement, dataValue.categoryOptionCombo)
     }
     // --- END: Per-field TextFieldValue state ---
@@ -193,8 +203,24 @@ class DataEntryViewModel @Inject constructor(
         attributeOptionCombo: String,
         isEditMode: Boolean
     ) {
-        viewModelScope.launch {
+        viewModelScope.launch(Dispatchers.IO) {
             try {
+                val editabilityDeferred = async {
+                    resolveDatasetEditability(
+                        datasetId = datasetId,
+                        period = period,
+                        orgUnitId = orgUnitId,
+                        attributeOptionCombo = attributeOptionCombo
+                    )
+                }
+                val completionDeferred = async {
+                    resolveDatasetCompletion(
+                        datasetId = datasetId,
+                        period = period,
+                        orgUnitId = orgUnitId,
+                        attributeOptionCombo = attributeOptionCombo
+                    )
+                }
                 val initialProgress = com.ash.simpledataentry.presentation.core.NavigationProgress(
                     phase = com.ash.simpledataentry.presentation.core.LoadingPhase.INITIALIZING,
                     overallPercentage = 10,
@@ -326,6 +352,13 @@ class DataEntryViewModel @Inject constructor(
                             )
                         } ?: fetched
                     }
+                    val valuesByCombo = mergedValues.groupBy { it.categoryOptionCombo }
+                    val valuesByElement = mergedValues.groupBy { it.dataElement }
+                    val metadataDisabledFields = resolveMetadataDisabledFields(
+                        mergedValues.map { it.dataElement }.distinct()
+                    )
+                    val (isEntryEditable, nonEditableReason) = editabilityDeferred.await()
+                    val isCompleted = completionDeferred.await()
 
                     dirtyDataValues.clear()
                     savePressed = false // Reset save state when loading new data
@@ -455,6 +488,14 @@ class DataEntryViewModel @Inject constructor(
                         }
                         Log.d("DataEntryViewModel", "Pre-computed data element ordering for ${dataElementOrdering.size} sections")
 
+                        val dataElementsBySection = dataElementGroupedSections.mapValues { (sectionName, elementGroups) ->
+                            val ordering = dataElementOrdering[sectionName].orEmpty()
+                            elementGroups.map { (dataElement, dataValues) ->
+                                val name = dataValues.firstOrNull()?.dataElementName ?: dataElement
+                                dataElement to name
+                            }.sortedBy { (dataElement, _) -> ordering[dataElement] ?: Int.MAX_VALUE }
+                        }
+
                         // Determine the initial currentSectionIndex
                         val initialOrPreservedIndex = if (totalSections > 0) {
                             // If you want to ALWAYS open the first section on load, uncomment next line:
@@ -492,11 +533,18 @@ class DataEntryViewModel @Inject constructor(
                             dataElementGroupedSections = dataElementGroupedSections,
                             optionSets = optionSets,
                             renderTypes = renderTypes,
+                            valuesByCombo = valuesByCombo,
+                            valuesByElement = valuesByElement,
+                            dataElementsBySection = dataElementsBySection,
                             radioButtonGroups = radioButtonGroups,
                             checkboxGroups = checkboxGroups,
                             sectionGroupingStrategies = sectionGroupingStrategies,
                             dataElementOrdering = dataElementOrdering, // Pre-computed ordering for performance
-                            navigationProgress = null // Clear progress when done
+                            navigationProgress = null, // Clear progress when done
+                            isEntryEditable = isEntryEditable,
+                            nonEditableReason = nonEditableReason,
+                            isCompleted = isCompleted,
+                            metadataDisabledFields = metadataDisabledFields
                         )
                     }
                 }
@@ -517,6 +565,53 @@ class DataEntryViewModel @Inject constructor(
                 setUiError(UiError.Local(e.message ?: "Failed to load data values"))
             }
         }
+    }
+
+    private suspend fun resolveDatasetEditability(
+        datasetId: String,
+        period: String,
+        orgUnitId: String,
+        attributeOptionCombo: String
+    ): Pair<Boolean, DataSetNonEditableReason?> = withContext(Dispatchers.IO) {
+        val d2 = sessionManager.getD2() ?: return@withContext true to null
+        return@withContext try {
+            val status = d2.dataSetModule()
+                .dataSetInstanceService()
+                .blockingGetEditableStatus(datasetId, period, orgUnitId, attributeOptionCombo)
+            when (status) {
+                is DataSetEditableStatus.Editable -> true to null
+                is DataSetEditableStatus.NonEditable -> false to status.reason
+            }
+        } catch (e: Exception) {
+            Log.w("DataEntryViewModel", "Failed to resolve dataset editability", e)
+            true to null
+        }
+    }
+
+    private suspend fun resolveDatasetCompletion(
+        datasetId: String,
+        period: String,
+        orgUnitId: String,
+        attributeOptionCombo: String
+    ): Boolean = withContext(Dispatchers.IO) {
+        val d2 = sessionManager.getD2() ?: return@withContext false
+        return@withContext try {
+            val instance = d2.dataSetModule()
+                .dataSetInstances()
+                .dataSetInstance(datasetId, period, orgUnitId, attributeOptionCombo)
+                .blockingGet()
+            instance?.completed() == true
+        } catch (e: Exception) {
+            Log.w("DataEntryViewModel", "Failed to resolve dataset completion status", e)
+            false
+        }
+    }
+
+    private suspend fun resolveMetadataDisabledFields(
+        dataElementIds: List<String>
+    ): Set<String> = withContext(Dispatchers.IO) {
+        // SDK DataElement does not expose field-level access in this version.
+        emptySet()
     }
 
     fun updateCurrentValue(value: String, dataElementUid: String, categoryOptionComboUid: String) {
@@ -1033,11 +1128,11 @@ class DataEntryViewModel @Inject constructor(
         dirtyDataValues.clear()
 
         // Reset field states to original loaded values
-        _fieldStates.clear()
-        currentState.dataValues.forEach { dataValue ->
+        val resetStates = currentState.dataValues.associate { dataValue ->
             val key = "${dataValue.dataElement}|${dataValue.categoryOptionCombo}"
-            _fieldStates[key] = androidx.compose.ui.text.input.TextFieldValue(dataValue.value ?: "")
+            key to androidx.compose.ui.text.input.TextFieldValue(dataValue.value ?: "")
         }
+        _fieldStates.value = resetStates
 
         savePressed = false
 
@@ -1062,42 +1157,8 @@ class DataEntryViewModel @Inject constructor(
     }
 
     fun startValidationForCompletion() {
-        val stateSnapshot = _state.value
-        viewModelScope.launch {
-            Log.d("DataEntryViewModel", "=== COMPLETION FLOW: Starting validation for completion ===")
-            Log.d("DataEntryViewModel", "Current isCompleted state: ${stateSnapshot.isCompleted}")
-            Log.d("DataEntryViewModel", "Dataset: ${stateSnapshot.datasetId}, Period: ${stateSnapshot.period}, OrgUnit: ${stateSnapshot.orgUnit}")
-            updateState { it.copy(isValidating = true, error = null, validationSummary = null) }
-            
-            try {
-                val validationResult = validationRepository.validateDatasetInstance(
-                    datasetId = stateSnapshot.datasetId,
-                    period = stateSnapshot.period,
-                    organisationUnit = stateSnapshot.orgUnit,
-                    attributeOptionCombo = stateSnapshot.attributeOptionCombo,
-                    dataValues = stateSnapshot.dataValues,
-                    forceRefresh = true // Always refresh validation for completion
-                )
-                
-                Log.d("DataEntryViewModel", "Validation completed: ${validationResult.errorCount} errors, ${validationResult.warningCount} warnings")
-                
-                updateState { 
-                    it.copy(
-                        isValidating = false, 
-                        validationSummary = validationResult
-                    ) 
-                }
-                
-            } catch (e: Exception) {
-                Log.e("DataEntryViewModel", "Error during validation: ${e.message}", e)
-                updateState {
-                    it.copy(
-                        isValidating = false,
-                        error = "Error during validation: ${e.message}"
-                    )
-                }
-            }
-        }
+        Log.d("DataEntryViewModel", "=== COMPLETION FLOW: Starting validation for completion ===")
+        startValidationWithCompletionProgress()
     }
 
     fun completeDatasetAfterValidation(onResult: (Boolean, String?) -> Unit) {

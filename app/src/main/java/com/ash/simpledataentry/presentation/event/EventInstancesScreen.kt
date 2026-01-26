@@ -7,13 +7,14 @@ import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Add
-import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.ChevronRight
 import androidx.compose.material.icons.filled.FilterList
 import androidx.compose.material.icons.filled.Search
 import androidx.compose.material.icons.filled.Sync
+import androidx.compose.material.icons.filled.Tune
 import androidx.compose.material.icons.filled.ViewList
 import androidx.compose.material.icons.filled.ViewModule
 import androidx.compose.material3.*
@@ -29,8 +30,14 @@ import androidx.compose.ui.unit.dp
 import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.navigation.NavController
 import com.ash.simpledataentry.domain.model.SyncStatus
+import com.ash.simpledataentry.domain.model.CompletionStatus
+import com.ash.simpledataentry.domain.model.EventInstanceFilterState
+import com.ash.simpledataentry.domain.model.PeriodFilterType
+import com.ash.simpledataentry.domain.model.ProgramInstanceState
 import com.ash.simpledataentry.presentation.core.BaseScreen
 import com.ash.simpledataentry.presentation.core.AdaptiveLoadingOverlay
+import com.ash.simpledataentry.presentation.core.LoadingOperation
+import com.ash.simpledataentry.presentation.core.ShimmerLoadingList
 import com.ash.simpledataentry.presentation.core.UiState
 import com.ash.simpledataentry.ui.theme.StatusCompleted
 import com.ash.simpledataentry.ui.theme.StatusCompletedLight
@@ -38,6 +45,7 @@ import com.ash.simpledataentry.ui.theme.StatusDraft
 import com.ash.simpledataentry.ui.theme.StatusDraftLight
 import com.ash.simpledataentry.ui.theme.StatusSynced
 import com.ash.simpledataentry.ui.theme.StatusSyncedLight
+import com.ash.simpledataentry.util.PeriodHelper
 import org.hisp.dhis.mobile.ui.designsystem.theme.TextColor
 import java.net.URLEncoder
 import java.text.SimpleDateFormat
@@ -60,8 +68,12 @@ fun EventInstancesScreen(
     val snackbarHostState = remember { SnackbarHostState() }
     val uiState by viewModel.uiState.collectAsState()
     var showSyncDialog by remember { mutableStateOf(false) }
+    var showFilterDialog by remember { mutableStateOf(false) }
+    var showColumnDialog by remember { mutableStateOf(false) }
     var searchQuery by remember { mutableStateOf("") }
     var useCardView by rememberSaveable { mutableStateOf(true) }
+    var filterState by remember { mutableStateOf(EventInstanceFilterState()) }
+    val periodHelper = remember { PeriodHelper() }
 
     // Initialize with program ID
     LaunchedEffect(programId) {
@@ -73,27 +85,27 @@ fun EventInstancesScreen(
         viewModel.refreshData()
     }
 
-    // Extract data safely from UiState
-    val data = when (val state = uiState) {
-        is UiState.Success -> state.data
-        is UiState.Error -> state.previousData ?: com.ash.simpledataentry.presentation.event.EventInstancesData()
-        is UiState.Loading -> com.ash.simpledataentry.presentation.event.EventInstancesData()
+    var lastSuccessData by remember { mutableStateOf<EventInstancesData?>(null) }
+    val currentUiState = uiState
+    val data = when (currentUiState) {
+        is UiState.Success -> currentUiState.data.also { lastSuccessData = it }
+        is UiState.Error -> currentUiState.previousData?.also { lastSuccessData = it } ?: lastSuccessData
+        is UiState.Loading -> lastSuccessData
     }
-    val filteredEvents = if (searchQuery.isBlank()) {
-        data.events
-    } else {
-        val query = searchQuery.trim().lowercase(Locale.getDefault())
-        data.events.filter { event ->
-            event.organisationUnit.name.lowercase(Locale.getDefault()).contains(query) ||
-                event.state.name.lowercase(Locale.getDefault()).contains(query) ||
-                event.syncStatus.name.lowercase(Locale.getDefault()).contains(query)
-        }
+    val showInitialShimmer = currentUiState is UiState.Loading &&
+        currentUiState.operation is LoadingOperation.Initial &&
+        data == null
+    val hasBlockingOverlay = currentUiState is UiState.Loading &&
+        currentUiState.operation !is LoadingOperation.Initial &&
+        data != null
+    val filteredEvents = data?.events.orEmpty().filter { event ->
+        matchesEventFilter(event, filterState, periodHelper)
     }
     val subtitle = if (filteredEvents.size == 1) "1 event" else "${filteredEvents.size} events"
 
     // Show success messages via snackbar
-    LaunchedEffect(data.syncMessage) {
-        data.syncMessage?.let {
+    LaunchedEffect(data?.syncMessage) {
+        data?.syncMessage?.let {
             snackbarHostState.showSnackbar(
                 message = it,
                 duration = SnackbarDuration.Short
@@ -108,7 +120,8 @@ fun EventInstancesScreen(
         actions = {
             // Sync button
             val isLoading = uiState is UiState.Loading
-            val isSyncing = (uiState as? UiState.Success)?.backgroundOperation != null
+            val isSyncing = uiState is UiState.Loading &&
+                (uiState as UiState.Loading).operation !is LoadingOperation.Initial
 
             IconButton(
                 onClick = {
@@ -151,10 +164,7 @@ fun EventInstancesScreen(
         },
     ) {
         Box(modifier = Modifier.fillMaxSize()) {
-            AdaptiveLoadingOverlay(
-                uiState = uiState,
-                modifier = Modifier.fillMaxSize()
-            ) {
+            val content: @Composable () -> Unit = {
                 Column(modifier = Modifier.fillMaxSize()) {
                     Row(
                         modifier = Modifier
@@ -165,7 +175,10 @@ fun EventInstancesScreen(
                     ) {
                         OutlinedTextField(
                             value = searchQuery,
-                            onValueChange = { searchQuery = it },
+                            onValueChange = {
+                                searchQuery = it
+                                filterState = filterState.copy(searchQuery = it)
+                            },
                             modifier = Modifier.weight(1f),
                             singleLine = true,
                             placeholder = { Text("Search events...") },
@@ -178,24 +191,31 @@ fun EventInstancesScreen(
                         )
 
                         IconButton(
-                            onClick = { },
-                            enabled = false
+                            onClick = { showFilterDialog = true }
                         ) {
                             Icon(
                                 imageVector = Icons.Default.FilterList,
                                 contentDescription = "Filter",
-                                tint = MaterialTheme.colorScheme.onSurfaceVariant
+                                tint = if (filterState.hasActiveFilters()) {
+                                    MaterialTheme.colorScheme.primary
+                                } else {
+                                    MaterialTheme.colorScheme.onSurfaceVariant
+                                }
                             )
                         }
 
                         IconButton(
-                            onClick = { },
-                            enabled = false
+                            onClick = { showColumnDialog = true },
+                            enabled = !useCardView && data?.lineListColumns?.isNotEmpty() == true
                         ) {
                             Icon(
-                                imageVector = Icons.Default.Check,
-                                contentDescription = "Bulk",
-                                tint = MaterialTheme.colorScheme.onSurfaceVariant
+                                imageVector = Icons.Default.Tune,
+                                contentDescription = "Columns",
+                                tint = if (!useCardView && data?.lineListColumns?.isNotEmpty() == true) {
+                                    MaterialTheme.colorScheme.onSurfaceVariant
+                                } else {
+                                    MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.4f)
+                                }
                             )
                         }
 
@@ -209,100 +229,126 @@ fun EventInstancesScreen(
                             )
                         }
                     }
-                // Content with data
-                when {
-                    filteredEvents.isEmpty() -> {
-                        Column(
-                            modifier = Modifier
-                                .fillMaxSize()
-                                .padding(16.dp),
-                            horizontalAlignment = Alignment.CenterHorizontally,
-                            verticalArrangement = Arrangement.Center
-                        ) {
-                            Text(
-                                text = "No events found",
-                                style = MaterialTheme.typography.bodyLarge,
-                                color = MaterialTheme.colorScheme.onSurface
+                    // Content with data
+                    when {
+                        showInitialShimmer -> {
+                            ShimmerLoadingList(
+                                itemCount = 6,
+                                modifier = Modifier.fillMaxSize()
                             )
-                            Spacer(modifier = Modifier.height(8.dp))
-                            Text(
-                                text = "Tap + to create a new event",
-                                style = MaterialTheme.typography.bodyMedium,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant
-                            )
-                            Text(
-                                text = "If you expect events here, sync to refresh.",
-                                style = MaterialTheme.typography.bodySmall,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant
-                            )
-                            Button(
-                                onClick = { viewModel.syncEvents() }
-                            ) {
-                                Text("Sync now")
-                            }
                         }
-                    }
-                    else -> {
-                        if (useCardView) {
-                            LazyColumn(
+                        filteredEvents.isEmpty() -> {
+                            Column(
                                 modifier = Modifier
                                     .fillMaxSize()
-                                    .padding(horizontal = 16.dp, vertical = 8.dp),
-                                verticalArrangement = Arrangement.spacedBy(8.dp)
+                                    .padding(16.dp),
+                                horizontalAlignment = Alignment.CenterHorizontally,
+                                verticalArrangement = Arrangement.Center
                             ) {
-                                items(filteredEvents) { event ->
-                                    EventCard(
-                                        event = event,
-                                        onClick = {
+                                Text(
+                                    text = "No events found",
+                                    style = MaterialTheme.typography.bodyLarge,
+                                    color = MaterialTheme.colorScheme.onSurface
+                                )
+                                Spacer(modifier = Modifier.height(8.dp))
+                                Text(
+                                    text = "Tap + to create a new event",
+                                    style = MaterialTheme.typography.bodyMedium,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                                )
+                                Text(
+                                    text = "If you expect events here, sync to refresh.",
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                                )
+                                Button(
+                                    onClick = { viewModel.syncEvents() }
+                                ) {
+                                    Text("Sync now")
+                                }
+                            }
+                        }
+                        else -> {
+                            if (useCardView) {
+                                LazyColumn(
+                                    modifier = Modifier
+                                        .fillMaxSize()
+                                        .padding(horizontal = 16.dp, vertical = 8.dp),
+                                    verticalArrangement = Arrangement.spacedBy(8.dp)
+                                ) {
+                                    items(items = filteredEvents, key = { it.id }) { event ->
+                                        EventCard(
+                                            event = event,
+                                            onClick = {
+                                                val encodedProgramId = URLEncoder.encode(programId, "UTF-8")
+                                                val encodedProgramName = URLEncoder.encode(programName, "UTF-8")
+                                                navController.navigate("EditStandaloneEvent/$encodedProgramId/$encodedProgramName/${event.id}") {
+                                                    launchSingleTop = true
+                                                }
+                                            }
+                                        )
+                                    }
+                                }
+                            } else {
+                                LaunchedEffect(filteredEvents, useCardView) {
+                                    if (!useCardView) {
+                                        viewModel.loadLineList(filteredEvents)
+                                    }
+                                }
+                                val lineListLoading = data?.lineListLoading == true
+                                val lineListColumns = data?.lineListColumns.orEmpty()
+                                val lineListRows = data?.lineListRows.orEmpty()
+                                val selectedColumnIds = if (data?.visibleLineListColumnIds.isNullOrEmpty()) {
+                                    lineListColumns.map { it.id }.toSet()
+                                } else {
+                                    data?.visibleLineListColumnIds.orEmpty()
+                                }
+                                val visibleColumns = lineListColumns.filter { selectedColumnIds.contains(it.id) }
+                                if (lineListLoading) {
+                                    LinearProgressIndicator(
+                                        modifier = Modifier
+                                            .fillMaxWidth()
+                                            .padding(horizontal = 16.dp, vertical = 8.dp)
+                                    )
+                                }
+                                if (visibleColumns.isNotEmpty() && lineListRows.isNotEmpty()) {
+                                    CompactEventTable(
+                                        columns = visibleColumns,
+                                        rows = lineListRows,
+                                        onRowClick = { row ->
                                             val encodedProgramId = URLEncoder.encode(programId, "UTF-8")
                                             val encodedProgramName = URLEncoder.encode(programName, "UTF-8")
-                                            navController.navigate("EditStandaloneEvent/$encodedProgramId/$encodedProgramName/${event.id}") {
+                                            navController.navigate("EditStandaloneEvent/$encodedProgramId/$encodedProgramName/${row.id}") {
                                                 launchSingleTop = true
                                             }
-                                        }
+                                        },
+                                        modifier = Modifier
+                                            .fillMaxSize()
+                                            .padding(horizontal = 16.dp, vertical = 8.dp)
+                                    )
+                                } else if (!lineListLoading) {
+                                    Text(
+                                        text = "No line list data available",
+                                        style = MaterialTheme.typography.bodyMedium,
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                        modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp)
                                     )
                                 }
                             }
-                        } else {
-                            LaunchedEffect(filteredEvents, useCardView) {
-                                if (!useCardView) {
-                                    viewModel.loadLineList(filteredEvents)
-                                }
-                            }
-                            if (data.lineListLoading) {
-                                LinearProgressIndicator(
-                                    modifier = Modifier
-                                        .fillMaxWidth()
-                                        .padding(horizontal = 16.dp, vertical = 8.dp)
-                                )
-                            }
-                            if (data.lineListColumns.isNotEmpty() && data.lineListRows.isNotEmpty()) {
-                                CompactEventTable(
-                                    columns = data.lineListColumns,
-                                    rows = data.lineListRows,
-                                    onRowClick = { row ->
-                                        val encodedProgramId = URLEncoder.encode(programId, "UTF-8")
-                                        val encodedProgramName = URLEncoder.encode(programName, "UTF-8")
-                                        navController.navigate("EditStandaloneEvent/$encodedProgramId/$encodedProgramName/${row.id}") {
-                                            launchSingleTop = true
-                                        }
-                                    },
-                                    modifier = Modifier
-                                        .fillMaxSize()
-                                        .padding(horizontal = 16.dp, vertical = 8.dp)
-                                )
-                            } else if (!data.lineListLoading) {
-                                Text(
-                                    text = "No line list data available",
-                                    style = MaterialTheme.typography.bodyMedium,
-                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                    modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp)
-                                )
-                            }
                         }
                     }
                 }
+            }
+
+            if (hasBlockingOverlay) {
+                AdaptiveLoadingOverlay(
+                    uiState = uiState,
+                    modifier = Modifier.fillMaxSize()
+                ) {
+                    content()
                 }
+            } else {
+                content()
             }
 
             // Sync dialog
@@ -323,6 +369,133 @@ fun EventInstancesScreen(
                     },
                     dismissButton = {
                         TextButton(onClick = { showSyncDialog = false }) {
+                            Text("Cancel")
+                        }
+                    }
+                )
+            }
+
+            if (showFilterDialog) {
+                EventInstanceFilterDialog(
+                    currentFilter = filterState,
+                    onFilterChanged = { updated ->
+                        filterState = updated
+                        searchQuery = updated.searchQuery
+                    },
+                    onClearFilters = {
+                        filterState = EventInstanceFilterState()
+                        searchQuery = ""
+                    },
+                    onDismiss = { showFilterDialog = false }
+                )
+            }
+
+            if (showColumnDialog) {
+                val columns = data?.lineListColumns.orEmpty()
+                var selectedColumns by remember(columns, data?.visibleLineListColumnIds) {
+                    val initial = if (data?.visibleLineListColumnIds.isNullOrEmpty()) {
+                        columns.map { it.id }.toSet()
+                    } else {
+                        data?.visibleLineListColumnIds.orEmpty()
+                    }
+                    mutableStateOf(initial)
+                }
+                var columnSearch by remember { mutableStateOf("") }
+                val filteredColumns = if (columnSearch.isBlank()) {
+                    columns
+                } else {
+                    val query = columnSearch.trim().lowercase(Locale.getDefault())
+                    columns.filter { column ->
+                        column.displayName.lowercase(Locale.getDefault()).contains(query)
+                    }
+                }
+                AlertDialog(
+                    onDismissRequest = { showColumnDialog = false },
+                    title = { Text("Line list columns") },
+                    text = {
+                        Column(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .heightIn(max = 420.dp)
+                                .verticalScroll(rememberScrollState()),
+                            verticalArrangement = Arrangement.spacedBy(8.dp)
+                        ) {
+                            OutlinedTextField(
+                                value = columnSearch,
+                                onValueChange = { columnSearch = it },
+                                singleLine = true,
+                                placeholder = { Text("Search columns...") },
+                                modifier = Modifier.fillMaxWidth()
+                            )
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.spacedBy(12.dp)
+                            ) {
+                                TextButton(
+                                    onClick = {
+                                        selectedColumns = columns.map { it.id }.toSet()
+                                    }
+                                ) {
+                                    Text("Select all")
+                                }
+                                TextButton(
+                                    onClick = {
+                                        selectedColumns = emptySet()
+                                    }
+                                ) {
+                                    Text("Clear all")
+                                }
+                            }
+                            filteredColumns.forEach { column ->
+                                Row(
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .clickable {
+                                            selectedColumns = if (selectedColumns.contains(column.id)) {
+                                                selectedColumns - column.id
+                                            } else {
+                                                selectedColumns + column.id
+                                            }
+                                        }
+                                        .padding(vertical = 4.dp),
+                                    verticalAlignment = Alignment.CenterVertically
+                                ) {
+                                    Checkbox(
+                                        checked = selectedColumns.contains(column.id),
+                                        onCheckedChange = { checked ->
+                                            selectedColumns = if (checked) {
+                                                selectedColumns + column.id
+                                            } else {
+                                                selectedColumns - column.id
+                                            }
+                                        }
+                                    )
+                                    Text(
+                                        text = column.displayName,
+                                        style = MaterialTheme.typography.bodyMedium,
+                                        modifier = Modifier.padding(start = 8.dp)
+                                    )
+                                }
+                            }
+                        }
+                    },
+                    confirmButton = {
+                        TextButton(
+                            onClick = {
+                                val finalSelection = if (selectedColumns.isEmpty()) {
+                                    columns.map { it.id }.toSet()
+                                } else {
+                                    selectedColumns
+                                }
+                                viewModel.updateVisibleLineListColumns(finalSelection)
+                                showColumnDialog = false
+                            }
+                        ) {
+                            Text("Apply")
+                        }
+                    },
+                    dismissButton = {
+                        TextButton(onClick = { showColumnDialog = false }) {
                             Text("Cancel")
                         }
                     }
@@ -564,4 +737,58 @@ private fun StatusChip(
             modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp)
         )
     }
+}
+
+private fun matchesEventFilter(
+    event: com.ash.simpledataentry.domain.model.ProgramInstance.EventInstance,
+    filter: EventInstanceFilterState,
+    periodHelper: PeriodHelper
+): Boolean {
+    if (filter.searchQuery.isNotBlank()) {
+        val query = filter.searchQuery.trim().lowercase(Locale.getDefault())
+        val matchesQuery = event.organisationUnit.name.lowercase(Locale.getDefault()).contains(query) ||
+            event.state.name.lowercase(Locale.getDefault()).contains(query) ||
+            event.syncStatus.name.lowercase(Locale.getDefault()).contains(query)
+        if (!matchesQuery) {
+            return false
+        }
+    }
+
+    if (filter.syncStatus != SyncStatus.ALL && event.syncStatus != filter.syncStatus) {
+        return false
+    }
+
+    if (filter.completionStatus != CompletionStatus.ALL) {
+        val isComplete = event.state == ProgramInstanceState.COMPLETED
+        val matchesCompletion = when (filter.completionStatus) {
+            CompletionStatus.COMPLETE -> isComplete
+            CompletionStatus.INCOMPLETE -> !isComplete
+            CompletionStatus.ALL -> true
+        }
+        if (!matchesCompletion) {
+            return false
+        }
+    }
+
+    if (filter.periodType != PeriodFilterType.ALL) {
+        val eventDate = event.eventDate ?: return false
+        val withinRange = when (filter.periodType) {
+            PeriodFilterType.RELATIVE -> {
+                val relative = filter.relativePeriod ?: return false
+                val (start, end) = periodHelper.getDateRange(relative)
+                eventDate >= start && eventDate <= end
+            }
+            PeriodFilterType.CUSTOM_RANGE -> {
+                val start = filter.customFromDate ?: return false
+                val end = filter.customToDate ?: return false
+                eventDate >= start && eventDate <= end
+            }
+            PeriodFilterType.ALL -> true
+        }
+        if (!withinRange) {
+            return false
+        }
+    }
+
+    return true
 }

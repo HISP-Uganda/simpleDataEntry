@@ -38,10 +38,11 @@ import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.navigation.NavController
 import com.ash.simpledataentry.presentation.core.BaseScreen
+import com.ash.simpledataentry.presentation.core.UiState
+import com.ash.simpledataentry.presentation.core.UiError
 import com.ash.simpledataentry.domain.model.Event
 import com.ash.simpledataentry.domain.model.TrackedEntityAttributeValue
-import com.ash.simpledataentry.ui.theme.TrackerAccent
-import com.ash.simpledataentry.ui.theme.TrackerAccentLight
+import org.hisp.dhis.android.core.common.State
 import java.text.SimpleDateFormat
 import java.util.*
 import java.net.URLDecoder
@@ -68,6 +69,12 @@ fun TrackerDashboardScreen(
 
     val decodedProgramName = remember(programName) { URLDecoder.decode(programName, "UTF-8") }
 
+    val data = when (val state = uiState) {
+        is UiState.Success -> state.data
+        is UiState.Error -> state.previousData ?: TrackerDashboardData()
+        is UiState.Loading -> TrackerDashboardData()
+    }
+
     BaseScreen(
         title = "Tracker Dashboard",
         subtitle = decodedProgramName,
@@ -86,12 +93,12 @@ fun TrackerDashboardScreen(
                 }
             }
             // Add new event action
-            if (uiState.canAddEvents) {
+            if (data.canAddEvents) {
                 IconButton(
                     onClick = {
                         // If a stage is selected in dropdown, navigate with that stage pre-selected
-                        if (uiState.selectedStageId != null) {
-                            navController.navigate("CreateEvent/$programId/$programName/${uiState.selectedStageId}/$enrollmentId")
+                        if (data.selectedStageId != null) {
+                            navController.navigate("CreateEvent/$programId/$programName/${data.selectedStageId}/$enrollmentId")
                         } else {
                             // Show stage selection dialog
                             viewModel.showStageSelectionDialog()
@@ -110,8 +117,8 @@ fun TrackerDashboardScreen(
             modifier = Modifier
                 .fillMaxSize()
         ) {
-            when {
-                uiState.isLoading -> {
+            when (val state = uiState) {
+                is UiState.Loading -> {
                     Box(
                         modifier = Modifier.fillMaxSize(),
                         contentAlignment = Alignment.Center
@@ -125,16 +132,23 @@ fun TrackerDashboardScreen(
                         }
                     }
                 }
-                uiState.error != null -> {
+                is UiState.Error -> {
+                    val message = when (val error = state.error) {
+                        is UiError.Network -> error.message
+                        is UiError.Server -> error.message
+                        is UiError.Validation -> error.message
+                        is UiError.Authentication -> error.message
+                        is UiError.Local -> error.message
+                    }
                     ErrorContent(
-                        error = uiState.error!!,
+                        error = message,
                         onRetry = {
                             viewModel.loadEnrollmentDashboard(enrollmentId)
                         }
                     )
                 }
                 else -> {
-                    val eventsCount = uiState.events.size
+                    val eventsCount = data.events.size
                     Column(modifier = Modifier.fillMaxSize()) {
                         TabRow(selectedTabIndex = selectedTab) {
                             Tab(
@@ -152,7 +166,7 @@ fun TrackerDashboardScreen(
                         when (selectedTab) {
                             0 -> {
                                 ProfileTabContent(
-                                    uiState = uiState,
+                                    uiState = data,
                                     onEditEnrollment = {
                                         navController.navigate("EditEnrollment/$programId/$programName/$enrollmentId")
                                     }
@@ -160,7 +174,7 @@ fun TrackerDashboardScreen(
                             }
                             else -> {
                                 EventsTabContent(
-                                    uiState = uiState,
+                                    uiState = data,
                                     onEditEvent = { eventId ->
                                         navController.navigate("EditEvent/$programId/$programName/$eventId/$enrollmentId")
                                     },
@@ -174,10 +188,10 @@ fun TrackerDashboardScreen(
                     }
 
                     // Program Stage Selection Dialog
-                    if (uiState.showStageSelectionDialog) {
+                    if (data.showStageSelectionDialog) {
                         ProgramStageSelectionDialog(
-                            programStages = uiState.programStages,
-                            existingEventCounts = uiState.eventCountsByStage,
+                            programStages = data.programStages,
+                            existingEventCounts = data.eventCountsByStage,
                             onStageSelected = { stage ->
                                 viewModel.hideStageSelectionDialog()
                                 navController.navigate("CreateEvent/$programId/$programName/${stage.id}/$enrollmentId")
@@ -195,7 +209,7 @@ fun TrackerDashboardScreen(
 
 @Composable
 private fun ProfileTabContent(
-    uiState: TrackerDashboardUiState,
+    uiState: TrackerDashboardData,
     onEditEnrollment: () -> Unit
 ) {
     LazyColumn(
@@ -208,7 +222,10 @@ private fun ProfileTabContent(
                 attribute.displayName.contains("name", ignoreCase = true) && !attribute.value.isNullOrBlank()
             }?.value ?: "Tracked Entity"
 
-            Card(modifier = Modifier.fillMaxWidth()) {
+            Card(
+                modifier = Modifier.fillMaxWidth(),
+                colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface)
+            ) {
                 Column(
                     modifier = Modifier.padding(16.dp),
                     verticalArrangement = Arrangement.spacedBy(12.dp)
@@ -220,13 +237,13 @@ private fun ProfileTabContent(
                         Box(
                             modifier = Modifier
                                 .size(64.dp)
-                                .background(TrackerAccentLight, shape = CircleShape),
+                                .background(MaterialTheme.colorScheme.primaryContainer, shape = CircleShape),
                             contentAlignment = Alignment.Center
                         ) {
                             Icon(
                                 imageVector = Icons.Default.Person,
                                 contentDescription = null,
-                                tint = TrackerAccent,
+                                tint = MaterialTheme.colorScheme.onPrimaryContainer,
                                 modifier = Modifier.size(32.dp)
                             )
                         }
@@ -287,7 +304,7 @@ private fun ProfileTabContent(
 
 @Composable
 private fun EventsTabContent(
-    uiState: TrackerDashboardUiState,
+    uiState: TrackerDashboardData,
     onEditEvent: (String) -> Unit,
     onAddEventForStage: (String) -> Unit,
     viewModel: TrackerDashboardViewModel
@@ -318,6 +335,12 @@ private fun EventsTabContent(
         contentPadding = PaddingValues(16.dp),
         verticalArrangement = Arrangement.spacedBy(16.dp)
     ) {
+        item {
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                EnrollmentStatusChip(status = uiState.enrollmentStatus)
+                SyncStatusChip(state = uiState.syncState)
+            }
+        }
         if (uiState.programStages.isNotEmpty()) {
             item {
                 OutlinedTextField(
@@ -360,10 +383,10 @@ private fun EventsTabContent(
                 }
             }
         } else {
-            items(uiState.programStages) { stage ->
+            items(items = uiState.programStages, key = { it.id }) { stage ->
                 StageEventListCard(
                     stage = stage,
-                    events = uiState.events.filter { it.programStageId == stage.id },
+                    events = uiState.eventsByStage[stage.id].orEmpty(),
                     eventCount = uiState.eventCountsByStage[stage.id] ?: 0,
                     onViewAllEvents = { stageId ->
                         viewModel.filterEventsByStage(stageId)
@@ -381,14 +404,16 @@ private fun EventsTabContent(
 
 @Composable
 private fun EnrollmentInfoCard(
-    uiState: TrackerDashboardUiState,
+    uiState: TrackerDashboardData,
     eventsCount: Int,
     onEditEnrollment: () -> Unit
 ) {
     var showAttributes by remember { mutableStateOf(false) }
+    val dateFormatter = remember { SimpleDateFormat("dd/MM/yyyy", Locale.getDefault()) }
 
     Card(
-        modifier = Modifier.fillMaxWidth()
+        modifier = Modifier.fillMaxWidth(),
+        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface)
     ) {
         Column(
             modifier = Modifier.padding(16.dp)
@@ -427,9 +452,7 @@ private fun EnrollmentInfoCard(
             // Enrollment Date
             InfoRow(
                 label = "Enrollment Date",
-                value = uiState.enrollmentDate?.let {
-                    SimpleDateFormat("dd/MM/yyyy", Locale.getDefault()).format(it)
-                } ?: "N/A"
+                value = uiState.enrollmentDate?.let { dateFormatter.format(it) } ?: "N/A"
             )
 
             // Incident Date (if applicable)
@@ -437,7 +460,7 @@ private fun EnrollmentInfoCard(
                 Spacer(modifier = Modifier.height(8.dp))
                 InfoRow(
                     label = uiState.incidentDateLabel ?: "Incident Date",
-                    value = SimpleDateFormat("dd/MM/yyyy", Locale.getDefault()).format(uiState.incidentDate)
+                    value = dateFormatter.format(uiState.incidentDate)
                 )
             }
 
@@ -550,6 +573,7 @@ private fun EventCard(
     event: Event,
     onEditEvent: () -> Unit
 ) {
+    val dateFormatter = remember { SimpleDateFormat("dd/MM/yyyy", Locale.getDefault()) }
     Card(
         modifier = Modifier.fillMaxWidth()
     ) {
@@ -599,9 +623,7 @@ private fun EventCard(
                 )
                 Spacer(modifier = Modifier.width(4.dp))
                 Text(
-                    text = event.eventDate?.let {
-                        SimpleDateFormat("dd/MM/yyyy", Locale.getDefault()).format(it)
-                    } ?: "N/A",
+                    text = event.eventDate?.let { dateFormatter.format(it) } ?: "N/A",
                     style = MaterialTheme.typography.bodyMedium,
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
@@ -638,7 +660,7 @@ private fun StageEventListCard(
                 modifier = Modifier
                     .fillMaxWidth()
                     .clickable { isExpanded = !isExpanded },
-                color = MaterialTheme.colorScheme.surfaceVariant
+                color = MaterialTheme.colorScheme.surface
             ) {
                 Row(
                     modifier = Modifier
@@ -676,6 +698,15 @@ private fun StageEventListCard(
                                 color = MaterialTheme.colorScheme.onPrimaryContainer
                             )
                         }
+                    }
+
+                    IconButton(
+                        onClick = { onAddEvent(stage.id) }
+                    ) {
+                        Icon(
+                            imageVector = Icons.Default.Add,
+                            contentDescription = "Quick add event"
+                        )
                     }
 
                     Icon(
@@ -722,9 +753,14 @@ private fun StageEventListCard(
                     } else {
                         // Build table data - show top 3 or all events based on showAllEvents state
                         val displayEvents = if (showAllEvents) events else events.take(3)
-                        val (columns, rows) = remember(displayEvents, stage.id, showAllEvents) {
-                            viewModel.buildEventTableData(displayEvents, stage.id)
+                        val tableData by produceState(
+                            initialValue = Pair(emptyList(), emptyList()),
+                            displayEvents,
+                            stage.id
+                        ) {
+                            value = viewModel.buildEventTableData(displayEvents, stage.id)
                         }
+                        val (columns, rows) = tableData
 
                         // Show table if we have data
                         if (columns.isNotEmpty() && rows.isNotEmpty()) {
@@ -774,6 +810,7 @@ private fun CompactEventCard(
     event: Event,
     onEditEvent: () -> Unit
 ) {
+    val dateFormatter = remember { SimpleDateFormat("dd/MM/yyyy", Locale.getDefault()) }
     Surface(
         modifier = Modifier.fillMaxWidth(),
         shape = MaterialTheme.shapes.small,
@@ -801,9 +838,7 @@ private fun CompactEventCard(
                     )
                     Spacer(modifier = Modifier.width(4.dp))
                     Text(
-                        text = event.eventDate?.let {
-                            SimpleDateFormat("dd/MM/yyyy", Locale.getDefault()).format(it)
-                        } ?: "N/A",
+                        text = event.eventDate?.let { dateFormatter.format(it) } ?: "N/A",
                         style = MaterialTheme.typography.bodyMedium
                     )
                 }
@@ -870,6 +905,49 @@ private fun EnrollmentStatusChip(status: String) {
     ) {
         Text(
             text = status,
+            style = MaterialTheme.typography.labelMedium,
+            modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp)
+        )
+    }
+}
+
+@Composable
+private fun SyncStatusChip(state: State?) {
+    val label = when (state) {
+        State.SYNCED, State.SYNCED_VIA_SMS -> "Synced"
+        State.UPLOADING -> "Syncing"
+        State.ERROR, State.WARNING -> "Sync error"
+        State.TO_POST, State.TO_UPDATE, State.SENT_VIA_SMS -> "Not synced"
+        State.RELATIONSHIP -> "Read-only"
+        null -> "Unknown"
+    }
+
+    val backgroundColor = when (state) {
+        State.SYNCED, State.SYNCED_VIA_SMS -> MaterialTheme.colorScheme.primaryContainer
+        State.UPLOADING -> MaterialTheme.colorScheme.secondaryContainer
+        State.ERROR, State.WARNING -> MaterialTheme.colorScheme.errorContainer
+        State.TO_POST, State.TO_UPDATE, State.SENT_VIA_SMS -> MaterialTheme.colorScheme.surfaceVariant
+        State.RELATIONSHIP -> MaterialTheme.colorScheme.tertiaryContainer
+        null -> MaterialTheme.colorScheme.surfaceVariant
+    }
+
+    val contentColor = when (state) {
+        State.SYNCED, State.SYNCED_VIA_SMS -> MaterialTheme.colorScheme.onPrimaryContainer
+        State.UPLOADING -> MaterialTheme.colorScheme.onSecondaryContainer
+        State.ERROR, State.WARNING -> MaterialTheme.colorScheme.onErrorContainer
+        State.TO_POST, State.TO_UPDATE, State.SENT_VIA_SMS -> MaterialTheme.colorScheme.onSurfaceVariant
+        State.RELATIONSHIP -> MaterialTheme.colorScheme.onTertiaryContainer
+        null -> MaterialTheme.colorScheme.onSurfaceVariant
+    }
+
+    Surface(
+        color = backgroundColor,
+        contentColor = contentColor,
+        shape = MaterialTheme.shapes.small,
+        modifier = Modifier.padding(0.dp)
+    ) {
+        Text(
+            text = label,
             style = MaterialTheme.typography.labelMedium,
             modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp)
         )

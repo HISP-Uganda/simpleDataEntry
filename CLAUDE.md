@@ -1,7 +1,7 @@
 # SimpleDataEntry DHIS2 Android App - Claude Context
 
-**Last Updated**: 2025-12-17
-**Status**: Production-ready for datasets and tracker enrollments. Login flow resilient. Nested accordion data entry fully functional.
+**Last Updated**: 2026-01-20
+**Status**: Production-ready for datasets and tracker enrollments. Login flow resilient. Nested accordion data entry fully functional. Implied grouping supports complex patterns.
 
 ## Project Overview
 
@@ -336,6 +336,32 @@ App Launch
 │   └── Navigate to home screen
 └── If no session: Show login screen
 ```
+
+---
+
+### Recent Work (2026-01-20)
+
+**Implied Grouping Enhancement** - Hyphen-Suffix Pattern Support:
+- **File**: `domain/grouping/ImpliedCategoryInferenceService.kt`
+- Added `HYPHEN_SUFFIX_GENDER_REGEX` pattern for complex data element names
+- Supports patterns like `WFP - Number of teachers in the school-Qualified Female`
+- Creates 3-level hierarchy: Indicator → Qualifier → Gender
+- New method: `tryInferWithHyphenSuffixGender()` with mapping support
+
+**Build Configuration** - CI Compatibility:
+- **File**: `settings.gradle.kts` - Added foojay-resolver-convention plugin for toolchain auto-download
+- **File**: `local.properties` - Contains `org.gradle.java.home` for local development (gitignored)
+- System Java 24 not compatible with Gradle 8.11.1; use Android Studio's bundled JDK 21
+- CI uses GitHub Actions Java 21 + foojay resolver
+
+### Known Issues (2026-01-20)
+
+**Validation Stack Overflow** (`domain/validation/ValidationService.kt`):
+- ⚠️ DHIS2 SDK validation engine hits StackOverflowError on complex rule expressions
+- Current behavior: Catches error and returns warning, allows completion
+- Root cause: Deep recursion in SDK expression parser (stack size 1035KB insufficient)
+- Potential fix: Run validation on thread with larger stack (not yet implemented)
+- Log signature: `"DHIS2 SDK validation engine stack overflow: stack size 1035KB"`
 
 ---
 

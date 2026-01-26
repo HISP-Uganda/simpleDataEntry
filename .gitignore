@@ -130,6 +130,7 @@ build/reports/
 
 # Documentation and analysis files
 docs/
+design-system/
 
 # Ignore everything in .taskmaster except .gitignore
 

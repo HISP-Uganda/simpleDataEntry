@@ -41,6 +41,7 @@ fun AdaptiveLoadingOverlay(
                     }
                 }
                 is LoadingOperation.Syncing -> buildSyncStepInfo(operation.progress)
+                is LoadingOperation.Completing -> buildCompletionStepInfo(operation.progress)
                 else -> null
             }
 
@@ -129,7 +130,26 @@ private fun buildNavigationStepInfo(
             LoadingPhase.COMPLETING,
             LoadingPhase.FINALIZING -> 5
         }
-        StepLoadingType.SYNC -> 0
+        StepLoadingType.SYNC -> when (progress.phase) {
+            LoadingPhase.INITIALIZING,
+            LoadingPhase.AUTHENTICATING -> 0
+            LoadingPhase.DOWNLOADING_METADATA,
+            LoadingPhase.LOADING_DATA -> 1
+            LoadingPhase.PROCESSING,
+            LoadingPhase.PROCESSING_DATA,
+            LoadingPhase.COMPLETING,
+            LoadingPhase.FINALIZING -> 2
+        }
+        StepLoadingType.VALIDATION -> when (progress.phase) {
+            LoadingPhase.INITIALIZING -> 0
+            LoadingPhase.LOADING_DATA,
+            LoadingPhase.PROCESSING,
+            LoadingPhase.PROCESSING_DATA -> 1
+            LoadingPhase.COMPLETING,
+            LoadingPhase.FINALIZING -> 3
+            LoadingPhase.AUTHENTICATING,
+            LoadingPhase.DOWNLOADING_METADATA -> 0
+        }
     }
     val percent = when {
         progress.overallPercentage in 1..100 -> progress.overallPercentage
@@ -166,6 +186,23 @@ private fun buildSyncStepInfo(progress: DetailedSyncProgress): StepOverlayInfo {
         progress.phaseTitle
     }
     return StepOverlayInfo(StepLoadingType.SYNC, stepIndex, percent, label)
+}
+
+private fun buildCompletionStepInfo(progress: CompletionProgress): StepOverlayInfo {
+    val stepIndex = when (progress.phase) {
+        CompletionPhase.PREPARING -> 0
+        CompletionPhase.VALIDATING -> 1
+        CompletionPhase.PROCESSING_RESULTS -> 2
+        CompletionPhase.COMPLETING,
+        CompletionPhase.COMPLETED -> 3
+    }
+    val percent = progress.overallPercentage.coerceIn(0, 100)
+    val label = when {
+        progress.phaseDetail.isNotBlank() -> progress.phaseDetail
+        progress.phaseTitle.isNotBlank() -> progress.phaseTitle
+        else -> ""
+    }
+    return StepOverlayInfo(StepLoadingType.VALIDATION, stepIndex, percent, label)
 }
 
 /**

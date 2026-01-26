@@ -23,9 +23,15 @@ class ImpliedCategoryInferenceService @Inject constructor() {
         private const val MIN_STRUCTURED_RATIO = 0.7  // At least 70% of elements must fit pattern
         private const val MIN_PAREN_STRUCTURED_RATIO = 0.5  // Allow mixed sections for parenthetical suffixes
         private const val MIN_PAREN_GENDER_RATIO = 0.25  // Allow sparse gender suffixes
+        private const val MIN_HYPHEN_SUFFIX_RATIO = 0.3  // Allow mixed sections for hyphen-suffix patterns
         private val SEPARATORS = listOf(" - ", " | ", "_", " / ", ": ")
         private const val PAREN_SUFFIX = "__PAREN_SUFFIX__"
+        private const val HYPHEN_SUFFIX_GENDER = "__HYPHEN_SUFFIX_GENDER__"
         private val PAREN_SUFFIX_REGEX = Regex("^(.*)\\(([^)]+)\\)\\s*$")
+        // Matches patterns like "base-Qualifier Female" or "base-Qualifier Male"
+        private val HYPHEN_SUFFIX_GENDER_REGEX = Regex(
+            "^(.+)-(\\S+)\\s+(Female|Male|female|male)$"
+        )
     }
 
     /**
@@ -67,6 +73,16 @@ class ImpliedCategoryInferenceService @Inject constructor() {
             if (score > bestScore) {
                 bestScore = score
                 bestResult = parentheticalResult
+            }
+        }
+
+        // Try hyphen-suffix-gender pattern (e.g., "base-Qualified Female")
+        val hyphenSuffixGenderResult = tryInferWithHyphenSuffixGender(dataElements, sectionName)
+        if (hyphenSuffixGenderResult != null) {
+            val score = hyphenSuffixGenderResult.confidence + (hyphenSuffixGenderResult.categories.size * 0.1)
+            if (score > bestScore) {
+                bestScore = score
+                bestResult = hyphenSuffixGenderResult
             }
         }
 
@@ -240,6 +256,127 @@ class ImpliedCategoryInferenceService @Inject constructor() {
         )
     }
 
+    /**
+     * Try to infer structure from hyphen-suffix-gender patterns like:
+     * "WFP - Number of teachers in the school-Qualified Female"
+     * "WFP - Number of teachers in the school-Unlicensed Male"
+     *
+     * Creates 2-level category: Indicator → Qualifier → Gender entry fields
+     */
+    private fun tryInferWithHyphenSuffixGender(
+        dataElements: List<DataValue>,
+        sectionName: String
+    ): ImpliedCategoryCombination? {
+        // Parse elements matching the hyphen-suffix-gender pattern
+        data class ParsedElement(
+            val element: DataValue,
+            val baseName: String,
+            val qualifier: String,
+            val gender: String
+        )
+
+        val parsed = dataElements.mapNotNull { element ->
+            val match = HYPHEN_SUFFIX_GENDER_REGEX.find(element.dataElementName) ?: return@mapNotNull null
+            val baseName = match.groupValues[1].trim()
+            val qualifier = match.groupValues[2].trim()
+            val gender = match.groupValues[3].trim()
+            if (baseName.isBlank() || qualifier.isBlank() || gender.isBlank()) return@mapNotNull null
+            ParsedElement(element, baseName, qualifier, gender)
+        }
+
+        val structuredRatio = parsed.size.toDouble() / dataElements.size
+        if (structuredRatio < MIN_HYPHEN_SUFFIX_RATIO) {
+            Log.d(
+                TAG,
+                "  Hyphen-suffix-gender: only ${(structuredRatio * 100).toInt()}% fit (need ${(MIN_HYPHEN_SUFFIX_RATIO * 100).toInt()}%)"
+            )
+            return null
+        }
+
+        // Need at least 2 elements to form a pattern
+        if (parsed.size < 2) {
+            Log.d(TAG, "  Hyphen-suffix-gender: only ${parsed.size} elements match pattern")
+            return null
+        }
+
+        // Get distinct base names, qualifiers, and genders
+        val distinctBaseNames = linkedSetOf<String>().apply {
+            parsed.forEach { add(it.baseName) }
+        }.toList()
+        val distinctQualifiers = linkedSetOf<String>().apply {
+            parsed.forEach { add(it.qualifier) }
+        }.toList()
+        val distinctGenders = linkedSetOf<String>().apply {
+            parsed.forEach { add(it.gender) }
+        }.toList()
+
+        // Require at least 2 qualifiers or 2 genders to form a meaningful pattern
+        if (distinctQualifiers.size < 2 && distinctGenders.size < 2) {
+            Log.d(
+                TAG,
+                "  Hyphen-suffix-gender: insufficient variation (${distinctQualifiers.size} qualifiers, ${distinctGenders.size} genders)"
+            )
+            return null
+        }
+
+        val confidence = (structuredRatio * 0.5) +
+                (minOf(distinctQualifiers.size / 4.0, 1.0) * 0.3) +
+                (if (distinctGenders.size >= 2) 0.2 else 0.1)
+
+        Log.d(
+            TAG,
+            "  Hyphen-suffix-gender: ${distinctBaseNames.size} base names, ${distinctQualifiers.size} qualifiers, ${distinctGenders.size} genders, confidence=$confidence"
+        )
+        Log.d(TAG, "    Base names: ${distinctBaseNames.take(3).joinToString(", ")}${if (distinctBaseNames.size > 3) "..." else ""}")
+        Log.d(TAG, "    Qualifiers: $distinctQualifiers")
+        Log.d(TAG, "    Genders: $distinctGenders")
+
+        // Build 3-level hierarchy: Indicator (base name) → Qualifier → Gender
+        val categories = mutableListOf<ImpliedCategory>()
+
+        // Level 0: Base indicator names
+        categories.add(
+            ImpliedCategory(
+                name = "Indicator",
+                options = distinctBaseNames,
+                level = 0,
+                separator = HYPHEN_SUFFIX_GENDER
+            )
+        )
+
+        // Level 1: Qualifiers (Qualified, Unlicensed, etc.)
+        if (distinctQualifiers.size >= 2) {
+            categories.add(
+                ImpliedCategory(
+                    name = inferCategoryName(distinctQualifiers, 1),
+                    options = distinctQualifiers,
+                    level = 1,
+                    separator = HYPHEN_SUFFIX_GENDER
+                )
+            )
+        }
+
+        // Level 2: Gender (Female, Male)
+        if (distinctGenders.size >= 2) {
+            categories.add(
+                ImpliedCategory(
+                    name = "Gender",
+                    options = distinctGenders,
+                    level = if (distinctQualifiers.size >= 2) 2 else 1,
+                    separator = HYPHEN_SUFFIX_GENDER
+                )
+            )
+        }
+
+        return ImpliedCategoryCombination(
+            categories = categories,
+            confidence = confidence,
+            pattern = CategoryPattern.HIERARCHICAL,
+            totalDataElements = dataElements.size,
+            structuredDataElements = parsed.size
+        )
+    }
+
     private fun normalizeParentheticalBaseNames(baseNames: List<String>): List<String> {
         if (baseNames.isEmpty()) return baseNames
         val commonPrefix = baseNames.first().substringBefore(" - ", missingDelimiterValue = "")
@@ -382,6 +519,40 @@ class ImpliedCategoryInferenceService @Inject constructor() {
                         }
                     },
                     fieldName = normalizedBase
+                )
+            }
+        }
+
+        // Handle hyphen-suffix-gender pattern (e.g., "base-Qualified Female")
+        if (separator == HYPHEN_SUFFIX_GENDER) {
+            val indicatorOptions = combination.categories.firstOrNull { it.level == 0 }?.options ?: emptyList()
+            val qualifierCategory = combination.categories.firstOrNull { it.level == 1 && it.name != "Gender" }
+            val genderCategory = combination.categories.firstOrNull { it.name.equals("Gender", ignoreCase = true) }
+
+            return dataElements.mapNotNull { element ->
+                val match = HYPHEN_SUFFIX_GENDER_REGEX.find(element.dataElementName) ?: return@mapNotNull null
+                val baseName = match.groupValues[1].trim()
+                val qualifier = match.groupValues[2].trim()
+                val gender = match.groupValues[3].trim()
+                if (baseName.isBlank() || qualifier.isBlank() || gender.isBlank()) return@mapNotNull null
+
+                // Resolve base name to match the stored options
+                val normalizedBase = indicatorOptions.firstOrNull { it.equals(baseName, ignoreCase = true) }
+                    ?: baseName
+
+                ImpliedCategoryMapping(
+                    dataElementId = element.dataElement,
+                    dataElementName = element.dataElementName,
+                    categoryOptionsByLevel = buildMap {
+                        put(0, normalizedBase)
+                        if (qualifierCategory != null) {
+                            put(1, qualifier)
+                        }
+                        if (genderCategory != null) {
+                            put(genderCategory.level, gender)
+                        }
+                    },
+                    fieldName = "$normalizedBase - $qualifier"
                 )
             }
         }

@@ -23,5 +23,6 @@ data class Period(
 
 data class OrganisationUnit(
     val id: String,
-    val name: String
+    val name: String,
+    val path: String? = null
 )

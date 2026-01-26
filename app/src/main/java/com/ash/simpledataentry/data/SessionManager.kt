@@ -7,6 +7,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.async
+import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -884,9 +885,22 @@ class SessionManager @Inject constructor(
             }
 
             // Check what we have after the download attempt
-            val hasOrgUnits = d2Instance.organisationUnitModule().organisationUnits().blockingCount() > 0
-            val hasPrograms = d2Instance.programModule().programs().blockingCount() > 0
-            val hasDatasets = d2Instance.dataSetModule().dataSets().blockingCount() > 0
+            val (hasOrgUnits, hasPrograms, hasDatasets) = coroutineScope {
+                val orgUnitsDeferred = async(Dispatchers.IO) {
+                    d2Instance.organisationUnitModule().organisationUnits().blockingCount() > 0
+                }
+                val programsDeferred = async(Dispatchers.IO) {
+                    d2Instance.programModule().programs().blockingCount() > 0
+                }
+                val datasetsDeferred = async(Dispatchers.IO) {
+                    d2Instance.dataSetModule().dataSets().blockingCount() > 0
+                }
+                Triple(
+                    orgUnitsDeferred.await(),
+                    programsDeferred.await(),
+                    datasetsDeferred.await()
+                )
+            }
             val hasUser = try {
                 d2Instance.userModule().user().blockingGet() != null
             } catch (e: Exception) {

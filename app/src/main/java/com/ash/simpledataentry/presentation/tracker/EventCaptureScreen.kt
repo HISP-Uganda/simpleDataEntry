@@ -4,7 +4,6 @@ package com.ash.simpledataentry.presentation.tracker
 
 import androidx.activity.compose.BackHandler
 import androidx.compose.animation.AnimatedVisibility
-import androidx.compose.foundation.gestures.animateScrollBy
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
@@ -13,6 +12,8 @@ import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.relocation.BringIntoViewRequester
 import androidx.compose.foundation.relocation.bringIntoViewRequester
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
@@ -20,9 +21,7 @@ import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.Event
 import androidx.compose.material.icons.filled.KeyboardArrowDown
-import androidx.compose.material.icons.filled.Save
 import androidx.compose.material.icons.filled.Sync
-import androidx.compose.material.icons.filled.Warning
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.material3.*
@@ -37,10 +36,10 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.focus.onFocusChanged
 import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.navigation.NavController
 import com.ash.simpledataentry.presentation.core.AdaptiveLoadingOverlay
-import com.ash.simpledataentry.presentation.core.ShimmerFormSection
 import com.ash.simpledataentry.presentation.core.DatePickerDialog
 import com.ash.simpledataentry.presentation.core.LoadingOperation
 import com.ash.simpledataentry.presentation.core.UiState
@@ -58,6 +57,7 @@ import com.ash.simpledataentry.domain.model.computeRenderType
 import com.ash.simpledataentry.domain.model.RenderType
 import com.ash.simpledataentry.presentation.core.Section
 import com.ash.simpledataentry.presentation.core.SectionNavigationBar
+import com.ash.simpledataentry.presentation.core.StepLoadingType
 import com.ash.simpledataentry.ui.theme.DHIS2Blue
 import com.ash.simpledataentry.ui.theme.DHIS2BlueDark
 import com.ash.simpledataentry.ui.theme.DHIS2BlueLight
@@ -80,17 +80,7 @@ fun EventCaptureScreen(
     val overlayState = rawOverlayState
     val adaptiveUiState = remember(overlayState) {
         when (overlayState) {
-            is UiState.Loading -> {
-                val operation = overlayState.operation
-                if (operation is LoadingOperation.Syncing ||
-                    operation is LoadingOperation.Saving ||
-                    operation is LoadingOperation.BulkOperation
-                ) {
-                    overlayState
-                } else {
-                    UiState.Success(Unit)
-                }
-            }
+            is UiState.Loading -> overlayState
             else -> UiState.Success(Unit)
         }
     }
@@ -98,11 +88,16 @@ fun EventCaptureScreen(
     val coroutineScope = rememberCoroutineScope()
     val context = LocalContext.current
     val listState = rememberLazyListState()
+    val syncInProgress = overlayState is UiState.Loading &&
+        (overlayState.operation is LoadingOperation.Syncing ||
+            (overlayState.operation is LoadingOperation.Navigation &&
+                overlayState.operation.progress.loadingType == StepLoadingType.SYNC))
 
     var showSaveDialog by remember { mutableStateOf(false) }
     var showSyncDialog by remember { mutableStateOf(false) }
     var showDatePicker by remember { mutableStateOf(false) }
     var showOrgUnitPicker by remember { mutableStateOf(false) }
+    var showPostSaveDialog by remember { mutableStateOf(false) }
     val pendingNavAction = remember { mutableStateOf<(() -> Unit)?>(null) }
 
     // Initialize event data
@@ -201,8 +196,7 @@ fun EventCaptureScreen(
             title = { Text("Select Organization Unit") },
             text = {
                 LazyColumn {
-                    items(state.availableOrganisationUnits.size) { index ->
-                        val orgUnit = state.availableOrganisationUnits[index]
+                    items(items = state.availableOrganisationUnits, key = { it.id }) { orgUnit ->
                         TextButton(
                             onClick = {
                                 viewModel.updateOrganisationUnit(orgUnit.id)
@@ -223,6 +217,17 @@ fun EventCaptureScreen(
     }
 
     // Show snackbar messages (reuse EditEntry pattern)
+    var lastHandledSaveResult by remember { mutableStateOf<Result<Unit>?>(null) }
+    LaunchedEffect(state.saveResult) {
+        val result = state.saveResult
+        if (result != null && result != lastHandledSaveResult) {
+            lastHandledSaveResult = result
+            if (result.isSuccess) {
+                showPostSaveDialog = true
+            }
+        }
+    }
+
     LaunchedEffect(state.successMessage) {
         state.successMessage?.let {
             snackbarHostState.showSnackbar(it)
@@ -235,6 +240,27 @@ fun EventCaptureScreen(
             snackbarHostState.showSnackbar(it)
             viewModel.clearMessages()
         }
+    }
+
+    if (showPostSaveDialog) {
+        AlertDialog(
+            onDismissRequest = { showPostSaveDialog = false },
+            title = { Text("Saved") },
+            text = { Text("Mark this event as complete?") },
+            confirmButton = {
+                TextButton(onClick = {
+                    showPostSaveDialog = false
+                    viewModel.completeEvent()
+                }) {
+                    Text("Complete")
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { showPostSaveDialog = false }) {
+                    Text("Not now")
+                }
+            }
+        )
     }
 
     val sections = remember(state.dataValues) {
@@ -297,9 +323,9 @@ fun EventCaptureScreen(
                         // Sync button
                         IconButton(
                             onClick = { showSyncDialog = true },
-                            enabled = !state.isSyncing
+                            enabled = !syncInProgress
                         ) {
-                            if (state.isSyncing) {
+                            if (syncInProgress) {
                                 CircularProgressIndicator(
                                     modifier = Modifier.size(24.dp),
                                     strokeWidth = 2.dp,
@@ -318,6 +344,30 @@ fun EventCaptureScreen(
 
             }
         },
+        floatingActionButton = {
+            FloatingActionButton(
+                onClick = {
+                    if (!state.saveInProgress) {
+                        viewModel.saveEvent()
+                    }
+                },
+                containerColor = if (state.saveInProgress) {
+                    MaterialTheme.colorScheme.surfaceVariant
+                } else {
+                    MaterialTheme.colorScheme.primary
+                },
+                contentColor = if (state.saveInProgress) {
+                    MaterialTheme.colorScheme.onSurfaceVariant
+                } else {
+                    MaterialTheme.colorScheme.onPrimary
+                }
+            ) {
+                Icon(
+                    imageVector = Icons.Default.Check,
+                    contentDescription = "Save event"
+                )
+            }
+        },
         snackbarHost = { SnackbarHost(snackbarHostState) }
     ) { paddingValues ->
         AdaptiveLoadingOverlay(
@@ -326,7 +376,7 @@ fun EventCaptureScreen(
         ) {
             when {
                 state.isLoading -> {
-                    Column(
+                    Box(
                         modifier = Modifier
                             .fillMaxSize()
                             .padding(paddingValues)
@@ -335,16 +385,7 @@ fun EventCaptureScreen(
                                     colors = listOf(DHIS2Blue, DHIS2BlueDark)
                                 )
                             )
-                            .padding(vertical = 16.dp)
-                    ) {
-                        repeat(3) {
-                            ShimmerFormSection(
-                                modifier = Modifier
-                                    .fillMaxWidth()
-                                    .padding(horizontal = 16.dp, vertical = 8.dp)
-                            )
-                        }
-                    }
+                    )
                 }
                 state.error != null -> {
                     Column(
@@ -395,6 +436,35 @@ fun EventCaptureScreen(
                                     .fillMaxSize()
                                     .padding(16.dp)
                             ) {
+                                // Show warning banner if rule evaluation had issues
+                                if (state.ruleEvaluationWarning != null) {
+                                    Card(
+                                        modifier = Modifier
+                                            .fillMaxWidth()
+                                            .padding(bottom = 8.dp),
+                                        colors = CardDefaults.cardColors(
+                                            containerColor = MaterialTheme.colorScheme.errorContainer
+                                        )
+                                    ) {
+                                        Row(
+                                            modifier = Modifier
+                                                .fillMaxWidth()
+                                                .padding(12.dp),
+                                            verticalAlignment = Alignment.CenterVertically
+                                        ) {
+                                            Text(
+                                                text = state.ruleEvaluationWarning ?: "",
+                                                style = MaterialTheme.typography.bodySmall,
+                                                color = MaterialTheme.colorScheme.onErrorContainer,
+                                                modifier = Modifier.weight(1f)
+                                            )
+                                            TextButton(onClick = { viewModel.clearRuleWarning() }) {
+                                                Text("Dismiss", color = MaterialTheme.colorScheme.onErrorContainer)
+                                            }
+                                        }
+                                    }
+                                }
+
                                 if (sectionNames.isNotEmpty()) {
                                     SectionNavigationBar(
                                         currentSection = Section(currentSectionName),
@@ -412,65 +482,6 @@ fun EventCaptureScreen(
                                         hasSubsections = false,
                                         modifier = Modifier.padding(bottom = 8.dp)
                                     )
-                                }
-
-                                Row(
-                                    modifier = Modifier
-                                        .fillMaxWidth()
-                                        .padding(horizontal = 8.dp, vertical = 4.dp),
-                                    horizontalArrangement = Arrangement.spacedBy(8.dp),
-                                    verticalAlignment = Alignment.CenterVertically
-                                ) {
-                                    OutlinedButton(
-                                        onClick = { viewModel.saveEvent() },
-                                        enabled = state.canSave && !state.saveInProgress,
-                                        modifier = Modifier.weight(1f)
-                                    ) {
-                                        Icon(
-                                            imageVector = Icons.Default.Save,
-                                            contentDescription = null,
-                                            modifier = Modifier.size(18.dp)
-                                        )
-                                        Spacer(modifier = Modifier.width(6.dp))
-                                        Text("Save")
-                                    }
-
-                                    OutlinedButton(
-                                        onClick = {
-                                            coroutineScope.launch {
-                                                val message = if (state.validationErrors.isEmpty()) {
-                                                    "All required fields are filled."
-                                                } else {
-                                                    state.validationErrors.joinToString("\n")
-                                                }
-                                                snackbarHostState.showSnackbar(message)
-                                            }
-                                        },
-                                        enabled = !state.saveInProgress,
-                                        modifier = Modifier.weight(1f)
-                                    ) {
-                                        Icon(
-                                            imageVector = Icons.Default.Warning,
-                                            contentDescription = null,
-                                            modifier = Modifier.size(18.dp)
-                                        )
-                                        Spacer(modifier = Modifier.width(6.dp))
-                                        Text("Validate")
-                                    }
-
-                                    Button(
-                                        onClick = { viewModel.completeEvent() },
-                                        enabled = state.isEditMode && !state.saveInProgress,
-                                        modifier = Modifier.weight(1f)
-                                    ) {
-                                        Icon(
-                                            imageVector = Icons.Default.Check,
-                                            contentDescription = null,
-                                            modifier = Modifier.size(18.dp)
-                                        )
-                                        Spacer(modifier = Modifier.width(6.dp))
-                                        Text("Complete")
-                                    }
                                 }
 
                                 LazyColumn(
@@ -568,6 +579,7 @@ fun EventCaptureScreen(
                                                     onValueChange = { value, dataValue ->
                                                         viewModel.updateDataValue(value, dataValue)
                                                     },
+                                                    onValueCommitted = { viewModel.onFieldCommit() },
                                                     programRuleEffect = state.programRuleEffect
                                                 )
                                             }
@@ -631,6 +643,7 @@ fun EventCaptureScreen(
             }
         }
     }
+
 }
 
 /**
@@ -647,6 +660,7 @@ private fun EventSectionAccordion(
     isExpanded: Boolean,
     onToggle: () -> Unit,
     onValueChange: (String, DataValue) -> Unit,
+    onValueCommitted: () -> Unit,
     programRuleEffect: com.ash.simpledataentry.domain.model.ProgramRuleEffect?
 ) {
     val totalElements = dataValues.size
@@ -665,6 +679,7 @@ private fun EventSectionAccordion(
                 categories = impliedCombination.categories,
                 dataValues = dataValues,
                 onValueChange = onValueChange,
+                onValueCommitted = onValueCommitted,
                 programRuleEffect = programRuleEffect,
                 level = 0
             )
@@ -681,6 +696,7 @@ private fun EventSectionAccordion(
                         EventDataValueField(
                             dataValue = dataValue,
                             onValueChange = { value -> onValueChange(value, dataValue) },
+                            onValueCommitted = onValueCommitted,
                             programRuleEffect = programRuleEffect,
                             modifier = Modifier.padding(vertical = 4.dp)
                         )
@@ -694,6 +710,7 @@ private fun EventSectionAccordion(
                     EventDataValueField(
                         dataValue = dataValue,
                         onValueChange = { value -> onValueChange(value, dataValue) },
+                        onValueCommitted = onValueCommitted,
                         programRuleEffect = programRuleEffect,
                         modifier = Modifier.padding(vertical = 4.dp)
                     )
@@ -804,6 +821,7 @@ private fun ImpliedCategoryGroupRecursive(
     categories: List<com.ash.simpledataentry.domain.model.ImpliedCategory>,
     dataValues: List<DataValue>,
     onValueChange: (String, DataValue) -> Unit,
+    onValueCommitted: () -> Unit,
     programRuleEffect: com.ash.simpledataentry.domain.model.ProgramRuleEffect?,
     level: Int = 0
 ) {
@@ -815,7 +833,9 @@ private fun ImpliedCategoryGroupRecursive(
                     EventDataValueField(
                         dataValue = dataValue,
                         onValueChange = { value -> onValueChange(value, dataValue) },
+                        onValueCommitted = onValueCommitted,
                         programRuleEffect = programRuleEffect,
+                        labelOverride = mapping.fieldName,
                         modifier = Modifier.padding(vertical = 4.dp)
                     )
                 }
@@ -841,7 +861,9 @@ private fun ImpliedCategoryGroupRecursive(
                     EventDataValueField(
                         dataValue = dataValue,
                         onValueChange = { value -> onValueChange(value, dataValue) },
+                        onValueCommitted = onValueCommitted,
                         programRuleEffect = programRuleEffect,
+                        labelOverride = mapping.fieldName,
                         modifier = Modifier.padding(vertical = 4.dp)
                     )
                 }
@@ -872,7 +894,9 @@ private fun ImpliedCategoryGroupRecursive(
                                 EventDataValueField(
                                     dataValue = dataValue,
                                     onValueChange = { value -> onValueChange(value, dataValue) },
+                                    onValueCommitted = onValueCommitted,
                                     programRuleEffect = programRuleEffect,
+                                    labelOverride = mapping.fieldName,
                                     modifier = Modifier.padding(vertical = 4.dp)
                                 )
                             }
@@ -897,6 +921,7 @@ private fun ImpliedCategoryGroupRecursive(
                     categories = categories,
                     dataValues = dataValues,
                     onValueChange = onValueChange,
+                    onValueCommitted = onValueCommitted,
                     programRuleEffect = programRuleEffect,
                     level = level + 1
                 )
@@ -907,17 +932,19 @@ private fun ImpliedCategoryGroupRecursive(
     if (unmappedAtCurrentLevel.isNotEmpty()) {
         Spacer(modifier = Modifier.height(8.dp))
         unmappedAtCurrentLevel.forEach { mapping ->
-            val dataValue = dataValues.find { it.dataElement == mapping.dataElementId }
-            if (dataValue != null) {
-                key("unmapped_${level}_${dataValue.dataElement}") {
-                    EventDataValueField(
-                        dataValue = dataValue,
-                        onValueChange = { value -> onValueChange(value, dataValue) },
-                        programRuleEffect = programRuleEffect,
-                        modifier = Modifier.padding(vertical = 4.dp)
-                    )
-                }
+        val dataValue = dataValues.find { it.dataElement == mapping.dataElementId }
+        if (dataValue != null) {
+            key("unmapped_${level}_${dataValue.dataElement}") {
+                EventDataValueField(
+                    dataValue = dataValue,
+                    onValueChange = { value -> onValueChange(value, dataValue) },
+                    onValueCommitted = onValueCommitted,
+                    programRuleEffect = programRuleEffect,
+                    labelOverride = mapping.fieldName,
+                    modifier = Modifier.padding(vertical = 4.dp)
+                )
             }
+        }
         }
     }
 }
@@ -993,7 +1020,9 @@ private fun EventCategoryAccordion(
 private fun EventDataValueField(
     dataValue: DataValue,
     onValueChange: (String) -> Unit,
+    onValueCommitted: () -> Unit,
     programRuleEffect: com.ash.simpledataentry.domain.model.ProgramRuleEffect? = null,
+    labelOverride: String? = null,
     modifier: Modifier = Modifier
 ) {
     // Skip rendering if field is hidden by program rules
@@ -1002,9 +1031,17 @@ private fun EventDataValueField(
     }
 
     val value = dataValue.value ?: ""
+    val label = labelOverride?.ifBlank { null } ?: dataValue.dataElementName
     // Fix cursor jumping: Don't recreate TextFieldValue on every value change
     var textFieldValue by remember {
         mutableStateOf(TextFieldValue(value))
+    }
+    var isFocused by remember { mutableStateOf(false) }
+    val focusModifier = modifier.onFocusChanged { focusState ->
+        if (isFocused && !focusState.isFocused) {
+            onValueCommitted()
+        }
+        isFocused = focusState.isFocused
     }
 
     // Update text field when external value changes (e.g., from ViewModel)
@@ -1033,9 +1070,10 @@ private fun EventDataValueField(
                     OptionSetDropdown(
                         optionSet = optionSet,
                         selectedCode = dataValue.value,
-                        title = dataValue.dataElementName,
+                        title = label,
                         onOptionSelected = { code ->
                             onValueChange(code ?: "")
+                            onValueCommitted()
                         },
                         modifier = Modifier.padding(vertical = 4.dp)
                     )
@@ -1044,9 +1082,10 @@ private fun EventDataValueField(
                     OptionSetRadioGroup(
                         optionSet = optionSet,
                         selectedCode = dataValue.value,
-                        title = dataValue.dataElementName,
+                        title = label,
                         onOptionSelected = { code ->
                             onValueChange(code ?: "")
+                            onValueCommitted()
                         },
                         modifier = Modifier.padding(vertical = 4.dp)
                     )
@@ -1056,9 +1095,10 @@ private fun EventDataValueField(
                     OptionSetDropdown(
                         optionSet = optionSet,
                         selectedCode = dataValue.value,
-                        title = dataValue.dataElementName,
+                        title = label,
                         onOptionSelected = { code ->
                             onValueChange(code ?: "")
+                            onValueCommitted()
                         },
                         modifier = Modifier.padding(vertical = 4.dp)
                     )
@@ -1067,7 +1107,7 @@ private fun EventDataValueField(
         } else when (dataValue.dataEntryType) {
         DataEntryType.NUMBER -> {
             InputNumber(
-                title = dataValue.dataElementName,
+                title = label,
                 state = InputShellState.UNFOCUSED,
                 inputTextFieldValue = textFieldValue,
                 onValueChanged = { newValue: TextFieldValue? ->
@@ -1076,12 +1116,12 @@ private fun EventDataValueField(
                         onValueChange(textField.text)
                     }
                 },
-                modifier = modifier.padding(vertical = 4.dp)
+                modifier = focusModifier.padding(vertical = 4.dp)
             )
         }
         DataEntryType.PERCENTAGE -> {
             InputNumber(
-                title = dataValue.dataElementName,
+                title = label,
                 state = InputShellState.UNFOCUSED,
                 inputTextFieldValue = textFieldValue,
                 onValueChanged = { newValue: TextFieldValue? ->
@@ -1090,7 +1130,7 @@ private fun EventDataValueField(
                         onValueChange(textField.text)
                     }
                 },
-                modifier = modifier.padding(vertical = 4.dp)
+                modifier = focusModifier.padding(vertical = 4.dp)
             )
         }
         DataEntryType.YES_NO -> {
@@ -1116,7 +1156,7 @@ private fun EventDataValueField(
                     },
                     onValueChange = { },
                     readOnly = true,
-                    label = { Text(dataValue.dataElementName) },
+                    label = { Text(label) },
                     trailingIcon = { ExposedDropdownMenuDefaults.TrailingIcon(expanded = expanded) },
                     modifier = Modifier
                         .fillMaxWidth()
@@ -1131,6 +1171,7 @@ private fun EventDataValueField(
                         text = { Text("Select...") },
                         onClick = {
                             onValueChange("")
+                            onValueCommitted()
                             expanded = false
                         }
                     )
@@ -1138,6 +1179,7 @@ private fun EventDataValueField(
                         text = { Text("Yes") },
                         onClick = {
                             onValueChange("true")
+                            onValueCommitted()
                             expanded = false
                         }
                     )
@@ -1145,6 +1187,7 @@ private fun EventDataValueField(
                         text = { Text("No") },
                         onClick = {
                             onValueChange("false")
+                            onValueCommitted()
                             expanded = false
                         }
                     )
@@ -1153,7 +1196,7 @@ private fun EventDataValueField(
         }
         else -> {
             InputText(
-                title = dataValue.dataElementName,
+                title = label,
                 state = InputShellState.UNFOCUSED,
                 inputTextFieldValue = textFieldValue,
                 onValueChanged = { newValue: TextFieldValue? ->
@@ -1162,7 +1205,7 @@ private fun EventDataValueField(
                         onValueChange(textField.text)
                     }
                 },
-                modifier = Modifier.padding(vertical = 4.dp)
+                modifier = focusModifier.padding(vertical = 4.dp)
             )
         }
         }

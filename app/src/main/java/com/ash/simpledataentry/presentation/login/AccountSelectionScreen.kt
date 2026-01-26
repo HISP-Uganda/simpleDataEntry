@@ -139,7 +139,7 @@ fun AccountSelectionScreen(
                     modifier = Modifier.weight(1f),
                     verticalArrangement = Arrangement.spacedBy(8.dp)
                 ) {
-                    items(state.accounts) { account ->
+                    items(items = state.accounts, key = { it.id }) { account ->
                         AccountItem(
                             account = account,
                             dateFormatter = dateFormatter,

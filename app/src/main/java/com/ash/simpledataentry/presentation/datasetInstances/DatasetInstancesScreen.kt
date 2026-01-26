@@ -36,7 +36,6 @@ import com.ash.simpledataentry.presentation.core.ShimmerLoadingList
 import com.ash.simpledataentry.presentation.core.UiError
 import com.ash.simpledataentry.presentation.core.UiState
 import com.ash.simpledataentry.presentation.core.LoadingOperation
-import com.ash.simpledataentry.ui.theme.DHIS2BlueDeep
 import com.ash.simpledataentry.ui.theme.StatusCompleted
 import com.ash.simpledataentry.ui.theme.StatusCompletedLight
 import com.ash.simpledataentry.ui.theme.StatusDraft
@@ -46,16 +45,18 @@ import com.ash.simpledataentry.ui.theme.StatusSyncedLight
 import org.hisp.dhis.mobile.ui.designsystem.theme.TextColor
 import androidx.compose.ui.graphics.Color
 import androidx.compose.material.icons.filled.Edit
-import androidx.compose.animation.AnimatedVisibility
-import androidx.compose.animation.slideInVertically
-import androidx.compose.animation.slideOutVertically
+import androidx.compose.foundation.BorderStroke
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
-import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.ui.platform.LocalLifecycleOwner
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.LifecycleEventObserver
+import kotlinx.coroutines.launch
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -273,8 +274,11 @@ private fun DatasetInstancesContent(
     navController: NavController,
     datasetId: String,
     datasetName: String,
-    viewModel: DatasetInstancesViewModel
+    viewModel: DatasetInstancesViewModel,
+    onSyncInstance: (com.ash.simpledataentry.domain.model.ProgramInstance.DatasetInstance) -> Unit
 ) {
+    val listDateFormatter = remember { SimpleDateFormat("dd/MM/yyyy", Locale.ENGLISH) }
+    val entryDateFormatter = remember { SimpleDateFormat("MMM dd, yyyy", Locale.getDefault()) }
     val listContent: @Composable () -> Unit = {
         if (filteredInstances.isEmpty()) {
             Box(
@@ -311,12 +315,9 @@ private fun DatasetInstancesContent(
                 contentPadding = PaddingValues(16.dp),
                 verticalArrangement = Arrangement.spacedBy(8.dp)
             ) {
-                items(filteredInstances) { instance ->
+                items(items = filteredInstances, key = { it.id }) { instance ->
                 val formattedDate = try {
-                    instance.lastUpdated?.let { date ->
-                        val outputFormat = SimpleDateFormat("dd/MM/yyyy", Locale.ENGLISH)
-                        outputFormat.format(date)
-                    } ?: "N/A"
+                    instance.lastUpdated?.let { date -> listDateFormatter.format(date) } ?: "N/A"
                 } catch (e: Exception) {
                     Log.e("DatasetInstancesScreen", "Error parsing date: ", e)
                     "N/A"
@@ -325,9 +326,9 @@ private fun DatasetInstancesContent(
                     is com.ash.simpledataentry.domain.model.ProgramInstance.DatasetInstance ->
                         instance.period.toString().replace("Period(id=", "").replace(")", "")
                     is com.ash.simpledataentry.domain.model.ProgramInstance.TrackerEnrollment ->
-                        java.text.SimpleDateFormat("MMM dd, yyyy", java.util.Locale.getDefault()).format(instance.enrollmentDate)
+                        entryDateFormatter.format(instance.enrollmentDate)
                     is com.ash.simpledataentry.domain.model.ProgramInstance.EventInstance ->
-                        instance.eventDate?.let { java.text.SimpleDateFormat("MMM dd, yyyy", java.util.Locale.getDefault()).format(it) } ?: "No date"
+                        instance.eventDate?.let { entryDateFormatter.format(it) } ?: "No date"
                 }
 
                 val attrComboName = when (instance) {
@@ -452,17 +453,6 @@ private fun DatasetInstancesContent(
                                     }
                                 }
 
-                                if (hasLocalChanges && !isComplete) {
-                                    Spacer(modifier = Modifier.height(8.dp))
-                                    LinearProgressIndicator(
-                                        modifier = Modifier
-                                            .fillMaxWidth()
-                                            .height(4.dp),
-                                        color = StatusDraft,
-                                        trackColor = StatusDraftLight
-                                    )
-                                }
-
                                 if (showAttrCombo || hasLocalChanges || isComplete || isSynced) {
                                     Spacer(modifier = Modifier.height(4.dp))
                                     Row(
@@ -488,7 +478,7 @@ private fun DatasetInstancesContent(
                                             ) {
                                                 if (hasLocalChanges) {
                                                     StatusChip(
-                                                        label = "Unsynced",
+                                                        label = "Not synced",
                                                         containerColor = StatusDraftLight,
                                                         contentColor = StatusDraft
                                                     )
@@ -496,7 +486,7 @@ private fun DatasetInstancesContent(
 
                                                 if (isComplete) {
                                                     StatusChip(
-                                                        label = "Complete",
+                                                        label = "Completed",
                                                         containerColor = StatusCompletedLight,
                                                         contentColor = StatusCompleted
                                                     )
@@ -504,10 +494,41 @@ private fun DatasetInstancesContent(
 
                                                 if (!hasLocalChanges && !isComplete && isSynced) {
                                                     StatusChip(
-                                                        label = "Up to date",
+                                                        label = "Synced",
                                                         containerColor = StatusSyncedLight,
                                                         contentColor = StatusSynced
                                                     )
+                                                }
+
+                                                Box(
+                                                    modifier = Modifier.size(32.dp),
+                                                    contentAlignment = Alignment.Center
+                                                ) {
+                                                    if (!bulkMode && hasLocalChanges &&
+                                                        instance is com.ash.simpledataentry.domain.model.ProgramInstance.DatasetInstance
+                                                    ) {
+                                                        Surface(
+                                                            shape = CircleShape,
+                                                            border = BorderStroke(
+                                                                1.dp,
+                                                                MaterialTheme.colorScheme.primary.copy(alpha = 0.6f)
+                                                            ),
+                                                            color = Color.Transparent
+                                                        ) {
+                                                            IconButton(
+                                                                onClick = { onSyncInstance(instance) },
+                                                                enabled = !isBlockingOperation,
+                                                                modifier = Modifier.size(32.dp)
+                                                            ) {
+                                                                Icon(
+                                                                    imageVector = Icons.Default.Sync,
+                                                                    contentDescription = "Sync entry",
+                                                                    tint = MaterialTheme.colorScheme.primary,
+                                                                    modifier = Modifier.size(16.dp)
+                                                                )
+                                                            }
+                                                        }
+                                                    }
                                                 }
                                             }
                                         }
@@ -563,6 +584,7 @@ fun DatasetInstancesScreen(
     viewModel: DatasetInstancesViewModel = hiltViewModel()
 ) {
     val snackbarHostState = remember { SnackbarHostState() }
+    val scope = rememberCoroutineScope()
     val uiState by viewModel.uiState.collectAsState()
     val bulkMode by viewModel.bulkCompletionMode.collectAsState()
     val selectedInstances by viewModel.selectedInstances.collectAsState()
@@ -570,7 +592,6 @@ fun DatasetInstancesScreen(
     var bulkActionMessage by remember { mutableStateOf<String?>(null) }
     var showFilterDialog by remember { mutableStateOf(false) }
     var showSyncDialog by remember { mutableStateOf(false) }
-    var showFilterSection by remember { mutableStateOf(false) }
 
     // CRITICAL FIX: Detect program type and call appropriate method
     LaunchedEffect(datasetId) {
@@ -580,8 +601,17 @@ fun DatasetInstancesScreen(
     }
 
     // Refresh data when the screen is resumed (e.g., coming back from EditEntryScreen)
-    LaunchedEffect(Unit) {
-        viewModel.refreshData()
+    val lifecycleOwner = LocalLifecycleOwner.current
+    DisposableEffect(lifecycleOwner, datasetId) {
+        val observer = LifecycleEventObserver { _, event ->
+            if (event == Lifecycle.Event.ON_RESUME) {
+                viewModel.refreshData()
+            }
+        }
+        lifecycleOwner.lifecycle.addObserver(observer)
+        onDispose {
+            lifecycleOwner.lifecycle.removeObserver(observer)
+        }
     }
 
     var lastSuccessData by remember { mutableStateOf<DatasetInstancesData?>(null) }
@@ -603,7 +633,7 @@ fun DatasetInstancesScreen(
 
     val subtitle = currentData?.let { data ->
         when (data.programType) {
-            com.ash.simpledataentry.domain.model.ProgramType.DATASET -> "Data entries"
+            com.ash.simpledataentry.domain.model.ProgramType.DATASET -> null
             com.ash.simpledataentry.domain.model.ProgramType.TRACKER -> "Enrollments"
             com.ash.simpledataentry.domain.model.ProgramType.EVENT -> "Events"
             else -> null
@@ -748,13 +778,13 @@ fun DatasetInstancesScreen(
                     )
 
                     IconButton(
-                        onClick = { showFilterSection = !showFilterSection },
+                        onClick = { showFilterDialog = true },
                         enabled = !isBlockingOperation && !bulkMode && currentData != null
                     ) {
                         Icon(
                             imageVector = Icons.Default.FilterList,
                             contentDescription = "Filter",
-                            tint = if (filterState.hasActiveFilters() || showFilterSection) {
+                            tint = if (filterState.hasActiveFilters()) {
                                 MaterialTheme.colorScheme.primary
                             } else {
                                 MaterialTheme.colorScheme.onSurfaceVariant
@@ -770,40 +800,6 @@ fun DatasetInstancesScreen(
                             imageVector = Icons.Default.Check,
                             contentDescription = if (bulkMode) "Exit Bulk Complete" else "Bulk Complete",
                             tint = if (bulkMode) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant
-                        )
-                    }
-                }
-
-                // Pull-down filter section
-                AnimatedVisibility(
-                    visible = showFilterSection,
-                    enter = slideInVertically(
-                        initialOffsetY = { -it },
-                        animationSpec = androidx.compose.animation.core.tween(200)
-                    ),
-                    exit = slideOutVertically(
-                        targetOffsetY = { -it },
-                        animationSpec = androidx.compose.animation.core.tween(150)
-                    )
-                ) {
-                    Card(
-                        modifier = Modifier.fillMaxWidth(),
-                        colors = CardDefaults.cardColors(
-                            containerColor = DHIS2BlueDeep
-                        ),
-                        elevation = CardDefaults.cardElevation(defaultElevation = 6.dp),
-                        shape = RoundedCornerShape(
-                            topStart = 0.dp,
-                            topEnd = 0.dp,
-                            bottomStart = 8.dp,
-                            bottomEnd = 8.dp
-                        )
-                    ) {
-                        DatasetInstancesPullDownFilter(
-                            currentFilter = filterState,
-                            onApplyFilter = { newFilter: DatasetInstanceFilterState ->
-                                viewModel.updateFilterState(newFilter)
-                            }
                         )
                     }
                 }
@@ -828,7 +824,16 @@ fun DatasetInstancesScreen(
                             navController = navController,
                             datasetId = datasetId,
                             datasetName = datasetName,
-                            viewModel = viewModel
+                            viewModel = viewModel,
+                            onSyncInstance = { instance ->
+                                viewModel.syncDatasetInstance(instance) { success, message ->
+                                    scope.launch {
+                                        snackbarHostState.showSnackbar(
+                                            message ?: if (success) "Entry synced." else "Entry sync failed."
+                                        )
+                                    }
+                                }
+                            }
                         )
                     }
                     else -> {
@@ -946,63 +951,5 @@ fun DatasetInstancesScreen(
                 )
             }
         }
-    }
-}
-
-private fun parseDhis2PeriodToDate(periodId: String): Date? {
-    return try {
-        when {
-            // Yearly: 2023
-            Regex("^\\d{4}$").matches(periodId) -> {
-                SimpleDateFormat("yyyy", Locale.ENGLISH).parse(periodId)
-            }
-            // Monthly: 202306
-            Regex("^\\d{6}$").matches(periodId) -> {
-                SimpleDateFormat("yyyyMM", Locale.ENGLISH).parse(periodId)
-            }
-            // Daily: 2023-06-01
-            Regex("^\\d{4}-\\d{2}-\\d{2}$").matches(periodId) -> {
-                SimpleDateFormat("yyyy-MM-dd", Locale.ENGLISH).parse(periodId)
-            }
-            // Weekly: 2023W23
-            Regex("^\\d{4}W\\d{1,2}$").matches(periodId) -> {
-                val year = periodId.substring(0, 4).toInt()
-                val week = periodId.substring(5).toInt()
-                val cal = Calendar.getInstance(Locale.ENGLISH)
-                cal.clear()
-                cal.set(Calendar.YEAR, year)
-                cal.set(Calendar.WEEK_OF_YEAR, week)
-                cal.set(Calendar.DAY_OF_WEEK, Calendar.MONDAY)
-                cal.time
-            }
-            // Quarterly: 2023Q2
-            Regex("^\\d{4}Q[1-4]$").matches(periodId) -> {
-                val year = periodId.substring(0, 4).toInt()
-                val quarter = periodId.substring(5).toInt()
-                val month = (quarter - 1) * 3
-                val cal = Calendar.getInstance(Locale.ENGLISH)
-                cal.clear()
-                cal.set(Calendar.YEAR, year)
-                cal.set(Calendar.MONTH, month)
-                cal.set(Calendar.DAY_OF_MONTH, 1)
-                cal.time
-            }
-            // Six-monthly: 2023S1 or 2023S2
-            Regex("^\\d{4}S[1-2]$").matches(periodId) -> {
-                val year = periodId.substring(0, 4).toInt()
-                val semester = periodId.substring(5).toInt()
-                val month = if (semester == 1) 0 else 6
-                val cal = Calendar.getInstance(Locale.ENGLISH)
-                cal.clear()
-                cal.set(Calendar.YEAR, year)
-                cal.set(Calendar.MONTH, month)
-                cal.set(Calendar.DAY_OF_MONTH, 1)
-                cal.time
-            }
-
-            else -> null
-        }
-    } catch (e: Exception) {
-        null
     }
 }

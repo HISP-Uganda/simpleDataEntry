@@ -9,6 +9,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.flow.flowOn
 import kotlinx.coroutines.flow.map
+import kotlinx.coroutines.rx2.await
 import com.ash.simpledataentry.data.SessionManager
 import com.ash.simpledataentry.data.DatabaseProvider
 import com.ash.simpledataentry.data.local.DraftInstanceSummary
@@ -37,7 +38,7 @@ class DatasetInstancesRepositoryImpl @Inject constructor(
                 Log.d(TAG, "Fetching user org units")
                 val userOrgUnits = d2.organisationUnitModule().organisationUnits()
                     .byOrganisationUnitScope(OrganisationUnit.Scope.SCOPE_DATA_CAPTURE)
-                    .blockingGet()
+                    .get().await()
 
                 Log.d(TAG, "Found ${userOrgUnits.size} org units")
 
@@ -64,7 +65,7 @@ class DatasetInstancesRepositoryImpl @Inject constructor(
                     .dataSetInstances()
                     .byDataSetUid().eq(datasetId)
                     .byOrganisationUnitUid().eq(userOrgUnitUid)
-                    .blockingGet()
+                    .get().await()
 
                 Log.d(TAG, "Found $instance instances for dataset")
 
@@ -106,7 +107,7 @@ class DatasetInstancesRepositoryImpl @Inject constructor(
                     val orgUnitName = try {
                         d2.organisationUnitModule().organisationUnits()
                             .uid(draft.orgUnit)
-                            .blockingGet()?.displayName() ?: draft.orgUnit
+                            .get().await()?.displayName() ?: draft.orgUnit
                     } catch (e: Exception) {
                         Log.w(TAG, "Could not get org unit name for ${draft.orgUnit}", e)
                         draft.orgUnit
@@ -146,7 +147,7 @@ class DatasetInstancesRepositoryImpl @Inject constructor(
 
                 // Download latest dataset instances from server
                 Log.d(TAG, "Syncing dataset instances...")
-                d2.dataSetModule().dataSetInstances().blockingGet()
+                d2.dataSetModule().dataSetInstances().get().await()
 
                 // Download tracker data (enrollments and their events)
                 Log.d(TAG, "Syncing tracker data...")
@@ -154,7 +155,7 @@ class DatasetInstancesRepositoryImpl @Inject constructor(
                 // Get tracker programs
                 val trackerPrograms = d2.programModule().programs()
                     .byProgramType().eq(org.hisp.dhis.android.core.program.ProgramType.WITH_REGISTRATION)
-                    .blockingGet()
+                    .get().await()
 
                 Log.d(TAG, "Found ${trackerPrograms.size} tracker programs to sync")
 
@@ -214,7 +215,7 @@ class DatasetInstancesRepositoryImpl @Inject constructor(
                 // Get user's data capture org units
                 val userOrgUnits = d2.organisationUnitModule().organisationUnits()
                     .byOrganisationUnitScope(OrganisationUnit.Scope.SCOPE_DATA_CAPTURE)
-                    .blockingGet()
+                    .get().await()
 
                 val userOrgUnitUid = userOrgUnits.firstOrNull()?.uid()
                 if (userOrgUnitUid == null) {
@@ -300,7 +301,7 @@ class DatasetInstancesRepositoryImpl @Inject constructor(
             // STEP 3: Get user's org unit scope for tracker data
             val userOrgUnits = d2.organisationUnitModule().organisationUnits()
                 .byOrganisationUnitScope(OrganisationUnit.Scope.SCOPE_DATA_CAPTURE)
-                .blockingGet()
+                .get().await()
 
             Log.d(TAG, "User has data capture access to ${userOrgUnits.size} org units")
             userOrgUnits.forEach { orgUnit ->
@@ -334,17 +335,17 @@ class DatasetInstancesRepositoryImpl @Inject constructor(
 
             val storedTEIs = d2.trackedEntityModule().trackedEntityInstances()
                 .byProgramUids(listOf(programId))
-                .blockingGet()
+                .get().await()
             Log.d(TAG, "Found ${storedTEIs.size} TrackedEntityInstances in local storage")
 
             val storedEnrollments = d2.enrollmentModule().enrollments()
                 .byProgram().eq(programId)
-                .blockingGet()
+                .get().await()
             Log.d(TAG, "Found ${storedEnrollments.size} Enrollments in local storage")
 
             val storedEvents = d2.eventModule().events()
                 .byProgramUid().eq(programId)
-                .blockingGet()
+                .get().await()
             Log.d(TAG, "Found ${storedEvents.size} Events in local storage")
 
             // STEP 7: Additional diagnostics if no data was stored despite successful API call
@@ -352,7 +353,7 @@ class DatasetInstancesRepositoryImpl @Inject constructor(
                 Log.w(TAG, "DIAGNOSTIC: No tracker data stored despite successful download")
 
                 // Check if program exists and is accessible
-                val program = d2.programModule().programs().uid(programId).blockingGet()
+                val program = d2.programModule().programs().uid(programId).get().await()
                 Log.d(TAG, "DIAGNOSTIC: Program details - UID: ${program?.uid()}, Name: ${program?.displayName()}, Type: ${program?.programType()}")
 
                 // Check if there are any TEIs at all for any program in accessible org units
@@ -362,7 +363,7 @@ class DatasetInstancesRepositoryImpl @Inject constructor(
 
                 // Check if the issue is org unit scope mismatch
                 val allOrgUnitsWithTEIs = d2.trackedEntityModule().trackedEntityInstances()
-                    .blockingGet()
+                    .get().await()
                     .map { it.organisationUnit() }
                     .distinct()
                 Log.d(TAG, "DIAGNOSTIC: Org units that have TEI data: ${allOrgUnitsWithTEIs.joinToString(", ")}")
@@ -501,7 +502,7 @@ class DatasetInstancesRepositoryImpl @Inject constructor(
                         // Verify what was actually stored
                         val storedEvents = d2.eventModule().events()
                             .byProgramUid().eq(programId)
-                            .blockingGet()
+                            .get().await()
                         Log.d(TAG, "EVENT SYNC: Found ${storedEvents.size} events in local storage for program $programId")
 
                         storedEvents.forEach { event ->
@@ -533,8 +534,15 @@ class DatasetInstancesRepositoryImpl @Inject constructor(
                 // Fetch program name once (metadata, not data-intensive)
                 val program = d2.programModule().programs()
                     .uid(programId)
-                    .blockingGet()
+                    .get().await()
                 val programName = program?.displayName() ?: program?.name() ?: "Unknown Program"
+                val stageNameById = d2.programModule().programStages()
+                    .byProgramUid().eq(programId)
+                    .get().await()
+                    .associate { stage ->
+                        val name = stage.displayName() ?: stage.name() ?: stage.uid()
+                        stage.uid() to name
+                    }
 
                 // Map Room entities to domain models
                 entities.map { entity ->
@@ -543,11 +551,15 @@ class DatasetInstancesRepositoryImpl @Inject constructor(
                             val cachedEvents = eventInstanceDao.getByEnrollment(entity.id)
                             if (cachedEvents.isNotEmpty()) {
                                 cachedEvents.map { eventEntity ->
+                                    val stageName = stageNameById[eventEntity.programStageId]
+                                        ?: eventEntity.programStageId
                                     com.ash.simpledataentry.domain.model.Event(
                                         id = eventEntity.id,
                                         programId = eventEntity.programId,
                                         programStageId = eventEntity.programStageId,
+                                        programStageName = stageName,
                                         enrollmentId = eventEntity.enrollmentId,
+                                        programStage = eventEntity.programStageId,
                                         organisationUnitId = eventEntity.organisationUnitId,
                                         organisationUnit = eventEntity.organisationUnitName,
                                         status = eventEntity.status,
@@ -557,13 +569,17 @@ class DatasetInstancesRepositoryImpl @Inject constructor(
                             } else {
                                 d2.eventModule().events()
                                     .byEnrollmentUid().eq(entity.id)
-                                    .blockingGet()
+                                    .get().await()
                                     .map { event ->
+                                        val stageId = event.programStage() ?: ""
+                                        val stageName = stageNameById[stageId] ?: stageId
                                         com.ash.simpledataentry.domain.model.Event(
                                             id = event.uid(),
                                             programId = event.program() ?: programId,
-                                            programStageId = event.programStage() ?: "",
+                                            programStageId = stageId,
+                                            programStageName = stageName,
                                             enrollmentId = event.enrollment(),
+                                            programStage = stageId,
                                             organisationUnitId = event.organisationUnit() ?: "",
                                             status = event.status()?.name ?: "UNKNOWN",
                                             deleted = event.deleted() ?: false
@@ -583,11 +599,11 @@ class DatasetInstancesRepositoryImpl @Inject constructor(
                         try {
                             d2.trackedEntityModule().trackedEntityAttributeValues()
                                 .byTrackedEntityInstance().eq(teiUid)
-                                .blockingGet()
+                                .get().await()
                                 .mapNotNull { attrValue ->
                                     val attribute = d2.trackedEntityModule().trackedEntityAttributes()
                                         .uid(attrValue.trackedEntityAttribute())
-                                        .blockingGet()
+                                        .get().await()
 
                                     attribute?.let {
                                         com.ash.simpledataentry.domain.model.TrackedEntityAttributeValue(
@@ -714,7 +730,7 @@ class DatasetInstancesRepositoryImpl @Inject constructor(
                 // Get user's data capture org units AND their descendants (children)
                 val userOrgUnits = d2.organisationUnitModule().organisationUnits()
                     .byOrganisationUnitScope(OrganisationUnit.Scope.SCOPE_DATA_CAPTURE)
-                    .blockingGet()
+                    .get().await()
 
                 Log.d(TAG, "Found ${userOrgUnits.size} user org units for event instances")
 
@@ -733,7 +749,7 @@ class DatasetInstancesRepositoryImpl @Inject constructor(
                     // Add all descendants using the path-based approach
                     val descendants = d2.organisationUnitModule().organisationUnits()
                         .byPath().like("${userOrgUnit.path()}/%")
-                        .blockingGet()
+                        .get().await()
 
                     descendants.forEach { descendant ->
                         allAccessibleOrgUnits.add(descendant.uid())
@@ -755,7 +771,7 @@ class DatasetInstancesRepositoryImpl @Inject constructor(
                         org.hisp.dhis.android.core.event.EventStatus.OVERDUE
                     ))
                     .byDeleted().eq(false)
-                    .blockingGet()
+                    .get().await()
                     .take(50)  // EMERGENCY FIX: Limit in-memory to prevent OOM until Phase 2 Room DAOs ready
 
                 Log.d(TAG, "Found ${events.size} events for program $programId (filtered by ${allAccessibleOrgUnits.size} org units including children, valid statuses, not deleted)")
@@ -763,11 +779,11 @@ class DatasetInstancesRepositoryImpl @Inject constructor(
                 val programInstances = events.map { event ->
                     val orgUnit = d2.organisationUnitModule().organisationUnits()
                         .uid(event.organisationUnit())
-                        .blockingGet()
+                        .get().await()
 
                     val program = d2.programModule().programs()
                         .uid(programId)
-                        .blockingGet()
+                        .get().await()
 
                     com.ash.simpledataentry.domain.model.ProgramInstance.EventInstance(
                         id = event.uid(),
@@ -872,7 +888,7 @@ class DatasetInstancesRepositoryImpl @Inject constructor(
             val sdkEnrollments = d2.enrollmentModule().enrollments()
                 .byProgram().eq(programId)
                 .byDeleted().eq(false)
-                .blockingGet()
+                .get().await()
 
             Log.d(TAG, "Found ${sdkEnrollments.size} enrollments in SDK to cache")
 
@@ -880,7 +896,7 @@ class DatasetInstancesRepositoryImpl @Inject constructor(
             val entities = sdkEnrollments.map { enrollment ->
                 val orgUnit = d2.organisationUnitModule().organisationUnits()
                     .uid(enrollment.organisationUnit())
-                    .blockingGet()
+                    .get().await()
 
                 com.ash.simpledataentry.data.local.TrackerEnrollmentEntity(
                     id = enrollment.uid(),
@@ -916,7 +932,7 @@ class DatasetInstancesRepositoryImpl @Inject constructor(
             val sdkEvents = d2.eventModule().events()
                 .byProgramUid().eq(programId)
                 .byDeleted().eq(false)
-                .blockingGet()
+                .get().await()
 
             Log.d(TAG, "Found ${sdkEvents.size} events in SDK to cache")
 
@@ -924,7 +940,7 @@ class DatasetInstancesRepositoryImpl @Inject constructor(
             val entities = sdkEvents.map { event ->
                 val orgUnit = d2.organisationUnitModule().organisationUnits()
                     .uid(event.organisationUnit())
-                    .blockingGet()
+                    .get().await()
 
                 com.ash.simpledataentry.data.local.EventInstanceEntity(
                     id = event.uid(),

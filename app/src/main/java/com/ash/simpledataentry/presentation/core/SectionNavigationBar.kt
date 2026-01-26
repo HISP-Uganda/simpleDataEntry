@@ -1,11 +1,5 @@
 package com.ash.simpledataentry.presentation.core
 
-import androidx.compose.animation.core.RepeatMode
-import androidx.compose.animation.core.animateFloat
-import androidx.compose.animation.core.infiniteRepeatable
-import androidx.compose.animation.core.rememberInfiniteTransition
-import androidx.compose.animation.core.tween
-import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
@@ -15,7 +9,6 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
-import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.automirrored.filled.ArrowForward
@@ -30,10 +23,8 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
-import com.ash.simpledataentry.ui.theme.DHIS2BlueDeep
 
 data class Section(val name: String)
 data class Subsection(val name: String)
@@ -51,17 +42,6 @@ fun SectionNavigationBar(
     hasSubsections: Boolean,
     modifier: Modifier = Modifier
 ) {
-    val pulseTransition = rememberInfiniteTransition(label = "section_pulse")
-    val pulseAlpha by pulseTransition.animateFloat(
-        initialValue = 0.4f,
-        targetValue = 1f,
-        animationSpec = infiniteRepeatable(
-            animation = tween(durationMillis = 900),
-            repeatMode = RepeatMode.Reverse
-        ),
-        label = "pulse_alpha"
-    )
-
     Surface(
         modifier = modifier.fillMaxWidth(),
         color = MaterialTheme.colorScheme.surface,
@@ -95,14 +75,6 @@ fun SectionNavigationBar(
                     maxLines = 1,
                     overflow = TextOverflow.Ellipsis
                 )
-                Spacer(modifier = Modifier.width(6.dp))
-                Spacer(
-                    modifier = Modifier
-                        .size(8.dp)
-                        .background(DHIS2BlueDeep, CircleShape)
-                        .alpha(pulseAlpha)
-                )
-                Spacer(modifier = Modifier.width(4.dp))
                 IconButton(
                     onClick = onNextSection,
                     enabled = sectionIndex < totalSections - 1

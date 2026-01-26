@@ -351,7 +351,7 @@ fun SettingsScreen(
                     }
                 }
             } else {
-                items(state.accounts) { account ->
+                items(items = state.accounts, key = { it.id }) { account ->
                     AccountManagementItem(
                         account = account,
                         dateFormatter = dateFormatter,

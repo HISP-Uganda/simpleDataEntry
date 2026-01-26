@@ -37,6 +37,8 @@ import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.layout.onGloballyPositioned
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.unit.IntSize
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.composed
@@ -47,6 +49,8 @@ import androidx.compose.ui.composed
 fun Modifier.shimmerEffect(): Modifier = composed {
     var size by remember { mutableStateOf(IntSize.Zero) }
     val transition = rememberInfiniteTransition(label = "shimmer_transition")
+    val shimmerBase = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.9f)
+    val shimmerHighlight = MaterialTheme.colorScheme.surface.copy(alpha = 0.95f)
     val startOffsetX by transition.animateFloat(
         initialValue = -2 * size.width.toFloat(),
         targetValue = 2 * size.width.toFloat(),
@@ -60,9 +64,9 @@ fun Modifier.shimmerEffect(): Modifier = composed {
     background(
         brush = Brush.linearGradient(
             colors = listOf(
-                Color(0xFFE0E0E0),
-                Color(0xFFF5F5F5),
-                Color(0xFFE0E0E0)
+                shimmerBase,
+                shimmerHighlight,
+                shimmerBase
             ),
             start = Offset(startOffsetX, 0f),
             end = Offset(startOffsetX + size.width.toFloat(), size.height.toFloat())
@@ -73,12 +77,16 @@ fun Modifier.shimmerEffect(): Modifier = composed {
 }
 
 @Composable
-fun ShimmerListItem(modifier: Modifier = Modifier) {
+fun ShimmerListItem(
+    modifier: Modifier = Modifier,
+    contentDescription: String = "Loading list item"
+) {
     Card(
         modifier = modifier
             .fillMaxWidth()
             .height(72.dp)
-            .padding(horizontal = 16.dp, vertical = 4.dp),
+            .padding(horizontal = 16.dp, vertical = 4.dp)
+            .semantics { this.contentDescription = contentDescription },
         elevation = CardDefaults.cardElevation(defaultElevation = 1.dp)
     ) {
         Row(
@@ -115,11 +123,15 @@ fun ShimmerListItem(modifier: Modifier = Modifier) {
 }
 
 @Composable
-fun ShimmerFormSection(modifier: Modifier = Modifier) {
+fun ShimmerFormSection(
+    modifier: Modifier = Modifier,
+    contentDescription: String = "Loading form section"
+) {
     Card(
         modifier = modifier
             .fillMaxWidth()
-            .padding(horizontal = 16.dp, vertical = 8.dp),
+            .padding(horizontal = 16.dp, vertical = 8.dp)
+            .semantics { this.contentDescription = contentDescription },
         colors = CardDefaults.cardColors(
             containerColor = MaterialTheme.colorScheme.surfaceVariant
         ),
@@ -151,13 +163,15 @@ fun ShimmerFormSection(modifier: Modifier = Modifier) {
 @Composable
 fun ShimmerTableRow(
     columnCount: Int = 4,
-    modifier: Modifier = Modifier
+    modifier: Modifier = Modifier,
+    contentDescription: String = "Loading table row"
 ) {
     Row(
         modifier = modifier
             .fillMaxWidth()
             .height(48.dp)
-            .padding(horizontal = 16.dp, vertical = 8.dp),
+            .padding(horizontal = 16.dp, vertical = 8.dp)
+            .semantics { this.contentDescription = contentDescription },
         horizontalArrangement = Arrangement.spacedBy(8.dp)
     ) {
         repeat(columnCount) {
@@ -175,11 +189,12 @@ fun ShimmerTableRow(
 @Composable
 fun ShimmerLoadingList(
     itemCount: Int = 5,
-    modifier: Modifier = Modifier
+    modifier: Modifier = Modifier,
+    itemContentDescription: String = "Loading list item"
 ) {
     LazyColumn(modifier = modifier.fillMaxWidth()) {
-        items(itemCount) {
-            ShimmerListItem()
+        items(itemCount, key = { it }) {
+            ShimmerListItem(contentDescription = itemContentDescription)
         }
     }
 }
@@ -188,24 +203,29 @@ fun ShimmerLoadingList(
 fun ShimmerLoadingTable(
     columnCount: Int = 4,
     rowCount: Int = 5,
-    modifier: Modifier = Modifier
+    modifier: Modifier = Modifier,
+    rowContentDescription: String = "Loading table row"
 ) {
     Column(modifier = modifier.fillMaxWidth()) {
         ShimmerTableRow(columnCount = columnCount, modifier = Modifier.height(56.dp))
         Divider()
         repeat(rowCount) {
-            ShimmerTableRow(columnCount = columnCount)
+            ShimmerTableRow(columnCount = columnCount, contentDescription = rowContentDescription)
             Divider(color = Color.LightGray.copy(alpha = 0.3f))
         }
     }
 }
 
 @Composable
-fun LoginFormSkeleton(modifier: Modifier = Modifier) {
+fun LoginFormSkeleton(
+    modifier: Modifier = Modifier,
+    contentDescription: String = "Loading login form"
+) {
     Column(
         modifier = modifier
             .fillMaxWidth()
-            .padding(16.dp),
+            .padding(16.dp)
+            .semantics { this.contentDescription = contentDescription },
         horizontalAlignment = Alignment.CenterHorizontally
     ) {
         Box(

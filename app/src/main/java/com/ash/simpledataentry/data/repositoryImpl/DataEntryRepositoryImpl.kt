@@ -489,7 +489,8 @@ class DataEntryRepositoryImpl @Inject constructor(
 
             OrganisationUnit(
                 id = orgUnits.first().uid(),
-                name = orgUnits.first().displayName() ?: orgUnits.first().uid()
+                name = orgUnits.first().displayName() ?: orgUnits.first().uid(),
+                path = orgUnits.first().displayNamePath()?.joinToString(" / ")
             )
         }
     }
@@ -503,7 +504,8 @@ class DataEntryRepositoryImpl @Inject constructor(
             orgUnits.map { orgUnit ->
                 OrganisationUnit(
                     id = orgUnit.uid(),
-                    name = orgUnit.displayName() ?: orgUnit.uid()
+                    name = orgUnit.displayName() ?: orgUnit.uid(),
+                    path = orgUnit.displayNamePath()?.joinToString(" / ")
                 )
             }
         }
@@ -529,7 +531,9 @@ class DataEntryRepositoryImpl @Inject constructor(
             val combos = d2.categoryModule().categoryOptionCombos()
                 .byCategoryComboUid().eq(categoryComboUid)
                 .blockingGet()
-        combos.map { it.uid() to (it.displayName() ?: it.uid()) }
+            combos
+                .sortedBy { (it.displayName() ?: it.uid()).lowercase() }
+                .map { it.uid() to (it.displayName() ?: it.uid()) }
         }
     }
 

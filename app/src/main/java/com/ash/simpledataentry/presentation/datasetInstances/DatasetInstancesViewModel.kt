@@ -23,7 +23,7 @@ import com.ash.simpledataentry.domain.repository.DataEntryRepository
 import com.ash.simpledataentry.domain.repository.DatasetInstancesRepository
 import com.ash.simpledataentry.util.NetworkUtils
 import com.ash.simpledataentry.util.PeriodHelper
-import com.ash.simpledataentry.data.local.DataValueDraftDao
+import com.ash.simpledataentry.data.DatabaseProvider
 import com.ash.simpledataentry.data.sync.SyncQueueManager
 import com.ash.simpledataentry.presentation.core.LoadingOperation
 import com.ash.simpledataentry.presentation.core.LoadingPhase
@@ -33,6 +33,7 @@ import com.ash.simpledataentry.presentation.core.UiError
 import com.ash.simpledataentry.presentation.core.UiState
 import com.ash.simpledataentry.util.toUiError
 import dagger.hilt.android.lifecycle.HiltViewModel
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -59,7 +60,7 @@ class DatasetInstancesViewModel @Inject constructor(
     private val dataEntryRepository: DataEntryRepository,
     private val datasetInstacesRepository: DatasetInstancesRepository,
     private val datasetsRepository: com.ash.simpledataentry.domain.repository.DatasetsRepository,
-    private val draftDao: DataValueDraftDao,
+    private val databaseProvider: DatabaseProvider,
     private val syncQueueManager: SyncQueueManager,
     private val sessionManager: com.ash.simpledataentry.data.SessionManager,
     private val syncStatusController: SyncStatusController,
@@ -89,6 +90,8 @@ class DatasetInstancesViewModel @Inject constructor(
     private var lastSuccessfulData: DatasetInstancesData? = null
     private var pendingSuccessMessage: String? = null
     private var isSyncOverlayVisible = false
+    private var userSyncInProgress = false
+    private val draftDao get() = databaseProvider.getCurrentDatabase().dataValueDraftDao()
 
     private fun currentData(): DatasetInstancesData {
         return when (val state = _uiState.value) {
@@ -125,7 +128,7 @@ class DatasetInstancesViewModel @Inject constructor(
         // Observe sync progress from SyncQueueManager
         viewModelScope.launch {
             syncQueueManager.detailedProgress.collect { progress ->
-                if (progress != null) {
+                if (progress != null && userSyncInProgress) {
                     isSyncOverlayVisible = true
                     _uiState.value = UiState.Loading(
                         operation = LoadingOperation.Syncing(progress),
@@ -134,8 +137,9 @@ class DatasetInstancesViewModel @Inject constructor(
                             message = progress.phaseDetail
                         )
                     )
-                } else if (isSyncOverlayVisible) {
+                } else if (progress == null && isSyncOverlayVisible) {
                     isSyncOverlayVisible = false
+                    userSyncInProgress = false
                     lastSuccessfulData?.let { setSuccessData(it) } ?: run {
                         _uiState.value = UiState.Loading(LoadingOperation.Initial)
                     }
@@ -205,7 +209,7 @@ class DatasetInstancesViewModel @Inject constructor(
     fun initializeWithProgramId(id: String) {
         if (id.isEmpty()) return
 
-        viewModelScope.launch {
+        viewModelScope.launch(Dispatchers.IO) {
             try {
                 Log.d("DatasetInstancesVM", "Auto-detecting program type for ID: $id using DHIS2 SDK directly")
 
@@ -557,6 +561,7 @@ class DatasetInstancesViewModel @Inject constructor(
                         )
                     }
                     com.ash.simpledataentry.domain.model.ProgramType.DATASET -> {
+                        userSyncInProgress = true
                         // Use the enhanced SyncQueueManager for dataset synchronization
                         val syncResult = syncQueueManager.startSync(forceSync = uploadFirst)
                         syncResult.fold(
@@ -592,6 +597,43 @@ class DatasetInstancesViewModel @Inject constructor(
                     error = e.toUiError(),
                     previousData = previousData
                 )
+            } finally {
+                if (currentProgramType == com.ash.simpledataentry.domain.model.ProgramType.DATASET) {
+                    userSyncInProgress = false
+                }
+            }
+        }
+    }
+
+    fun syncDatasetInstance(
+        instance: ProgramInstance.DatasetInstance,
+        onResult: (Boolean, String?) -> Unit
+    ) {
+        viewModelScope.launch {
+            try {
+                userSyncInProgress = true
+                val result = syncQueueManager.startSyncForInstance(
+                    datasetId = instance.programId,
+                    period = instance.period.id,
+                    orgUnit = instance.organisationUnit.id,
+                    attributeOptionCombo = instance.attributeOptionCombo
+                )
+                result.fold(
+                    onSuccess = {
+                        syncQueueManager.clearErrorState()
+                        loadData()
+                        onResult(true, "Entry synced successfully.")
+                    },
+                    onFailure = { error ->
+                        syncQueueManager.clearErrorState()
+                        onResult(false, error.message ?: "Failed to sync entry.")
+                    }
+                )
+            } catch (e: Exception) {
+                syncQueueManager.clearErrorState()
+                onResult(false, e.message ?: "Failed to sync entry.")
+            } finally {
+                userSyncInProgress = false
             }
         }
     }
@@ -821,23 +863,29 @@ class DatasetInstancesViewModel @Inject constructor(
         val periodHelper = PeriodHelper()
         val instancesWithDrafts = instancesWithDraftsOverride ?: currentData().instancesWithDrafts
 
-        val periodIds = when (filter.periodType) {
-            PeriodFilterType.RELATIVE -> filter.relativePeriod?.let {
-                periodHelper.getPeriodIds(it)
-            } ?: emptyList()
+        val periodRange = when (filter.periodType) {
+            PeriodFilterType.RELATIVE -> filter.relativePeriod?.let { periodHelper.getDateRange(it) }
             PeriodFilterType.CUSTOM_RANGE -> {
                 if (filter.customFromDate != null && filter.customToDate != null) {
-                    periodHelper.getPeriodIds(filter.customFromDate, filter.customToDate)
-                } else emptyList()
+                    Pair(filter.customFromDate, filter.customToDate)
+                } else null
             }
-            else -> emptyList()
+            else -> null
         }
 
         return instances.filter { instance ->
             // Period filtering only applies to dataset instances
             val periodMatches = when (instance) {
                 is ProgramInstance.DatasetInstance -> {
-                    if (filter.periodType == PeriodFilterType.ALL) true else instance.period.id in periodIds
+                    if (periodRange == null) {
+                        true
+                    } else {
+                        periodHelper.isPeriodIdWithinRange(
+                            instance.period.id,
+                            periodRange.first,
+                            periodRange.second
+                        )
+                    }
                 }
                 is ProgramInstance.TrackerEnrollment, is ProgramInstance.EventInstance -> true // No period filtering for tracker/events
             }

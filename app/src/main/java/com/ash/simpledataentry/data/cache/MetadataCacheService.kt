@@ -80,6 +80,7 @@ class MetadataCacheService @Inject constructor(
         }
 
         // 2. Get data elements from Room (already hydrated during login)
+        val totalInRoom = dataElementDao.count()
         val dataElements = dataElementDao.getByIds(allDataElementUids).associateBy { it.id }
 
         // DEBUG: Log what we found
@@ -91,10 +92,19 @@ class MetadataCacheService @Inject constructor(
         }
 
         // 3. Get category combos from Room (already hydrated during login)
-        val categoryCombos = categoryComboDao.getAll().associateBy { it.id }
+        val neededComboIds = dataElements.values.mapNotNull { it.categoryComboId }.distinct()
+        val categoryCombos = if (neededComboIds.isEmpty()) {
+            emptyMap()
+        } else {
+            categoryComboDao.getByIds(neededComboIds).associateBy { it.id }
+        }
 
         // 4. Get category option combos from Room (already hydrated during login)
-        val categoryOptionCombos = categoryOptionComboDao.getAll().associateBy { it.id }
+        val categoryOptionCombos = if (neededComboIds.isEmpty()) {
+            emptyMap()
+        } else {
+            categoryOptionComboDao.getByCategoryComboIds(neededComboIds).associateBy { it.id }
+        }
 
         // 5. Get org units from Room (already hydrated during login)
         val orgUnits = organisationUnitDao.getAll().associateBy { it.id }
@@ -102,7 +112,10 @@ class MetadataCacheService @Inject constructor(
         // 6. NEW STEP: Pre-fetch and map data values using the parsed UI structure
         val sdkDataValues = preFetchAndMapDataValues(datasetId, period, orgUnit, attributeOptionCombo)
 
-        Log.d("MetadataCacheService", "Optimized data complete: ${sections.size} sections, ${dataElements.size} data elements, ${sdkDataValues.size} data values")
+        Log.d(
+            "MetadataCacheService",
+            "Optimized data complete: ${sections.size} sections, ${dataElements.size}/${totalInRoom} data elements, ${sdkDataValues.size} data values"
+        )
 
         OptimizedEntryData(
             sections = sections,

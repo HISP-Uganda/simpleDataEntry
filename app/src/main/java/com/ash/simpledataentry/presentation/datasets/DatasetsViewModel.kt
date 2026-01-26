@@ -2,6 +2,7 @@ package com.ash.simpledataentry.presentation.datasets
 
 import android.util.Log
 import androidx.lifecycle.ViewModel
+import androidx.lifecycle.asFlow
 import androidx.lifecycle.viewModelScope
 import com.ash.simpledataentry.domain.model.*
 import com.ash.simpledataentry.domain.useCase.FilterDatasetsUseCase
@@ -30,6 +31,8 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.catch
+import kotlinx.coroutines.flow.distinctUntilChanged
+import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.launch
 import androidx.work.WorkInfo
 import javax.inject.Inject
@@ -66,6 +69,15 @@ class DatasetsViewModel @Inject constructor(
     )
     val uiState: StateFlow<UiState<DatasetsData>> = _uiState.asStateFlow()
     val syncController: SyncStatusController = syncStatusController
+    private val _activeAccountLabel = MutableStateFlow<String?>(null)
+    val activeAccountLabel: StateFlow<String?> = _activeAccountLabel.asStateFlow()
+    private val _activeAccountSubtitle = MutableStateFlow<String?>(null)
+    val activeAccountSubtitle: StateFlow<String?> = _activeAccountSubtitle.asStateFlow()
+    private val _backgroundSyncRunning = MutableStateFlow(false)
+    val backgroundSyncRunning: StateFlow<Boolean> = _backgroundSyncRunning.asStateFlow()
+    private val _isRefreshingAfterSync = MutableStateFlow(false)
+    val isRefreshingAfterSync: StateFlow<Boolean> = _isRefreshingAfterSync.asStateFlow()
+    private var wasBackgroundSyncRunning: Boolean = false
 
     init {
         // Account change observer - MUST come first
@@ -74,12 +86,39 @@ class DatasetsViewModel @Inject constructor(
             sessionManager.currentAccountId.collect { accountId ->
                 if (accountId == null) {
                     resetToInitialState()
+                    _activeAccountLabel.value = null
+                    _activeAccountSubtitle.value = null
                 } else {
                     // Account switched or restored - reload programs from correct database
                     Log.d("DatasetsViewModel", "Account changed/restored: $accountId - reloading programs")
                     loadPrograms()
+                    refreshActiveAccountLabel()
                 }
             }
+        }
+
+        viewModelScope.launch {
+            backgroundSyncManager.getSyncWorkInfo()
+                .asFlow()
+                .map { workInfos ->
+                    workInfos.any { info ->
+                        info.state == WorkInfo.State.RUNNING
+                    }
+                }
+                .distinctUntilChanged()
+                .collect { isRunning ->
+                    _backgroundSyncRunning.value = isRunning
+                    if (!isRunning && wasBackgroundSyncRunning) {
+                        val currentData = getCurrentData()
+                        if (currentData.syncMessage == null) {
+                            _uiState.emitSuccess(
+                                currentData.copy(syncMessage = "Background sync completed")
+                            )
+                        }
+                        _isRefreshingAfterSync.value = true
+                    }
+                    wasBackgroundSyncRunning = isRunning
+                }
         }
 
         // Initial load (may use fallback database if session not yet restored)
@@ -94,6 +133,12 @@ class DatasetsViewModel @Inject constructor(
 
     private fun resetToInitialState() {
         _uiState.emitSuccess(DatasetsData())
+    }
+
+    private suspend fun refreshActiveAccountLabel() {
+        val account = savedAccountRepository.getActiveAccount()
+        _activeAccountLabel.value = account?.username
+        _activeAccountSubtitle.value = account?.serverUrl
     }
 
     /**
@@ -119,6 +164,7 @@ class DatasetsViewModel @Inject constructor(
                     _uiState.emitError(uiError)
                 }
                 .collect { programs ->
+                    val wasRefreshing = _isRefreshingAfterSync.value
                     // Room Flow automatically re-emits when database changes
                     // Preserve sync message from current state
                     val currentData = getCurrentData()
@@ -144,6 +190,9 @@ class DatasetsViewModel @Inject constructor(
                     } else null
 
                     _uiState.emitSuccess(newData, backgroundOperation = backgroundOp)
+                    if (wasRefreshing) {
+                        _isRefreshingAfterSync.value = false
+                    }
                 }
         }
     }
@@ -189,6 +238,7 @@ class DatasetsViewModel @Inject constructor(
                             _uiState.emitSuccess(newData)
 
                             // Reload all data after sync - this will preserve syncMessage and show updated counts
+                            _isRefreshingAfterSync.value = true
                             loadPrograms()
                         },
                         onFailure = { error ->
@@ -228,6 +278,7 @@ class DatasetsViewModel @Inject constructor(
                         _uiState.emitSuccess(updatedData)
 
                         // Reload programs
+                        _isRefreshingAfterSync.value = true
                         loadPrograms()
                     },
                     onFailure = { error ->

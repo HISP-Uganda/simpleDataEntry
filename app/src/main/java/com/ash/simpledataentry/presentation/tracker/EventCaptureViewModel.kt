@@ -18,14 +18,45 @@ import com.ash.simpledataentry.presentation.core.LoadingProgress
 import com.ash.simpledataentry.presentation.core.UiError
 import com.ash.simpledataentry.presentation.core.UiState
 import dagger.hilt.android.lifecycle.HiltViewModel
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.rx2.await
 import org.hisp.dhis.android.core.D2
 import org.hisp.dhis.android.core.event.Event
 import org.hisp.dhis.android.core.event.EventCreateProjection
+import org.hisp.dhis.android.core.program.ProgramRuleAction
+import org.hisp.dhis.android.core.program.ProgramRuleActionType
+import org.hisp.dhis.android.core.program.ProgramRuleVariable
+import org.hisp.dhis.android.core.program.ProgramRuleVariableSourceType
+import org.hisp.dhis.rules.RuleEngineContext
+import org.hisp.dhis.rules.models.AttributeType
+import org.hisp.dhis.rules.models.Rule
+import org.hisp.dhis.rules.models.RuleAction
+import org.hisp.dhis.rules.models.RuleActionAssign
+import org.hisp.dhis.rules.models.RuleActionDisplayKeyValuePair
+import org.hisp.dhis.rules.models.RuleActionDisplayText
+import org.hisp.dhis.rules.models.RuleActionErrorOnCompletion
+import org.hisp.dhis.rules.models.RuleActionHideField
+import org.hisp.dhis.rules.models.RuleActionHideSection
+import org.hisp.dhis.rules.models.RuleActionSetMandatoryField
+import org.hisp.dhis.rules.models.RuleActionShowError
+import org.hisp.dhis.rules.models.RuleActionShowWarning
+import org.hisp.dhis.rules.models.RuleActionWarningOnCompletion
+import org.hisp.dhis.rules.models.RuleDataValue
+import org.hisp.dhis.rules.models.RuleEvent
+import org.hisp.dhis.rules.models.RuleValueType
+import org.hisp.dhis.rules.models.RuleVariable
+import org.hisp.dhis.rules.models.RuleVariableAttribute
+import org.hisp.dhis.rules.models.RuleVariableCalculatedValue
+import org.hisp.dhis.rules.models.RuleVariableCurrentEvent
+import org.hisp.dhis.rules.models.RuleVariableNewestEvent
+import org.hisp.dhis.rules.models.RuleVariableNewestStageEvent
+import org.hisp.dhis.rules.models.RuleVariablePreviousEvent
 import androidx.compose.runtime.mutableStateMapOf
 import androidx.compose.ui.text.input.TextFieldValue
 import java.util.*
@@ -89,7 +120,8 @@ data class EventCaptureState(
     val isCompleted: Boolean = false,
 
     // Program rules
-    val programRuleEffect: ProgramRuleEffect? = null
+    val programRuleEffect: ProgramRuleEffect? = null,
+    val ruleEvaluationWarning: String? = null
 )
 
 @HiltViewModel
@@ -114,6 +146,8 @@ private var isShowingSyncOverlay = false
     private var initialEventDate: Date? = null
     private var initialOrganisationUnitId: String? = null
     val syncController: SyncStatusController = syncStatusController
+
+    private fun currentRuleEventUid(): String = _state.value.eventId ?: "NEW_EVENT"
 
     private fun emitSuccessState() {
         val current = _state.value
@@ -174,7 +208,7 @@ private var isShowingSyncOverlay = false
         enrollmentId: String? = null,
         eventId: String? = null
     ) {
-        viewModelScope.launch {
+        viewModelScope.launch(Dispatchers.IO) {
             try {
                 updateState {
                     it.copy(
@@ -201,11 +235,11 @@ private var isShowingSyncOverlay = false
 
                 // Load program and program stage metadata
                 val program = d2Instance.programModule().programs()
-                    .uid(programId).blockingGet()
+                    .uid(programId).get().await()
                     ?: throw Exception("Program not found")
 
                 val existingEvent = if (eventId != null) {
-                    d2Instance.eventModule().events().uid(eventId).blockingGet()
+                    d2Instance.eventModule().events().uid(eventId).get().await()
                         ?: throw Exception("Event not found")
                 } else null
 
@@ -213,12 +247,12 @@ private var isShowingSyncOverlay = false
                     ?: existingEvent?.programStage()
                     ?: run {
                     val stages = d2Instance.programModule().programStages()
-                        .byProgramUid().eq(programId).blockingGet()
+                        .byProgramUid().eq(programId).get().await()
                     stages.firstOrNull()?.uid() ?: throw Exception("No program stage found")
                     }
 
                 val programStage = d2Instance.programModule().programStages()
-                    .uid(stageId).blockingGet()
+                    .uid(stageId).get().await()
                     ?: throw Exception("Program stage not found")
 
                 // Load program stage sections (if any) - this will be the first accordion level
@@ -226,7 +260,7 @@ private var isShowingSyncOverlay = false
                     .programStageSections()
                     .byProgramStageUid().eq(stageId)
                     .withDataElements()
-                    .blockingGet()
+                    .get().await()
 
                 android.util.Log.d("EventCaptureVM", "Program stage sections found: ${programStageSections.size}")
 
@@ -234,13 +268,13 @@ private var isShowingSyncOverlay = false
                 val dataElementsFromStage = d2Instance.programModule()
                     .programStageDataElements()
                     .byProgramStage().eq(stageId)
-                    .blockingGet()
+                    .get().await()
 
                 val dataValues = dataElementsFromStage.mapNotNull { psde ->
                     val dataElement = d2Instance.dataElementModule()
                         .dataElements()
                         .uid(psde.dataElement()?.uid())
-                        .blockingGet()
+                        .get().await()
 
                     dataElement?.let { de ->
                         // Find section for this data element (if sections exist)
@@ -256,8 +290,8 @@ private var isShowingSyncOverlay = false
                             dataElement = de.uid(),
                             dataElementName = de.displayName() ?: de.name() ?: "",
                             sectionName = sectionName,
-                            categoryOptionCombo = de.categoryCombo()?.uid() ?: "HllvX50cXC0",
-                            categoryOptionComboName = "default",
+                            categoryOptionCombo = "",
+                            categoryOptionComboName = "",
                             value = null, // Will be loaded if editing existing event
                             comment = null,
                             storedBy = null,
@@ -278,7 +312,7 @@ private var isShowingSyncOverlay = false
                 val existingDataValues = if (eventId != null) {
                     d2Instance.trackedEntityModule().trackedEntityDataValues()
                         .byEvent().eq(eventId)
-                        .blockingGet()
+                        .get().await()
                         .associate { it.dataElement()!! to it.value() }
                 } else emptyMap()
 
@@ -288,18 +322,18 @@ private var isShowingSyncOverlay = false
                         // Get option set from data element
                         val de = d2Instance.dataElementModule().dataElements()
                             .uid(dataValue.dataElement)
-                            .blockingGet()
+                            .get().await()
 
                         val optionSetUid = de?.optionSet()?.uid()
 
                         if (optionSetUid != null) {
                             val optionSetObj = d2Instance.optionModule().optionSets()
                                 .uid(optionSetUid)
-                                .blockingGet()
+                                .get().await()
 
                             val sdkOptions = d2Instance.optionModule().options()
                                 .byOptionSetUid().eq(optionSetUid)
-                                .blockingGet()
+                                .get().await()
 
                             val options = sdkOptions.mapIndexed { index, option ->
                                 Option(
@@ -336,7 +370,7 @@ private var isShowingSyncOverlay = false
                 val orgUnits = if (enrollmentId == null) {
                     d2Instance.organisationUnitModule().organisationUnits()
                         .byProgramUids(listOf(programId))
-                        .blockingGet()
+                        .get().await()
                         .map { orgUnit ->
                             OrganisationUnit(
                                 id = orgUnit.uid(),
@@ -401,8 +435,8 @@ private var isShowingSyncOverlay = false
 
                 updateCanSave()
 
-                // Trigger program rules evaluation after loading existing event
-                eventId?.let { evaluateProgramRules(it) }
+                // Trigger program rules evaluation after loading values
+                evaluateProgramRules(currentRuleEventUid())
                 emitSuccessState()
 
             } catch (e: Exception) {
@@ -439,11 +473,6 @@ private var isShowingSyncOverlay = false
             )
         }
         updateCanSave()
-
-        // Trigger program rules evaluation after value change
-        _state.value.eventId?.let { eventId ->
-            evaluateProgramRules(eventId)
-        }
     }
 
     fun updateEventDate(date: Date) {
@@ -454,6 +483,14 @@ private var isShowingSyncOverlay = false
     fun updateOrganisationUnit(orgUnitId: String) {
         updateState { it.copy(selectedOrganisationUnitId = orgUnitId) }
         updateCanSave()
+    }
+
+    fun onFieldCommit() {
+        evaluateProgramRules(currentRuleEventUid())
+    }
+
+    fun clearRuleWarning() {
+        updateState { it.copy(ruleEvaluationWarning = null) }
     }
 
     fun hasUnsavedChanges(): Boolean {
@@ -504,18 +541,22 @@ private var isShowingSyncOverlay = false
         if (currentState.eventDate == null) {
             validationErrors.add("Event date is required")
         }
+        currentState.programRuleEffect?.fieldErrors?.values?.forEach { message ->
+            validationErrors.add(message)
+        }
 
         updateState {
             it.copy(
                 validationErrors = validationErrors,
                 validationState = if (validationErrors.isEmpty()) ValidationState.VALID else ValidationState.VALID,
-                canSave = validationErrors.isEmpty()
+                canSave = validationErrors.isEmpty(),
+                validationMessage = if (validationErrors.isEmpty()) null else it.validationMessage
             )
         }
     }
 
     fun saveEvent() {
-        viewModelScope.launch {
+        viewModelScope.launch(Dispatchers.IO) {
             try {
                 updateState { it.copy(saveInProgress = true, error = null) }
                 val currentState = _state.value
@@ -530,7 +571,14 @@ private var isShowingSyncOverlay = false
                 val d2Instance = d2 ?: throw Exception("Not authenticated")
 
                 if (!currentState.canSave) {
-                    throw Exception("Cannot save: validation errors exist")
+                    updateState {
+                        it.copy(
+                            saveInProgress = false,
+                            validationMessage = "Please fix the highlighted fields before saving."
+                        )
+                    }
+                    emitSuccessState()
+                    return@launch
                 }
 
                 if (currentState.isEditMode && currentState.eventId != null) {
@@ -568,8 +616,70 @@ private var isShowingSyncOverlay = false
         }
     }
 
-    fun completeEvent() {
+    fun clearValidationMessage() {
+        updateState {
+            it.copy(validationMessage = null)
+        }
+    }
+
+    fun validateEvent() {
         viewModelScope.launch {
+            val preparing = NavigationProgress(
+                phase = com.ash.simpledataentry.presentation.core.LoadingPhase.INITIALIZING,
+                overallPercentage = 15,
+                phaseTitle = "Preparing validation",
+                phaseDetail = "Gathering form data...",
+                loadingType = com.ash.simpledataentry.presentation.core.StepLoadingType.VALIDATION
+            )
+            setUiLoading(
+                operation = LoadingOperation.Navigation(preparing),
+                progress = LoadingProgress(message = preparing.phaseDetail)
+            )
+            delay(300)
+
+            val validating = NavigationProgress(
+                phase = com.ash.simpledataentry.presentation.core.LoadingPhase.PROCESSING_DATA,
+                overallPercentage = 55,
+                phaseTitle = "Running validation",
+                phaseDetail = "Checking required fields...",
+                loadingType = com.ash.simpledataentry.presentation.core.StepLoadingType.VALIDATION
+            )
+            setUiLoading(
+                operation = LoadingOperation.Navigation(validating),
+                progress = LoadingProgress(message = validating.phaseDetail)
+            )
+            updateCanSave()
+            delay(300)
+
+            val processing = NavigationProgress(
+                phase = com.ash.simpledataentry.presentation.core.LoadingPhase.COMPLETING,
+                overallPercentage = 85,
+                phaseTitle = "Processing results",
+                phaseDetail = "Finalizing validation...",
+                loadingType = com.ash.simpledataentry.presentation.core.StepLoadingType.VALIDATION
+            )
+            setUiLoading(
+                operation = LoadingOperation.Navigation(processing),
+                progress = LoadingProgress(message = processing.phaseDetail)
+            )
+            delay(200)
+
+            val errors = _state.value.validationErrors
+            updateState {
+                it.copy(
+                    validationMessage = if (errors.isEmpty()) {
+                        "All required fields are filled."
+                    } else {
+                        "Please review the following issues:"
+                    }
+                )
+            }
+            emitSuccessState()
+        }
+    }
+
+    fun completeEvent() {
+        viewModelScope.launch(Dispatchers.IO) {
             try {
                 val eventId = _state.value.eventId ?: return@launch
                 updateState { it.copy(saveInProgress = true, error = null) }
@@ -604,10 +714,10 @@ private var isShowingSyncOverlay = false
         }
     }
 
-    private fun createNewEvent(d2: D2, state: EventCaptureState) {
+    private suspend fun createNewEvent(d2: D2, state: EventCaptureState) {
         // Get default attribute option combo
         val defaultCombo = d2.categoryModule().categoryOptionCombos()
-            .byDisplayName().eq("default").one().blockingGet()?.uid()
+            .byDisplayName().eq("default").one().get().await()?.uid()
             ?: "HllvX50cXC0"
 
         // Create event
@@ -619,7 +729,7 @@ private var isShowingSyncOverlay = false
                 state.selectedOrganisationUnitId ?: "",
                 defaultCombo
             )
-        ).blockingGet()
+        ).await()
 
         // Set event date
         d2.eventModule().events().uid(eventUid).setEventDate(state.eventDate)
@@ -659,26 +769,52 @@ private var isShowingSyncOverlay = false
 
     // Add sync functionality (reuse DataEntry pattern)
     fun syncEvent() {
-        viewModelScope.launch {
+        viewModelScope.launch(Dispatchers.IO) {
             try {
                 val currentState = _state.value
                 if (currentState.programId.isBlank()) return@launch
 
+                val syncProgress = NavigationProgress(
+                    phase = com.ash.simpledataentry.presentation.core.LoadingPhase.INITIALIZING,
+                    overallPercentage = 10,
+                    phaseTitle = "Preparing sync",
+                    phaseDetail = "Preparing event sync...",
+                    loadingType = com.ash.simpledataentry.presentation.core.StepLoadingType.SYNC
+                )
+                setUiLoading(
+                    operation = LoadingOperation.Navigation(syncProgress),
+                    progress = LoadingProgress(message = syncProgress.phaseDetail)
+                )
+
                 repository.syncProgramInstances(currentState.programId, ProgramType.EVENT)
                     .onSuccess {
+                        val refreshProgress = NavigationProgress(
+                            phase = com.ash.simpledataentry.presentation.core.LoadingPhase.PROCESSING_DATA,
+                            overallPercentage = 85,
+                            phaseTitle = "Refreshing data",
+                            phaseDetail = "Updating local event data...",
+                            loadingType = com.ash.simpledataentry.presentation.core.StepLoadingType.SYNC
+                        )
+                        setUiLoading(
+                            operation = LoadingOperation.Navigation(refreshProgress),
+                            progress = LoadingProgress(message = refreshProgress.phaseDetail)
+                        )
                         updateState {
                             it.copy(successMessage = "Event synced successfully")
                         }
+                        emitSuccessState()
                     }
                     .onFailure { error ->
                         updateState {
                             it.copy(error = "Sync failed: ${error.message}")
                         }
+                        emitSuccessState()
                     }
             } catch (e: Exception) {
                 updateState {
                     it.copy(error = "Sync failed: ${e.message}")
                 }
+                emitSuccessState()
             }
         }
     }
@@ -707,92 +843,300 @@ private var isShowingSyncOverlay = false
         updateDataValue(newValue.text, dataValue)
     }
 
-    /**
-     * Evaluate program rules for the current event
-     * Uses DHIS2 rule-engine library for offline evaluation
-     *
-     * TODO: Fix API usage - currently has compilation errors
-     * The correct DHIS2 SDK API for program rule evaluation needs to be researched
-     */
     private fun evaluateProgramRules(eventUid: String) {
-        // COMMENTED OUT: Has compilation errors - needs correct DHIS2 SDK API
-        /*
-        viewModelScope.launch(kotlinx.coroutines.Dispatchers.Default) {
-            try {
-                val d2Instance = d2 ?: return@launch
+        viewModelScope.launch(Dispatchers.Default) {
+            evaluateProgramRulesInternal(eventUid)
+        }
+    }
 
-                // Use DHIS2 rule engine from org.hisp.dhis.rules package
-                val ruleEngine = org.hisp.dhis.rules.RuleEngineContext.builder()
-                    .build()
+    private suspend fun evaluateProgramRulesInternal(eventUid: String) {
+        try {
+            val d2Instance = d2 ?: return
+            val currentState = _state.value
+            val programId = currentState.programId
+            if (programId.isBlank()) return
 
-                // Get program rules
-                val programId = _state.value.programId
-                val programRules = d2Instance.programModule().programRules()
-                    .byProgramUid().eq(programId)
-                    .blockingGet()
-                    .map { programRule ->
-                        org.hisp.dhis.rules.models.Rule.create(
-                            null, null, "", "",
-                            programRule.uid(),
-                            programRule.name() ?: "",
-                            programRule.condition() ?: "",
-                            emptyList()
-                        )
-                    }
+            val programRules = d2Instance.programModule().programRules()
+                .withProgramRuleActions()
+                .byProgramUid().eq(programId)
+                .get().await()
 
-                // Get data values for evaluation
-                val dataValues = _state.value.dataValues
-                    .mapNotNull { dv ->
-                        dv.value?.let {
-                            org.hisp.dhis.rules.models.RuleDataValue.create(
-                                Date(),
-                                "",
-                                dv.dataElement,
-                                it
-                            )
-                        }
-                    }
+            if (programRules.isEmpty()) return
 
-                // Evaluate rules
-                val ruleEffects = org.hisp.dhis.rules.RuleEngine.builder(ruleEngine)
-                    .rules(programRules)
-                    .build()
-                    .evaluate(
-                        org.hisp.dhis.rules.models.RuleEvent.create(
-                            eventUid,
-                            programId,
-                            org.hisp.dhis.rules.models.RuleEvent.Status.ACTIVE,
-                            Date(),
-                            Date(),
-                            "",
-                            null,
+            val programRuleVariables = d2Instance.programModule().programRuleVariables()
+                .byProgramUid().eq(programId)
+                .get().await()
+
+            val ruleVariables = mutableListOf<RuleVariable>()
+            for (variable in programRuleVariables) {
+                mapProgramRuleVariable(variable, d2Instance)?.let { ruleVariables.add(it) }
+            }
+
+            val rules = programRules.map { programRule ->
+                val actions = programRule.programRuleActions().orEmpty().mapNotNull { action ->
+                    mapProgramRuleAction(action)
+                }
+                Rule.create(
+                    programRule.programStage()?.uid(),
+                    programRule.priority(),
+                    programRule.condition() ?: "true",
+                    actions,
+                    programRule.name() ?: programRule.displayName() ?: "",
+                    programRule.uid()
+                )
+            }
+
+            val constants = d2Instance.constantModule().constants()
+                .get().await()
+                .associate { constant ->
+                    constant.uid() to (constant.value()?.toString() ?: "")
+                }
+
+            val ruleEngineContext = RuleEngineContext.builder()
+                .rules(rules)
+                .ruleVariables(ruleVariables)
+                .supplementaryData(emptyMap())
+                .constantsValue(constants)
+                .build()
+
+            val programStageId = currentState.programStageId
+            if (programStageId.isBlank()) return
+            val eventDate = currentState.eventDate ?: Date()
+            val programStageName = d2Instance.programModule().programStages()
+                .uid(programStageId)
+                .get().await()
+                ?.displayName()
+                ?: ""
+
+            val ruleDataValues = currentState.dataValues.mapNotNull { dataValue ->
+                val value = dataValue.value?.takeIf { it.isNotBlank() } ?: return@mapNotNull null
+                RuleDataValue.create(eventDate, programStageId, dataValue.dataElement, value)
+            }
+
+            val ruleEvent = RuleEvent.create(
+                eventUid,
+                programStageId,
+                if (currentState.isCompleted) RuleEvent.Status.COMPLETED else RuleEvent.Status.ACTIVE,
+                eventDate,
+                eventDate,
+                currentState.selectedOrganisationUnitId ?: "",
+                null,
+                ruleDataValues,
+                programStageName,
+                if (currentState.isCompleted) eventDate else null
+            )
+
+            // For tracker programs with enrollments, fetch OTHER events for context
+            // (needed for rules that reference "previous event" or "newest event in stage")
+            // The target event must NOT be in the events list - only context events
+            val contextEvents = if (currentState.enrollmentId != null) {
+                // Fetch other events from this enrollment for rule context
+                val otherEvents = d2Instance.eventModule().events()
+                    .byEnrollmentUid().eq(currentState.enrollmentId)
+                    .byDeleted().eq(false)
+                    .get().await()
+                    .filter { it.uid() != eventUid }  // Exclude target event
+                    .mapNotNull { event ->
+                        val stageId = event.programStage() ?: return@mapNotNull null
+                        val stageName = d2Instance.programModule().programStages()
+                            .uid(stageId)
+                            .blockingGet()?.displayName() ?: ""
+                        val dataValues = d2Instance.trackedEntityModule()
+                            .trackedEntityDataValues()
+                            .byEvent().eq(event.uid())
+                            .blockingGet()
+                            .mapNotNull { dv ->
+                                val deUid = dv.dataElement() ?: return@mapNotNull null
+                                val value = dv.value() ?: return@mapNotNull null
+                                RuleDataValue.create(
+                                    event.eventDate() ?: Date(),
+                                    stageId,
+                                    deUid,
+                                    value
+                                )
+                            }
+                        RuleEvent.create(
+                            event.uid(),
+                            stageId,
+                            when (event.status()) {
+                                org.hisp.dhis.android.core.event.EventStatus.COMPLETED -> RuleEvent.Status.COMPLETED
+                                org.hisp.dhis.android.core.event.EventStatus.ACTIVE -> RuleEvent.Status.ACTIVE
+                                else -> RuleEvent.Status.ACTIVE
+                            },
+                            event.eventDate() ?: Date(),
+                            event.dueDate() ?: event.eventDate() ?: Date(),
+                            event.organisationUnit() ?: "",
                             null,
                             dataValues,
-                            "",
-                            null
+                            stageName,
+                            event.completedDate()
                         )
-                    )
+                    }
+                otherEvents
+            } else {
+                // Standalone event program - no other events for context
+                emptyList()
+            }
 
-                // Convert to our ProgramRuleEffect model
-                val effect = convertToRuleEffect(ruleEffects)
+            val ruleEngine = ruleEngineContext.toEngineBuilder()
+                .events(contextEvents)
+                .build()
 
-                // Apply effects to state on main thread
-                kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.Main) {
-                    applyRuleEffects(effect)
-                }
-            } catch (e: Exception) {
-                android.util.Log.e("EventCaptureVM", "Program rule evaluation failed: ${e.message}", e)
+            val ruleEffects = ruleEngine.evaluate(ruleEvent).call()
+            val effect = convertToRuleEffect(ruleEffects)
+            kotlinx.coroutines.withContext(Dispatchers.Main) {
+                applyRuleEffects(effect)
+                // Clear any previous warning on successful evaluation
+                updateState { it.copy(ruleEvaluationWarning = null) }
+            }
+        } catch (e: StackOverflowError) {
+            // Complex rules with deep recursion can overflow the stack
+            // Show warning but allow data entry to continue
+            android.util.Log.w("EventCaptureVM", "Complex program rules exceeded stack size", e)
+            kotlinx.coroutines.withContext(Dispatchers.Main) {
+                updateState { it.copy(
+                    ruleEvaluationWarning = "Some complex rules could not be evaluated. Please verify data manually."
+                ) }
+            }
+        } catch (e: Exception) {
+            android.util.Log.e("EventCaptureVM", "Program rule evaluation failed: ${e.message}", e)
+            // For other errors, also show a warning rather than failing silently
+            kotlinx.coroutines.withContext(Dispatchers.Main) {
+                updateState { it.copy(
+                    ruleEvaluationWarning = "Rule evaluation encountered an issue: ${e.message}"
+                ) }
             }
         }
-        */
+    }
+
+    private fun mapProgramRuleAction(action: ProgramRuleAction): RuleAction? {
+        val attributeType = resolveAttributeType(action)
+        val fieldUid = action.dataElement()?.uid() ?: action.trackedEntityAttribute()?.uid()
+        val content = action.displayContent() ?: action.content()
+        val data = action.data()
+
+        return when (action.programRuleActionType()) {
+            ProgramRuleActionType.HIDEFIELD ->
+                fieldUid?.let { RuleActionHideField.create(content, it, attributeType) }
+            ProgramRuleActionType.SHOWWARNING ->
+                if (fieldUid != null && (content != null || data != null)) {
+                    RuleActionShowWarning.create(content, data, fieldUid, attributeType)
+                } else {
+                    null
+                }
+            ProgramRuleActionType.SHOWERROR ->
+                if (fieldUid != null && (content != null || data != null)) {
+                    RuleActionShowError.create(content, data, fieldUid, attributeType)
+                } else {
+                    null
+                }
+            ProgramRuleActionType.WARNINGONCOMPLETE ->
+                if (content != null || data != null || fieldUid != null) {
+                    RuleActionWarningOnCompletion.create(content, data, fieldUid, attributeType)
+                } else {
+                    null
+                }
+            ProgramRuleActionType.ERRORONCOMPLETE ->
+                if (content != null || data != null || fieldUid != null) {
+                    RuleActionErrorOnCompletion.create(content, data, fieldUid, attributeType)
+                } else {
+                    null
+                }
+            ProgramRuleActionType.ASSIGN ->
+                if (data != null && fieldUid != null) {
+                    RuleActionAssign.create(content, data, fieldUid, attributeType)
+                } else {
+                    null
+                }
+            ProgramRuleActionType.SETMANDATORYFIELD ->
+                fieldUid?.let { RuleActionSetMandatoryField.create(it, attributeType) }
+            ProgramRuleActionType.DISPLAYTEXT ->
+                if (content != null || data != null) {
+                    RuleActionDisplayText.createForFeedback(content, data)
+                } else {
+                    null
+                }
+            ProgramRuleActionType.DISPLAYKEYVALUEPAIR ->
+                if (content != null || data != null) {
+                    RuleActionDisplayKeyValuePair.createForFeedback(content, data)
+                } else {
+                    null
+                }
+            ProgramRuleActionType.HIDESECTION ->
+                action.programStageSection()?.uid()?.let { RuleActionHideSection.create(it) }
+            else -> null
+        }
+    }
+
+    private fun resolveAttributeType(action: ProgramRuleAction): AttributeType {
+        return when {
+            action.dataElement() != null -> AttributeType.DATA_ELEMENT
+            action.trackedEntityAttribute() != null -> AttributeType.TRACKED_ENTITY_ATTRIBUTE
+            else -> AttributeType.UNKNOWN
+        }
+    }
+
+    private suspend fun mapProgramRuleVariable(
+        variable: ProgramRuleVariable,
+        d2Instance: D2
+    ): RuleVariable? {
+        val name = variable.name() ?: variable.uid()
+        val sourceType = variable.programRuleVariableSourceType() ?: return null
+        val dataElementUid = variable.dataElement()?.uid()
+        val attributeUid = variable.trackedEntityAttribute()?.uid()
+        val valueType = when {
+            dataElementUid != null -> d2Instance.dataElementModule().dataElements()
+                .uid(dataElementUid)
+                .get().await()
+                ?.valueType()
+                ?.name
+            attributeUid != null -> d2Instance.trackedEntityModule().trackedEntityAttributes()
+                .uid(attributeUid)
+                .get().await()
+                ?.valueType()
+                ?.name
+            else -> null
+        }
+        val ruleValueType = toRuleValueType(valueType)
+
+        return when (sourceType) {
+            ProgramRuleVariableSourceType.DATAELEMENT_CURRENT_EVENT ->
+                dataElementUid?.let { RuleVariableCurrentEvent.create(name, it, ruleValueType) }
+            ProgramRuleVariableSourceType.DATAELEMENT_NEWEST_EVENT_PROGRAM_STAGE ->
+                if (dataElementUid != null && variable.programStage()?.uid() != null) {
+                    RuleVariableNewestStageEvent.create(
+                        name,
+                        dataElementUid,
+                        variable.programStage()?.uid() ?: "",
+                        ruleValueType
+                    )
+                } else {
+                    null
+                }
+            ProgramRuleVariableSourceType.DATAELEMENT_NEWEST_EVENT_PROGRAM ->
+                dataElementUid?.let { RuleVariableNewestEvent.create(name, it, ruleValueType) }
+            ProgramRuleVariableSourceType.DATAELEMENT_PREVIOUS_EVENT ->
+                dataElementUid?.let { RuleVariablePreviousEvent.create(name, it, ruleValueType) }
+            ProgramRuleVariableSourceType.CALCULATED_VALUE ->
+                RuleVariableCalculatedValue.create(name, name, ruleValueType)
+            ProgramRuleVariableSourceType.TEI_ATTRIBUTE ->
+                attributeUid?.let { RuleVariableAttribute.create(name, it, ruleValueType) }
+        }
+    }
+
+    private fun toRuleValueType(valueTypeName: String?): RuleValueType {
+        return when (valueTypeName) {
+            "INTEGER", "INTEGER_POSITIVE", "INTEGER_NEGATIVE", "INTEGER_ZERO_OR_POSITIVE",
+            "NUMBER", "UNIT_INTERVAL", "PERCENTAGE" -> RuleValueType.NUMERIC
+            "BOOLEAN", "TRUE_ONLY" -> RuleValueType.BOOLEAN
+            "DATE", "DATETIME" -> RuleValueType.DATE
+            else -> RuleValueType.TEXT
+        }
     }
 
     /**
      * Convert DHIS2 SDK RuleEffect list to ProgramRuleEffect model
-     *
-     * TODO: Will be re-enabled when evaluateProgramRules is fixed
      */
-    @Suppress("unused")
     private fun convertToRuleEffect(
         sdkEffects: List<org.hisp.dhis.rules.models.RuleEffect>
     ): ProgramRuleEffect {
@@ -856,10 +1200,7 @@ private var isShowingSyncOverlay = false
 
     /**
      * Apply program rule effects to form state
-     *
-     * TODO: Will be re-enabled when evaluateProgramRules is fixed
      */
-    @Suppress("unused")
     private fun applyRuleEffects(effect: ProgramRuleEffect) {
         updateState { currentState ->
             // Apply calculated values to data values
@@ -877,6 +1218,7 @@ private var isShowingSyncOverlay = false
                 programRuleEffect = effect
             )
         }
+        updateCanSave()
     }
 
     /**

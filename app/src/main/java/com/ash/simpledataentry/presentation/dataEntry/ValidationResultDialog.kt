@@ -147,7 +147,7 @@ private fun ValidationDialogButtons(
 
         // Cancel/Close button
         TextButton(onClick = onDismiss) {
-            Text(if (showCompletionOption) "Cancel" else "Close")
+            Text(if (showCompletionOption) "Review" else "Close")
         }
 
         // Completion buttons
@@ -396,7 +396,7 @@ private fun ValidationIssuesList(
             .heightIn(max = 300.dp),
         verticalArrangement = Arrangement.spacedBy(8.dp)
     ) {
-        items(issues) { issue ->
+        items(items = issues, key = { "${it.ruleId}:${it.severity}" }) { issue ->
             ValidationIssueItem(issue)
         }
     }
@@ -441,6 +441,27 @@ private fun ValidationIssueItem(issue: ValidationIssue) {
                     style = MaterialTheme.typography.titleSmall,
                     fontWeight = FontWeight.Medium
                 )
+                if (issue.description.isNotBlank()) {
+                    Text(
+                        text = issue.description,
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
+                if (issue.affectedDataElementNames.isNotEmpty()) {
+                    Text(
+                        text = "Affected: ${issue.affectedDataElementNames.joinToString(", ")}",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
+                if (issue.leftSideValue != null && issue.rightSideValue != null && issue.operator != null) {
+                    Text(
+                        text = "Observed: ${issue.leftSideValue} ${issue.operator} ${issue.rightSideValue}",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
             }
         }
     }

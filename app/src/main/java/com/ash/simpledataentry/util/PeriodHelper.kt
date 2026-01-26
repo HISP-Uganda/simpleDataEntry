@@ -1,509 +1,365 @@
 package com.ash.simpledataentry.util
 
-import com.ash.simpledataentry.domain.model.RelativePeriod
+import org.hisp.dhis.android.core.common.RelativePeriod
 import java.text.SimpleDateFormat
 import java.util.Calendar
 import java.util.Date
 import java.util.Locale
 
 class PeriodHelper {
-    fun getPeriodIds(relativePeriod: RelativePeriod): List<String> {
-        val (startDate, endDate) = getDateRangeForRelativePeriod(relativePeriod)
-        return getPeriodIds(startDate, endDate)
-    }
-
-    fun getPeriodIds(startDate: Date, endDate: Date): List<String> {
-        val periodIds = mutableListOf<String>()
-        val calendar = Calendar.getInstance()
-        calendar.time = startDate
-
-        val endCalendar = Calendar.getInstance()
-        endCalendar.time = endDate
-
-        val format = SimpleDateFormat("yyyyMMdd", Locale.getDefault())
-
-        while (calendar.before(endCalendar) || calendar.equals(endCalendar)) {
-            periodIds.add(format.format(calendar.time))
-            calendar.add(Calendar.DAY_OF_YEAR, 1)
-        }
-        return periodIds
-    }
-
-    private fun getDateRangeForRelativePeriod(relativePeriod: RelativePeriod): Pair<Date, Date> {
+    fun getDateRange(relativePeriod: RelativePeriod): Pair<Date, Date> {
         val calendar = Calendar.getInstance()
         val now = Date()
 
-        when (relativePeriod) {
-            // Daily periods
+        fun startOfDay(date: Date): Date {
+            calendar.time = date
+            calendar.set(Calendar.HOUR_OF_DAY, 0)
+            calendar.set(Calendar.MINUTE, 0)
+            calendar.set(Calendar.SECOND, 0)
+            calendar.set(Calendar.MILLISECOND, 0)
+            return calendar.time
+        }
+
+        fun endOfDay(date: Date): Date {
+            calendar.time = date
+            calendar.set(Calendar.HOUR_OF_DAY, 23)
+            calendar.set(Calendar.MINUTE, 59)
+            calendar.set(Calendar.SECOND, 59)
+            calendar.set(Calendar.MILLISECOND, 999)
+            return calendar.time
+        }
+
+        return when (relativePeriod) {
             RelativePeriod.TODAY -> {
-                calendar.time = now
-                calendar.set(Calendar.HOUR_OF_DAY, 0)
-                calendar.set(Calendar.MINUTE, 0)
-                calendar.set(Calendar.SECOND, 0)
-                calendar.set(Calendar.MILLISECOND, 0)
-                val startDate = calendar.time
-                
-                calendar.set(Calendar.HOUR_OF_DAY, 23)
-                calendar.set(Calendar.MINUTE, 59)
-                calendar.set(Calendar.SECOND, 59)
-                return Pair(startDate, calendar.time)
+                val start = startOfDay(now)
+                Pair(start, endOfDay(now))
             }
-            
             RelativePeriod.YESTERDAY -> {
                 calendar.time = now
                 calendar.add(Calendar.DAY_OF_YEAR, -1)
-                calendar.set(Calendar.HOUR_OF_DAY, 0)
-                calendar.set(Calendar.MINUTE, 0)
-                calendar.set(Calendar.SECOND, 0)
-                calendar.set(Calendar.MILLISECOND, 0)
-                val startDate = calendar.time
-                
-                calendar.set(Calendar.HOUR_OF_DAY, 23)
-                calendar.set(Calendar.MINUTE, 59)
-                calendar.set(Calendar.SECOND, 59)
-                return Pair(startDate, calendar.time)
+                val start = startOfDay(calendar.time)
+                Pair(start, endOfDay(calendar.time))
             }
-            
             RelativePeriod.LAST_3_DAYS -> {
                 calendar.time = now
                 calendar.add(Calendar.DAY_OF_YEAR, -3)
-                calendar.set(Calendar.HOUR_OF_DAY, 0)
-                calendar.set(Calendar.MINUTE, 0)
-                calendar.set(Calendar.SECOND, 0)
-                calendar.set(Calendar.MILLISECOND, 0)
-                val startDate = calendar.time
-                return Pair(startDate, now)
+                Pair(startOfDay(calendar.time), now)
             }
-            
             RelativePeriod.LAST_7_DAYS -> {
                 calendar.time = now
                 calendar.add(Calendar.DAY_OF_YEAR, -7)
-                calendar.set(Calendar.HOUR_OF_DAY, 0)
-                calendar.set(Calendar.MINUTE, 0)
-                calendar.set(Calendar.SECOND, 0)
-                calendar.set(Calendar.MILLISECOND, 0)
-                val startDate = calendar.time
-                return Pair(startDate, now)
+                Pair(startOfDay(calendar.time), now)
             }
-            
             RelativePeriod.LAST_14_DAYS -> {
                 calendar.time = now
                 calendar.add(Calendar.DAY_OF_YEAR, -14)
-                calendar.set(Calendar.HOUR_OF_DAY, 0)
-                calendar.set(Calendar.MINUTE, 0)
-                calendar.set(Calendar.SECOND, 0)
-                calendar.set(Calendar.MILLISECOND, 0)
-                val startDate = calendar.time
-                return Pair(startDate, now)
+                Pair(startOfDay(calendar.time), now)
             }
-            
-            // Weekly periods
+            RelativePeriod.LAST_30_DAYS -> {
+                calendar.time = now
+                calendar.add(Calendar.DAY_OF_YEAR, -30)
+                Pair(startOfDay(calendar.time), now)
+            }
+            RelativePeriod.LAST_60_DAYS -> {
+                calendar.time = now
+                calendar.add(Calendar.DAY_OF_YEAR, -60)
+                Pair(startOfDay(calendar.time), now)
+            }
+            RelativePeriod.LAST_90_DAYS -> {
+                calendar.time = now
+                calendar.add(Calendar.DAY_OF_YEAR, -90)
+                Pair(startOfDay(calendar.time), now)
+            }
+            RelativePeriod.LAST_180_DAYS -> {
+                calendar.time = now
+                calendar.add(Calendar.DAY_OF_YEAR, -180)
+                Pair(startOfDay(calendar.time), now)
+            }
             RelativePeriod.THIS_WEEK -> {
                 calendar.time = now
                 calendar.set(Calendar.DAY_OF_WEEK, Calendar.MONDAY)
-                calendar.set(Calendar.HOUR_OF_DAY, 0)
-                calendar.set(Calendar.MINUTE, 0)
-                calendar.set(Calendar.SECOND, 0)
-                calendar.set(Calendar.MILLISECOND, 0)
-                val startDate = calendar.time
-                
+                val start = startOfDay(calendar.time)
                 calendar.add(Calendar.DAY_OF_YEAR, 6)
-                calendar.set(Calendar.HOUR_OF_DAY, 23)
-                calendar.set(Calendar.MINUTE, 59)
-                calendar.set(Calendar.SECOND, 59)
-                return Pair(startDate, calendar.time)
+                Pair(start, endOfDay(calendar.time))
             }
-            
             RelativePeriod.LAST_WEEK -> {
                 calendar.time = now
                 calendar.add(Calendar.WEEK_OF_YEAR, -1)
                 calendar.set(Calendar.DAY_OF_WEEK, Calendar.MONDAY)
-                calendar.set(Calendar.HOUR_OF_DAY, 0)
-                calendar.set(Calendar.MINUTE, 0)
-                calendar.set(Calendar.SECOND, 0)
-                calendar.set(Calendar.MILLISECOND, 0)
-                val startDate = calendar.time
-                
+                val start = startOfDay(calendar.time)
                 calendar.add(Calendar.DAY_OF_YEAR, 6)
-                calendar.set(Calendar.HOUR_OF_DAY, 23)
-                calendar.set(Calendar.MINUTE, 59)
-                calendar.set(Calendar.SECOND, 59)
-                return Pair(startDate, calendar.time)
+                Pair(start, endOfDay(calendar.time))
             }
-            
             RelativePeriod.LAST_4_WEEKS -> {
                 calendar.time = now
                 calendar.add(Calendar.WEEK_OF_YEAR, -4)
                 calendar.set(Calendar.DAY_OF_WEEK, Calendar.MONDAY)
-                calendar.set(Calendar.HOUR_OF_DAY, 0)
-                calendar.set(Calendar.MINUTE, 0)
-                calendar.set(Calendar.SECOND, 0)
-                calendar.set(Calendar.MILLISECOND, 0)
-                val startDate = calendar.time
-                return Pair(startDate, now)
+                Pair(startOfDay(calendar.time), now)
             }
-            
             RelativePeriod.LAST_12_WEEKS -> {
                 calendar.time = now
                 calendar.add(Calendar.WEEK_OF_YEAR, -12)
                 calendar.set(Calendar.DAY_OF_WEEK, Calendar.MONDAY)
-                calendar.set(Calendar.HOUR_OF_DAY, 0)
-                calendar.set(Calendar.MINUTE, 0)
-                calendar.set(Calendar.SECOND, 0)
-                calendar.set(Calendar.MILLISECOND, 0)
-                val startDate = calendar.time
-                return Pair(startDate, now)
+                Pair(startOfDay(calendar.time), now)
             }
-            
-            // Monthly periods
+            RelativePeriod.LAST_52_WEEKS -> {
+                calendar.time = now
+                calendar.add(Calendar.WEEK_OF_YEAR, -52)
+                calendar.set(Calendar.DAY_OF_WEEK, Calendar.MONDAY)
+                Pair(startOfDay(calendar.time), now)
+            }
             RelativePeriod.THIS_MONTH -> {
                 calendar.time = now
                 calendar.set(Calendar.DAY_OF_MONTH, 1)
-                calendar.set(Calendar.HOUR_OF_DAY, 0)
-                calendar.set(Calendar.MINUTE, 0)
-                calendar.set(Calendar.SECOND, 0)
-                calendar.set(Calendar.MILLISECOND, 0)
-                val startDate = calendar.time
-                
+                val start = startOfDay(calendar.time)
                 calendar.set(Calendar.DAY_OF_MONTH, calendar.getActualMaximum(Calendar.DAY_OF_MONTH))
-                calendar.set(Calendar.HOUR_OF_DAY, 23)
-                calendar.set(Calendar.MINUTE, 59)
-                calendar.set(Calendar.SECOND, 59)
-                return Pair(startDate, calendar.time)
+                Pair(start, endOfDay(calendar.time))
             }
-            
             RelativePeriod.LAST_MONTH -> {
                 calendar.time = now
                 calendar.add(Calendar.MONTH, -1)
                 calendar.set(Calendar.DAY_OF_MONTH, 1)
-                calendar.set(Calendar.HOUR_OF_DAY, 0)
-                calendar.set(Calendar.MINUTE, 0)
-                calendar.set(Calendar.SECOND, 0)
-                calendar.set(Calendar.MILLISECOND, 0)
-                val startDate = calendar.time
-                
+                val start = startOfDay(calendar.time)
                 calendar.set(Calendar.DAY_OF_MONTH, calendar.getActualMaximum(Calendar.DAY_OF_MONTH))
-                calendar.set(Calendar.HOUR_OF_DAY, 23)
-                calendar.set(Calendar.MINUTE, 59)
-                calendar.set(Calendar.SECOND, 59)
-                return Pair(startDate, calendar.time)
+                Pair(start, endOfDay(calendar.time))
             }
-            
             RelativePeriod.LAST_3_MONTHS -> {
                 calendar.time = now
                 calendar.add(Calendar.MONTH, -3)
                 calendar.set(Calendar.DAY_OF_MONTH, 1)
-                calendar.set(Calendar.HOUR_OF_DAY, 0)
-                calendar.set(Calendar.MINUTE, 0)
-                calendar.set(Calendar.SECOND, 0)
-                calendar.set(Calendar.MILLISECOND, 0)
-                val startDate = calendar.time
-                return Pair(startDate, now)
+                Pair(startOfDay(calendar.time), now)
             }
-            
             RelativePeriod.LAST_6_MONTHS -> {
                 calendar.time = now
                 calendar.add(Calendar.MONTH, -6)
                 calendar.set(Calendar.DAY_OF_MONTH, 1)
-                calendar.set(Calendar.HOUR_OF_DAY, 0)
-                calendar.set(Calendar.MINUTE, 0)
-                calendar.set(Calendar.SECOND, 0)
-                calendar.set(Calendar.MILLISECOND, 0)
-                val startDate = calendar.time
-                return Pair(startDate, now)
+                Pair(startOfDay(calendar.time), now)
             }
-            
             RelativePeriod.LAST_12_MONTHS -> {
                 calendar.time = now
                 calendar.add(Calendar.MONTH, -12)
                 calendar.set(Calendar.DAY_OF_MONTH, 1)
-                calendar.set(Calendar.HOUR_OF_DAY, 0)
-                calendar.set(Calendar.MINUTE, 0)
-                calendar.set(Calendar.SECOND, 0)
-                calendar.set(Calendar.MILLISECOND, 0)
-                val startDate = calendar.time
-                return Pair(startDate, now)
+                Pair(startOfDay(calendar.time), now)
             }
-            
-            // Bi-monthly periods
             RelativePeriod.THIS_BIMONTH -> {
                 calendar.time = now
-                val currentMonth = calendar.get(Calendar.MONTH)
-                val bimonthStart = (currentMonth / 2) * 2
-                calendar.set(Calendar.MONTH, bimonthStart)
+                val month = calendar.get(Calendar.MONTH)
+                val startMonth = month - (month % 2)
+                calendar.set(Calendar.MONTH, startMonth)
                 calendar.set(Calendar.DAY_OF_MONTH, 1)
-                calendar.set(Calendar.HOUR_OF_DAY, 0)
-                calendar.set(Calendar.MINUTE, 0)
-                calendar.set(Calendar.SECOND, 0)
-                calendar.set(Calendar.MILLISECOND, 0)
-                val startDate = calendar.time
-                
-                calendar.add(Calendar.MONTH, 2)
-                calendar.add(Calendar.DAY_OF_MONTH, -1)
-                calendar.set(Calendar.HOUR_OF_DAY, 23)
-                calendar.set(Calendar.MINUTE, 59)
-                calendar.set(Calendar.SECOND, 59)
-                return Pair(startDate, calendar.time)
+                val start = startOfDay(calendar.time)
+                calendar.add(Calendar.MONTH, 1)
+                calendar.set(Calendar.DAY_OF_MONTH, calendar.getActualMaximum(Calendar.DAY_OF_MONTH))
+                Pair(start, endOfDay(calendar.time))
             }
-            
             RelativePeriod.LAST_BIMONTH -> {
                 calendar.time = now
-                val currentMonth = calendar.get(Calendar.MONTH)
-                val lastBimonthStart = ((currentMonth / 2) - 1) * 2
-                calendar.set(Calendar.MONTH, lastBimonthStart)
+                calendar.add(Calendar.MONTH, -2)
+                val month = calendar.get(Calendar.MONTH)
+                val startMonth = month - (month % 2)
+                calendar.set(Calendar.MONTH, startMonth)
                 calendar.set(Calendar.DAY_OF_MONTH, 1)
-                calendar.set(Calendar.HOUR_OF_DAY, 0)
-                calendar.set(Calendar.MINUTE, 0)
-                calendar.set(Calendar.SECOND, 0)
-                calendar.set(Calendar.MILLISECOND, 0)
-                val startDate = calendar.time
-                
-                calendar.add(Calendar.MONTH, 2)
-                calendar.add(Calendar.DAY_OF_MONTH, -1)
-                calendar.set(Calendar.HOUR_OF_DAY, 23)
-                calendar.set(Calendar.MINUTE, 59)
-                calendar.set(Calendar.SECOND, 59)
-                return Pair(startDate, calendar.time)
+                val start = startOfDay(calendar.time)
+                calendar.add(Calendar.MONTH, 1)
+                calendar.set(Calendar.DAY_OF_MONTH, calendar.getActualMaximum(Calendar.DAY_OF_MONTH))
+                Pair(start, endOfDay(calendar.time))
             }
-            
             RelativePeriod.LAST_6_BIMONTHS -> {
                 calendar.time = now
                 calendar.add(Calendar.MONTH, -12)
                 calendar.set(Calendar.DAY_OF_MONTH, 1)
-                calendar.set(Calendar.HOUR_OF_DAY, 0)
-                calendar.set(Calendar.MINUTE, 0)
-                calendar.set(Calendar.SECOND, 0)
-                calendar.set(Calendar.MILLISECOND, 0)
-                val startDate = calendar.time
-                return Pair(startDate, now)
+                Pair(startOfDay(calendar.time), now)
             }
-            
-            // Quarterly periods
             RelativePeriod.THIS_QUARTER -> {
                 calendar.time = now
-                val currentMonth = calendar.get(Calendar.MONTH)
-                val quarterStart = (currentMonth / 3) * 3
-                calendar.set(Calendar.MONTH, quarterStart)
+                val month = calendar.get(Calendar.MONTH)
+                val startMonth = month - (month % 3)
+                calendar.set(Calendar.MONTH, startMonth)
                 calendar.set(Calendar.DAY_OF_MONTH, 1)
-                calendar.set(Calendar.HOUR_OF_DAY, 0)
-                calendar.set(Calendar.MINUTE, 0)
-                calendar.set(Calendar.SECOND, 0)
-                calendar.set(Calendar.MILLISECOND, 0)
-                val startDate = calendar.time
-                
-                calendar.add(Calendar.MONTH, 3)
-                calendar.add(Calendar.DAY_OF_MONTH, -1)
-                calendar.set(Calendar.HOUR_OF_DAY, 23)
-                calendar.set(Calendar.MINUTE, 59)
-                calendar.set(Calendar.SECOND, 59)
-                return Pair(startDate, calendar.time)
+                val start = startOfDay(calendar.time)
+                calendar.add(Calendar.MONTH, 2)
+                calendar.set(Calendar.DAY_OF_MONTH, calendar.getActualMaximum(Calendar.DAY_OF_MONTH))
+                Pair(start, endOfDay(calendar.time))
             }
-            
             RelativePeriod.LAST_QUARTER -> {
                 calendar.time = now
-                val currentMonth = calendar.get(Calendar.MONTH)
-                val lastQuarterStart = ((currentMonth / 3) - 1) * 3
-                calendar.set(Calendar.MONTH, lastQuarterStart)
+                calendar.add(Calendar.MONTH, -3)
+                val month = calendar.get(Calendar.MONTH)
+                val startMonth = month - (month % 3)
+                calendar.set(Calendar.MONTH, startMonth)
                 calendar.set(Calendar.DAY_OF_MONTH, 1)
-                calendar.set(Calendar.HOUR_OF_DAY, 0)
-                calendar.set(Calendar.MINUTE, 0)
-                calendar.set(Calendar.SECOND, 0)
-                calendar.set(Calendar.MILLISECOND, 0)
-                val startDate = calendar.time
-                
-                calendar.add(Calendar.MONTH, 3)
-                calendar.add(Calendar.DAY_OF_MONTH, -1)
-                calendar.set(Calendar.HOUR_OF_DAY, 23)
-                calendar.set(Calendar.MINUTE, 59)
-                calendar.set(Calendar.SECOND, 59)
-                return Pair(startDate, calendar.time)
+                val start = startOfDay(calendar.time)
+                calendar.add(Calendar.MONTH, 2)
+                calendar.set(Calendar.DAY_OF_MONTH, calendar.getActualMaximum(Calendar.DAY_OF_MONTH))
+                Pair(start, endOfDay(calendar.time))
             }
-            
             RelativePeriod.LAST_4_QUARTERS -> {
                 calendar.time = now
                 calendar.add(Calendar.MONTH, -12)
                 calendar.set(Calendar.DAY_OF_MONTH, 1)
-                calendar.set(Calendar.HOUR_OF_DAY, 0)
-                calendar.set(Calendar.MINUTE, 0)
-                calendar.set(Calendar.SECOND, 0)
-                calendar.set(Calendar.MILLISECOND, 0)
-                val startDate = calendar.time
-                return Pair(startDate, now)
+                Pair(startOfDay(calendar.time), now)
             }
-            
-            // Six-monthly periods
             RelativePeriod.THIS_SIX_MONTH -> {
                 calendar.time = now
-                val currentMonth = calendar.get(Calendar.MONTH)
-                val sixMonthStart = if (currentMonth < 6) 0 else 6
-                calendar.set(Calendar.MONTH, sixMonthStart)
+                val month = calendar.get(Calendar.MONTH)
+                val startMonth = if (month < 6) 0 else 6
+                calendar.set(Calendar.MONTH, startMonth)
                 calendar.set(Calendar.DAY_OF_MONTH, 1)
-                calendar.set(Calendar.HOUR_OF_DAY, 0)
-                calendar.set(Calendar.MINUTE, 0)
-                calendar.set(Calendar.SECOND, 0)
-                calendar.set(Calendar.MILLISECOND, 0)
-                val startDate = calendar.time
-                
-                calendar.add(Calendar.MONTH, 6)
-                calendar.add(Calendar.DAY_OF_MONTH, -1)
-                calendar.set(Calendar.HOUR_OF_DAY, 23)
-                calendar.set(Calendar.MINUTE, 59)
-                calendar.set(Calendar.SECOND, 59)
-                return Pair(startDate, calendar.time)
+                val start = startOfDay(calendar.time)
+                calendar.add(Calendar.MONTH, 5)
+                calendar.set(Calendar.DAY_OF_MONTH, calendar.getActualMaximum(Calendar.DAY_OF_MONTH))
+                Pair(start, endOfDay(calendar.time))
             }
-            
             RelativePeriod.LAST_SIX_MONTH -> {
                 calendar.time = now
-                val currentMonth = calendar.get(Calendar.MONTH)
-                val lastSixMonthStart = if (currentMonth < 6) -6 else 0
-                calendar.add(Calendar.MONTH, lastSixMonthStart)
+                calendar.add(Calendar.MONTH, -6)
+                val month = calendar.get(Calendar.MONTH)
+                val startMonth = if (month < 6) 0 else 6
+                calendar.set(Calendar.MONTH, startMonth)
                 calendar.set(Calendar.DAY_OF_MONTH, 1)
-                calendar.set(Calendar.HOUR_OF_DAY, 0)
-                calendar.set(Calendar.MINUTE, 0)
-                calendar.set(Calendar.SECOND, 0)
-                calendar.set(Calendar.MILLISECOND, 0)
-                val startDate = calendar.time
-                
-                calendar.add(Calendar.MONTH, 6)
-                calendar.add(Calendar.DAY_OF_MONTH, -1)
-                calendar.set(Calendar.HOUR_OF_DAY, 23)
-                calendar.set(Calendar.MINUTE, 59)
-                calendar.set(Calendar.SECOND, 59)
-                return Pair(startDate, calendar.time)
+                val start = startOfDay(calendar.time)
+                calendar.add(Calendar.MONTH, 5)
+                calendar.set(Calendar.DAY_OF_MONTH, calendar.getActualMaximum(Calendar.DAY_OF_MONTH))
+                Pair(start, endOfDay(calendar.time))
             }
-            
             RelativePeriod.LAST_2_SIXMONTHS -> {
                 calendar.time = now
                 calendar.add(Calendar.MONTH, -12)
                 calendar.set(Calendar.DAY_OF_MONTH, 1)
-                calendar.set(Calendar.HOUR_OF_DAY, 0)
-                calendar.set(Calendar.MINUTE, 0)
-                calendar.set(Calendar.SECOND, 0)
-                calendar.set(Calendar.MILLISECOND, 0)
-                val startDate = calendar.time
-                return Pair(startDate, now)
+                Pair(startOfDay(calendar.time), now)
             }
-            
-            // Yearly periods
             RelativePeriod.THIS_YEAR -> {
                 calendar.time = now
-                calendar.set(Calendar.DAY_OF_YEAR, 1)
-                calendar.set(Calendar.HOUR_OF_DAY, 0)
-                calendar.set(Calendar.MINUTE, 0)
-                calendar.set(Calendar.SECOND, 0)
-                calendar.set(Calendar.MILLISECOND, 0)
-                val startDate = calendar.time
-                
-                calendar.set(Calendar.DAY_OF_YEAR, calendar.getActualMaximum(Calendar.DAY_OF_YEAR))
-                calendar.set(Calendar.HOUR_OF_DAY, 23)
-                calendar.set(Calendar.MINUTE, 59)
-                calendar.set(Calendar.SECOND, 59)
-                return Pair(startDate, calendar.time)
+                calendar.set(Calendar.MONTH, Calendar.JANUARY)
+                calendar.set(Calendar.DAY_OF_MONTH, 1)
+                val start = startOfDay(calendar.time)
+                calendar.set(Calendar.MONTH, Calendar.DECEMBER)
+                calendar.set(Calendar.DAY_OF_MONTH, 31)
+                Pair(start, endOfDay(calendar.time))
             }
-            
             RelativePeriod.LAST_YEAR -> {
                 calendar.time = now
                 calendar.add(Calendar.YEAR, -1)
-                calendar.set(Calendar.DAY_OF_YEAR, 1)
-                calendar.set(Calendar.HOUR_OF_DAY, 0)
-                calendar.set(Calendar.MINUTE, 0)
-                calendar.set(Calendar.SECOND, 0)
-                calendar.set(Calendar.MILLISECOND, 0)
-                val startDate = calendar.time
-                
-                calendar.set(Calendar.DAY_OF_YEAR, calendar.getActualMaximum(Calendar.DAY_OF_YEAR))
-                calendar.set(Calendar.HOUR_OF_DAY, 23)
-                calendar.set(Calendar.MINUTE, 59)
-                calendar.set(Calendar.SECOND, 59)
-                return Pair(startDate, calendar.time)
+                calendar.set(Calendar.MONTH, Calendar.JANUARY)
+                calendar.set(Calendar.DAY_OF_MONTH, 1)
+                val start = startOfDay(calendar.time)
+                calendar.set(Calendar.MONTH, Calendar.DECEMBER)
+                calendar.set(Calendar.DAY_OF_MONTH, 31)
+                Pair(start, endOfDay(calendar.time))
             }
-            
             RelativePeriod.LAST_5_YEARS -> {
                 calendar.time = now
                 calendar.add(Calendar.YEAR, -5)
-                calendar.set(Calendar.DAY_OF_YEAR, 1)
-                calendar.set(Calendar.HOUR_OF_DAY, 0)
-                calendar.set(Calendar.MINUTE, 0)
-                calendar.set(Calendar.SECOND, 0)
-                calendar.set(Calendar.MILLISECOND, 0)
-                val startDate = calendar.time
-                return Pair(startDate, now)
+                calendar.set(Calendar.MONTH, Calendar.JANUARY)
+                calendar.set(Calendar.DAY_OF_MONTH, 1)
+                Pair(startOfDay(calendar.time), now)
             }
-            
-            // Financial years (assuming April-March financial year)
+            RelativePeriod.LAST_10_YEARS -> {
+                calendar.time = now
+                calendar.add(Calendar.YEAR, -10)
+                calendar.set(Calendar.MONTH, Calendar.JANUARY)
+                calendar.set(Calendar.DAY_OF_MONTH, 1)
+                Pair(startOfDay(calendar.time), now)
+            }
             RelativePeriod.THIS_FINANCIAL_YEAR -> {
-                calendar.time = now
-                val currentMonth = calendar.get(Calendar.MONTH)
-                if (currentMonth >= Calendar.APRIL) {
-                    // Current financial year started in April of this year
-                    calendar.set(Calendar.MONTH, Calendar.APRIL)
-                } else {
-                    // Current financial year started in April of last year
-                    calendar.add(Calendar.YEAR, -1)
-                    calendar.set(Calendar.MONTH, Calendar.APRIL)
-                }
-                calendar.set(Calendar.DAY_OF_MONTH, 1)
-                calendar.set(Calendar.HOUR_OF_DAY, 0)
-                calendar.set(Calendar.MINUTE, 0)
-                calendar.set(Calendar.SECOND, 0)
+                val year = calendar.get(Calendar.YEAR)
+                calendar.set(year, Calendar.APRIL, 1, 0, 0, 0)
                 calendar.set(Calendar.MILLISECOND, 0)
-                val startDate = calendar.time
-                
-                calendar.add(Calendar.YEAR, 1)
-                calendar.add(Calendar.DAY_OF_MONTH, -1)
-                calendar.set(Calendar.HOUR_OF_DAY, 23)
-                calendar.set(Calendar.MINUTE, 59)
-                calendar.set(Calendar.SECOND, 59)
-                return Pair(startDate, calendar.time)
+                val start = calendar.time
+                calendar.set(year + 1, Calendar.MARCH, 31, 23, 59, 59)
+                Pair(start, calendar.time)
             }
-            
             RelativePeriod.LAST_FINANCIAL_YEAR -> {
-                calendar.time = now
-                val currentMonth = calendar.get(Calendar.MONTH)
-                if (currentMonth >= Calendar.APRIL) {
-                    // Last financial year was April of last year to March of this year
-                    calendar.add(Calendar.YEAR, -1)
-                    calendar.set(Calendar.MONTH, Calendar.APRIL)
-                } else {
-                    // Last financial year was April of two years ago to March of last year
-                    calendar.add(Calendar.YEAR, -2)
-                    calendar.set(Calendar.MONTH, Calendar.APRIL)
-                }
-                calendar.set(Calendar.DAY_OF_MONTH, 1)
-                calendar.set(Calendar.HOUR_OF_DAY, 0)
-                calendar.set(Calendar.MINUTE, 0)
-                calendar.set(Calendar.SECOND, 0)
+                val year = calendar.get(Calendar.YEAR) - 1
+                calendar.set(year, Calendar.APRIL, 1, 0, 0, 0)
                 calendar.set(Calendar.MILLISECOND, 0)
-                val startDate = calendar.time
-                
-                calendar.add(Calendar.YEAR, 1)
-                calendar.add(Calendar.DAY_OF_MONTH, -1)
-                calendar.set(Calendar.HOUR_OF_DAY, 23)
-                calendar.set(Calendar.MINUTE, 59)
-                calendar.set(Calendar.SECOND, 59)
-                return Pair(startDate, calendar.time)
+                val start = calendar.time
+                calendar.set(year + 1, Calendar.MARCH, 31, 23, 59, 59)
+                Pair(start, calendar.time)
+            }
+            RelativePeriod.LAST_5_FINANCIAL_YEARS -> {
+                val year = calendar.get(Calendar.YEAR) - 5
+                calendar.set(year, Calendar.APRIL, 1, 0, 0, 0)
+                calendar.set(Calendar.MILLISECOND, 0)
+                Pair(calendar.time, now)
+            }
+            RelativePeriod.LAST_10_FINANCIAL_YEARS -> {
+                val year = calendar.get(Calendar.YEAR) - 10
+                calendar.set(year, Calendar.APRIL, 1, 0, 0, 0)
+                calendar.set(Calendar.MILLISECOND, 0)
+                Pair(calendar.time, now)
+            }
+            RelativePeriod.WEEKS_THIS_YEAR,
+            RelativePeriod.MONTHS_THIS_YEAR,
+            RelativePeriod.BIMONTHS_THIS_YEAR,
+            RelativePeriod.QUARTERS_THIS_YEAR,
+            RelativePeriod.MONTHS_LAST_YEAR,
+            RelativePeriod.QUARTERS_LAST_YEAR,
+            RelativePeriod.THIS_BIWEEK,
+            RelativePeriod.LAST_BIWEEK,
+            RelativePeriod.LAST_4_BIWEEKS -> {
+                val start = startOfDay(now)
+                Pair(start, now)
             }
         }
     }
-    
-    fun formatDateRange(startDate: Date, endDate: Date): String {
-        val calendar = Calendar.getInstance()
-        calendar.time = startDate
-        val startMonth = calendar.get(Calendar.MONTH) + 1
-        val startYear = calendar.get(Calendar.YEAR)
-        
-        calendar.time = endDate
-        val endMonth = calendar.get(Calendar.MONTH) + 1
-        val endYear = calendar.get(Calendar.YEAR)
-        
-        return if (startYear == endYear) {
-            if (startMonth == endMonth) {
-                "$startMonth/$startYear"
-            } else {
-                "$startMonth-$endMonth/$startYear"
+
+    fun isPeriodIdWithinRange(periodId: String, startDate: Date, endDate: Date): Boolean {
+        val periodDate = parseDhis2PeriodToDate(periodId) ?: return false
+        return !periodDate.before(startDate) && !periodDate.after(endDate)
+    }
+
+    fun parseDhis2PeriodToDate(periodId: String): Date? {
+        return try {
+            when {
+                Regex("^\\d{4}$").matches(periodId) -> {
+                    SimpleDateFormat("yyyy", Locale.ENGLISH).parse(periodId)
+                }
+                Regex("^\\d{6}$").matches(periodId) -> {
+                    SimpleDateFormat("yyyyMM", Locale.ENGLISH).parse(periodId)
+                }
+                Regex("^\\d{8}$").matches(periodId) -> {
+                    SimpleDateFormat("yyyyMMdd", Locale.ENGLISH).parse(periodId)
+                }
+                Regex("^\\d{4}-\\d{2}-\\d{2}$").matches(periodId) -> {
+                    SimpleDateFormat("yyyy-MM-dd", Locale.ENGLISH).parse(periodId)
+                }
+                Regex("^\\d{4}W\\d{1,2}$").matches(periodId) -> {
+                    val year = periodId.substring(0, 4).toInt()
+                    val week = periodId.substring(5).toInt()
+                    val cal = Calendar.getInstance(Locale.ENGLISH)
+                    cal.clear()
+                    cal.set(Calendar.YEAR, year)
+                    cal.set(Calendar.WEEK_OF_YEAR, week)
+                    cal.set(Calendar.DAY_OF_WEEK, Calendar.MONDAY)
+                    cal.time
+                }
+                Regex("^\\d{4}Q[1-4]$").matches(periodId) -> {
+                    val year = periodId.substring(0, 4).toInt()
+                    val quarter = periodId.substring(5).toInt()
+                    val month = (quarter - 1) * 3
+                    val cal = Calendar.getInstance(Locale.ENGLISH)
+                    cal.clear()
+                    cal.set(Calendar.YEAR, year)
+                    cal.set(Calendar.MONTH, month)
+                    cal.set(Calendar.DAY_OF_MONTH, 1)
+                    cal.time
+                }
+                Regex("^\\d{4}S[1-2]$").matches(periodId) -> {
+                    val year = periodId.substring(0, 4).toInt()
+                    val semester = periodId.substring(5).toInt()
+                    val month = if (semester == 1) 0 else 6
+                    val cal = Calendar.getInstance(Locale.ENGLISH)
+                    cal.clear()
+                    cal.set(Calendar.YEAR, year)
+                    cal.set(Calendar.MONTH, month)
+                    cal.set(Calendar.DAY_OF_MONTH, 1)
+                    cal.time
+                }
+                else -> null
             }
-        } else {
-            "$startMonth/$startYear - $endMonth/$endYear"
+        } catch (e: Exception) {
+            null
         }
     }
 }

@@ -13,6 +13,9 @@ interface CategoryComboDao {
     @Query("SELECT * FROM category_combos")
     suspend fun getAll(): List<CategoryComboEntity>
 
+    @Query("SELECT * FROM category_combos WHERE id IN (:ids)")
+    suspend fun getByIds(ids: List<String>): List<CategoryComboEntity>
+
     @Query("DELETE FROM category_combos")
     suspend fun clearAll()
 } 
