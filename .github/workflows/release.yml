@@ -73,6 +73,22 @@ jobs:
             echo "No keystore to remove"
           fi
 
+      - name: Rename APK and AAB files
+        run: |
+          VERSION=$(grep -oP 'versionName = "\K[^"]+' app/build.gradle.kts || echo "1.0")
+          APK_DIR="app/build/outputs/apk/release"
+          AAB_DIR="app/build/outputs/bundle/release"
+
+          if [ -f "$APK_DIR/app-release.apk" ]; then
+            mv "$APK_DIR/app-release.apk" "$APK_DIR/Simple-Data-Entry-v${VERSION}.apk"
+            echo "Renamed APK to Simple-Data-Entry-v${VERSION}.apk"
+          fi
+
+          if [ -f "$AAB_DIR/app-release.aab" ]; then
+            mv "$AAB_DIR/app-release.aab" "$AAB_DIR/Simple-Data-Entry-v${VERSION}.aab"
+            echo "Renamed AAB to Simple-Data-Entry-v${VERSION}.aab"
+          fi
+
       - name: Upload APK artifact
         uses: actions/upload-artifact@v4
         with:
