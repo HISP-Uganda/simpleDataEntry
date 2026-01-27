@@ -27,6 +27,7 @@ import com.ash.simpledataentry.presentation.core.emitLoading
 import com.ash.simpledataentry.presentation.core.dataOr
 import com.ash.simpledataentry.util.toUiError
 import dagger.hilt.android.lifecycle.HiltViewModel
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -34,6 +35,7 @@ import kotlinx.coroutines.flow.catch
 import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import androidx.work.WorkInfo
 import javax.inject.Inject
 
@@ -61,7 +63,9 @@ class DatasetsViewModel @Inject constructor(
     private val savedAccountRepository: SavedAccountRepository,
     private val syncQueueManager: SyncQueueManager,
     private val syncStatusController: SyncStatusController,
-    private val databaseProvider: com.ash.simpledataentry.data.DatabaseProvider
+    private val databaseProvider: com.ash.simpledataentry.data.DatabaseProvider,
+    private val datasetInstancesRepository: com.ash.simpledataentry.domain.repository.DatasetInstancesRepository,
+    private val dataEntryRepository: com.ash.simpledataentry.domain.repository.DataEntryRepository
 ) : ViewModel() {
 
     private val _uiState = MutableStateFlow<UiState<DatasetsData>>(
@@ -296,13 +300,17 @@ class DatasetsViewModel @Inject constructor(
     }
 
     fun applyFilter(filterState: FilterState) {
-        val currentData = getCurrentData()
-        val filteredPrograms = filterPrograms(currentData.programs, filterState, currentData.currentProgramType)
-        val newData = currentData.copy(
-            filteredPrograms = filteredPrograms,
-            currentFilter = filterState
-        )
-        _uiState.emitSuccess(newData)
+        viewModelScope.launch {
+            val currentData = getCurrentData()
+            val programsWithOrgUnitCounts = computeOrgUnitFilteredPrograms(currentData.programs, filterState)
+            val filteredPrograms = filterPrograms(programsWithOrgUnitCounts, filterState, currentData.currentProgramType)
+            val newData = currentData.copy(
+                programs = programsWithOrgUnitCounts,
+                filteredPrograms = filteredPrograms,
+                currentFilter = filterState
+            )
+            _uiState.emitSuccess(newData)
+        }
     }
 
     fun filterByProgramType(programType: ProgramType) {
@@ -313,6 +321,50 @@ class DatasetsViewModel @Inject constructor(
             currentProgramType = programType
         )
         _uiState.emitSuccess(newData)
+    }
+
+    suspend fun getScopedOrgUnits(): List<OrganisationUnit> {
+        return dataEntryRepository.getScopedOrgUnits()
+    }
+
+    suspend fun getAttachedOrgUnitIdsForDatasets(datasetIds: List<String>): Set<String> {
+        return dataEntryRepository.getOrgUnitsAttachedToDataSets(datasetIds)
+    }
+
+    private suspend fun computeOrgUnitFilteredPrograms(
+        programs: List<ProgramItem>,
+        filterState: FilterState
+    ): List<ProgramItem> {
+        if (filterState.orgUnitIds.isEmpty()) {
+            return programs
+        }
+
+        return withContext(Dispatchers.IO) {
+            programs.mapNotNull { programItem ->
+                when (programItem) {
+                    is ProgramItem.DatasetProgram -> {
+                        val expandedIds = filterState.orgUnitIds
+                            .flatMap { selectedId ->
+                                dataEntryRepository.expandOrgUnitSelection(programItem.dataset.id, selectedId).toList()
+                            }
+                            .toSet()
+
+                        val count = if (expandedIds.isEmpty()) {
+                            0
+                        } else {
+                            datasetInstancesRepository.getDatasetInstanceCount(programItem.dataset.id, expandedIds)
+                        }
+
+                        val updatedItem = programItem.copy(
+                            dataset = programItem.dataset.copy(instanceCount = count)
+                        )
+
+                        if (count > 0) updatedItem else null
+                    }
+                    else -> programItem
+                }
+            }
+        }
     }
 
     private fun filterPrograms(programs: List<ProgramItem>, filterState: FilterState, programType: ProgramType): List<ProgramItem> {

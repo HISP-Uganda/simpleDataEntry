@@ -191,4 +191,8 @@ class TrackerEnrollmentsViewModel @Inject constructor(
     suspend fun getUserOrgUnits(programId: String): List<OrganisationUnit> {
         return dataEntryRepository.getUserOrgUnits(programId)
     }
+
+    suspend fun expandOrgUnitSelection(programId: String, orgUnitId: String): Set<String> {
+        return dataEntryRepository.expandOrgUnitSelection(programId, orgUnitId)
+    }
 }

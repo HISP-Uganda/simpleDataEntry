@@ -1068,6 +1068,22 @@ class DataEntryViewModel @Inject constructor(
         }
     }
 
+    suspend fun getScopedOrgUnits(): List<OrganisationUnit> {
+        return try {
+            repository.getScopedOrgUnits()
+        } catch (e: Exception) {
+            emptyList()
+        }
+    }
+
+    suspend fun expandOrgUnitSelection(targetId: String, orgUnitId: String): Set<String> {
+        return try {
+            repository.expandOrgUnitSelection(targetId, orgUnitId)
+        } catch (e: Exception) {
+            emptySet()
+        }
+    }
+
     suspend fun getDefaultAttributeOptionCombo(): String {
         return try {
             repository.getDefaultAttributeOptionCombo()

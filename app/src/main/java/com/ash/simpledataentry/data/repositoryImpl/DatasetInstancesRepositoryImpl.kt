@@ -34,42 +34,45 @@ class DatasetInstancesRepositoryImpl @Inject constructor(
         Log.d(TAG, "Fetching dataset instances for dataset: $datasetId")
         return withContext(Dispatchers.IO) {
             try {
-                // Get user's data capture org units
-                Log.d(TAG, "Fetching user org units")
-                val userOrgUnits = d2.organisationUnitModule().organisationUnits()
+                Log.d(TAG, "Fetching scoped org units and dataset attachments for $datasetId")
+
+                val scopedOrgUnits = d2.organisationUnitModule().organisationUnits()
                     .byOrganisationUnitScope(OrganisationUnit.Scope.SCOPE_DATA_CAPTURE)
                     .get().await()
 
-                Log.d(TAG, "Found ${userOrgUnits.size} org units")
-
-                val userOrgUnitUid = userOrgUnits.firstOrNull()?.uid()
-                if (userOrgUnitUid == null) {
-                    Log.e(TAG, "No organization unit found for user")
+                if (scopedOrgUnits.isEmpty()) {
+                    Log.e(TAG, "No organization units found in data capture scope")
                     return@withContext emptyList()
                 }
 
-                Log.d(TAG, "Using org unit: $userOrgUnitUid")
+                val attachedOrgUnits = d2.organisationUnitModule().organisationUnits()
+                    .byDataSetUids(listOf(datasetId))
+                    .get().await()
 
-                // Get dataset instances
+                val scopedIds = scopedOrgUnits.map { it.uid() }.toSet()
+                val attachedIds = attachedOrgUnits.map { it.uid() }.toSet()
+                val relevantOrgUnitIds = scopedIds.intersect(attachedIds).ifEmpty { scopedIds }
 
-                val instance = d2.dataSetModule()
+                Log.d(
+                    TAG,
+                    "Scoped=${scopedIds.size}, Attached=${attachedIds.size}, Relevant=${relevantOrgUnitIds.size}"
+                )
+
+                // Get dataset instances across all relevant org units
+                val instanceCount = d2.dataSetModule()
                     .dataSetInstances()
                     .byDataSetUid().eq(datasetId)
-                    .byOrganisationUnitUid().eq(userOrgUnitUid)
+                    .byOrganisationUnitUid().`in`(relevantOrgUnitIds.toList())
                     .blockingCount()
-
-
-
 
                 val instances = d2.dataSetModule()
                     .dataSetInstances()
                     .byDataSetUid().eq(datasetId)
-                    .byOrganisationUnitUid().eq(userOrgUnitUid)
+                    .byOrganisationUnitUid().`in`(relevantOrgUnitIds.toList())
                     .get().await()
 
-                Log.d(TAG, "Found $instance instances for dataset")
-
-                Log.d(TAG, "Found ${instances.size} instances for dataset")
+                Log.d(TAG, "Found $instanceCount instances for dataset")
+                Log.d(TAG, "Loaded ${instances.size} instances for dataset")
 
 
                 val sdkInstances = instances.map { instance ->
@@ -207,27 +210,42 @@ class DatasetInstancesRepositoryImpl @Inject constructor(
         }
     }
     
-    override suspend fun getDatasetInstanceCount(datasetId: String): Int {
+    override suspend fun getDatasetInstanceCount(datasetId: String, orgUnitIds: Set<String>?): Int {
         return withContext(Dispatchers.IO) {
             try {
                 Log.d(TAG, "Getting instance count for dataset: $datasetId")
-                
-                // Get user's data capture org units
-                val userOrgUnits = d2.organisationUnitModule().organisationUnits()
+
+                // Get scoped org units
+                val scopedOrgUnits = d2.organisationUnitModule().organisationUnits()
                     .byOrganisationUnitScope(OrganisationUnit.Scope.SCOPE_DATA_CAPTURE)
                     .get().await()
 
-                val userOrgUnitUid = userOrgUnits.firstOrNull()?.uid()
-                if (userOrgUnitUid == null) {
-                    Log.e(TAG, "No organization unit found for user")
+                if (scopedOrgUnits.isEmpty()) {
+                    Log.e(TAG, "No organization units found in data capture scope")
                     return@withContext 0
                 }
 
-                // Count dataset instances
+                val scopedIds = scopedOrgUnits.map { it.uid() }.toSet()
+                val relevantOrgUnitIds = if (orgUnitIds != null) {
+                    orgUnitIds.intersect(scopedIds)
+                } else {
+                    val attachedOrgUnits = d2.organisationUnitModule().organisationUnits()
+                        .byDataSetUids(listOf(datasetId))
+                        .get().await()
+                    val attachedIds = attachedOrgUnits.map { it.uid() }.toSet()
+                    scopedIds.intersect(attachedIds).ifEmpty { scopedIds }
+                }
+
+                if (relevantOrgUnitIds.isEmpty()) {
+                    Log.d(TAG, "No relevant org units for dataset $datasetId under current filter")
+                    return@withContext 0
+                }
+
+                // Count dataset instances across all relevant org units
                 val count = d2.dataSetModule()
                     .dataSetInstances()
                     .byDataSetUid().eq(datasetId)
-                    .byOrganisationUnitUid().eq(userOrgUnitUid)
+                    .byOrganisationUnitUid().`in`(relevantOrgUnitIds.toList())
                     .blockingCount()
 
                 Log.d(TAG, "Found $count instances for dataset $datasetId")
@@ -447,8 +465,24 @@ class DatasetInstancesRepositoryImpl @Inject constructor(
             com.ash.simpledataentry.domain.model.ProgramType.TRACKER -> {
                 withContext(Dispatchers.IO) {
                     try {
+                        val scopedOrgUnits = d2.organisationUnitModule().organisationUnits()
+                            .byOrganisationUnitScope(OrganisationUnit.Scope.SCOPE_DATA_CAPTURE)
+                            .get().await()
+                        if (scopedOrgUnits.isEmpty()) {
+                            return@withContext 0
+                        }
+
+                        val attachedOrgUnits = d2.organisationUnitModule().organisationUnits()
+                            .byProgramUids(listOf(programId))
+                            .get().await()
+
+                        val scopedIds = scopedOrgUnits.map { it.uid() }.toSet()
+                        val attachedIds = attachedOrgUnits.map { it.uid() }.toSet()
+                        val relevantOrgUnitIds = scopedIds.intersect(attachedIds).ifEmpty { scopedIds }
+
                         d2.trackedEntityModule().trackedEntityInstances()
                             .byProgramUids(listOf(programId))
+                            .byOrganisationUnitUid().`in`(relevantOrgUnitIds.toList())
                             .blockingCount()
                     } catch (e: Exception) {
                         Log.e(TAG, "Failed to get tracker enrollment count for program $programId", e)
@@ -459,8 +493,24 @@ class DatasetInstancesRepositoryImpl @Inject constructor(
             com.ash.simpledataentry.domain.model.ProgramType.EVENT -> {
                 withContext(Dispatchers.IO) {
                     try {
+                        val scopedOrgUnits = d2.organisationUnitModule().organisationUnits()
+                            .byOrganisationUnitScope(OrganisationUnit.Scope.SCOPE_DATA_CAPTURE)
+                            .get().await()
+                        if (scopedOrgUnits.isEmpty()) {
+                            return@withContext 0
+                        }
+
+                        val attachedOrgUnits = d2.organisationUnitModule().organisationUnits()
+                            .byProgramUids(listOf(programId))
+                            .get().await()
+
+                        val scopedIds = scopedOrgUnits.map { it.uid() }.toSet()
+                        val attachedIds = attachedOrgUnits.map { it.uid() }.toSet()
+                        val relevantOrgUnitIds = scopedIds.intersect(attachedIds).ifEmpty { scopedIds }
+
                         d2.eventModule().events()
                             .byProgramUid().eq(programId)
+                            .byOrganisationUnitUid().`in`(relevantOrgUnitIds.toList())
                             .blockingCount()
                     } catch (e: Exception) {
                         Log.e(TAG, "Failed to get event count for program $programId", e)

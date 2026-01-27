@@ -14,7 +14,9 @@ data class FilterState(
     val sortBy: SortBy = SortBy.NAME,
     val sortOrder: SortOrder = SortOrder.ASCENDING,
     val datasetPeriodType: DatasetPeriodType = DatasetPeriodType.ALL,
-    val organizationUnit: OrganizationUnitFilter = OrganizationUnitFilter.ALL
+    val organizationUnit: OrganizationUnitFilter = OrganizationUnitFilter.ALL,
+    val orgUnitIds: Set<String> = emptySet(),
+    val orgUnitNames: List<String> = emptyList()
 )
 
 data class DatasetInstanceFilterState(

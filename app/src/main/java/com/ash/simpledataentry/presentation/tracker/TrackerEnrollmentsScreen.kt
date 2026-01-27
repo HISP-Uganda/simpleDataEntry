@@ -81,6 +81,7 @@ fun TrackerEnrollmentsScreen(
     var showOrgUnitPicker by remember { mutableStateOf(false) }
     var filterState by remember { mutableStateOf(TrackerEnrollmentFilterState()) }
     var orgUnits by remember { mutableStateOf<List<OrganisationUnit>>(emptyList()) }
+    var expandedOrgUnitIds by remember { mutableStateOf<Set<String>?>(null) }
     val periodHelper = remember { PeriodHelper() }
 
     // Initialize with program ID
@@ -108,15 +109,27 @@ fun TrackerEnrollmentsScreen(
         data != null
     LaunchedEffect(programId) {
         orgUnits = runCatching { viewModel.getUserOrgUnits(programId) }.getOrDefault(emptyList())
+        expandedOrgUnitIds = null
     }
 
-    val filteredEnrollments = remember(data?.enrollments, searchQuery, filterState) {
+    LaunchedEffect(programId, filterState.orgUnitId) {
+        val selectedOrgUnitId = filterState.orgUnitId
+        expandedOrgUnitIds = if (selectedOrgUnitId.isNullOrBlank()) {
+            null
+        } else {
+            runCatching { viewModel.expandOrgUnitSelection(programId, selectedOrgUnitId) }
+                .getOrElse { emptySet() }
+        }
+    }
+
+    val filteredEnrollments = remember(data?.enrollments, searchQuery, filterState, expandedOrgUnitIds) {
         val base = data?.enrollments.orEmpty()
         applyTrackerEnrollmentFilters(
             enrollments = base,
             searchQuery = searchQuery,
             filterState = filterState,
-            periodHelper = periodHelper
+            periodHelper = periodHelper,
+            expandedOrgUnitIds = expandedOrgUnitIds
         )
     }
     val subtitle = if (filteredEnrollments.size == 1) "1 enrollment" else "${filteredEnrollments.size} enrollments"
@@ -574,7 +587,8 @@ private fun applyTrackerEnrollmentFilters(
     enrollments: List<com.ash.simpledataentry.domain.model.ProgramInstance.TrackerEnrollment>,
     searchQuery: String,
     filterState: TrackerEnrollmentFilterState,
-    periodHelper: PeriodHelper
+    periodHelper: PeriodHelper,
+    expandedOrgUnitIds: Set<String>?
 ): List<com.ash.simpledataentry.domain.model.ProgramInstance.TrackerEnrollment> {
     val query = searchQuery.trim().lowercase(Locale.getDefault())
     val periodRange = when (filterState.periodType) {
@@ -616,7 +630,7 @@ private fun applyTrackerEnrollmentFilters(
                 enrollment.state == com.ash.simpledataentry.domain.model.ProgramInstanceState.CANCELLED
         }
 
-        val orgUnitMatches = filterState.orgUnitId?.let { it == enrollment.organisationUnit.id } ?: true
+        val orgUnitMatches = expandedOrgUnitIds?.let { enrollment.organisationUnit.id in it } ?: true
 
         val periodMatches = periodRange?.let { range ->
             enrollment.enrollmentDate?.let { date ->

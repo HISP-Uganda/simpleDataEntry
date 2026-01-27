@@ -89,11 +89,11 @@ Run on a device or emulator:
 
 | Validation | Unsaved Changes |
 |:---:|:---:|
-| ![Validation](assets/screenshots/09_validation.png) | ![Unsaved](assets/screenshots/10_unsaved_changes.png) |
+| ![Validation](assets/screensho<br/>ts/09_validation.png) | ![Unsaved](assets/screenshots/10_unsaved_changes.png) |
 
 ### Tracker Programs
-| Enrollment List | Tracker Dashboard |
-|:---:|:---:|
+| Enrollment List |                  Tracker Dashboard<br/><br/>                   |
+|:---:|:---------------------------------------------------------:|
 | ![Enrollments](assets/screenshots/11_tracker_enrollments.png) | ![Dashboard](assets/screenshots/12_tracker_dashboard.png) |
 
 | Events Summary | Events Table |

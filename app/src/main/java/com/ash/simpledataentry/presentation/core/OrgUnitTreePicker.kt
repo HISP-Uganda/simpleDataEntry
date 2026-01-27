@@ -9,6 +9,7 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.material.icons.Icons
@@ -16,6 +17,7 @@ import androidx.compose.material.icons.filled.ChevronRight
 import androidx.compose.material.icons.filled.ExpandMore
 import androidx.compose.material.icons.filled.Search
 import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.Checkbox
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
@@ -126,6 +128,91 @@ fun OrgUnitTreePickerDialog(
 }
 
 @Composable
+fun OrgUnitTreeMultiPickerDialog(
+    orgUnits: List<OrganisationUnit>,
+    initiallySelectedIds: Set<String>,
+    onConfirmSelection: (Set<String>) -> Unit,
+    onDismiss: () -> Unit,
+    title: String = "Select Organization Units"
+) {
+    var query by remember { mutableStateOf("") }
+    val tree = remember(orgUnits) { buildOrgUnitTree(orgUnits) }
+    val expandedPathsState = remember { mutableStateOf(setOf<String>()) }
+    val filteredTree = remember(tree, query) { filterTree(tree, query) }
+    val autoExpand = query.isNotBlank()
+    val visibleItems = remember(filteredTree, expandedPathsState.value, autoExpand) {
+        flattenTree(filteredTree, expandedPathsState.value, autoExpand)
+    }
+    var selectedIds by remember(initiallySelectedIds) { mutableStateOf(initiallySelectedIds) }
+
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text(text = title, style = MaterialTheme.typography.titleMedium) },
+        text = {
+            Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                OutlinedTextField(
+                    value = query,
+                    onValueChange = { query = it },
+                    modifier = Modifier.fillMaxWidth(),
+                    singleLine = true,
+                    placeholder = { Text("Search organization units...") },
+                    leadingIcon = {
+                        Icon(
+                            imageVector = Icons.Default.Search,
+                            contentDescription = null
+                        )
+                    }
+                )
+
+                if (visibleItems.isEmpty()) {
+                    Text(
+                        text = "No organization units found.",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                } else {
+                    LazyColumn {
+                        items(visibleItems, key = { it.node.path }) { item ->
+                            val nodeId = item.node.id
+                            OrgUnitTreeMultiRow(
+                                item = item,
+                                isExpanded = expandedPathsState.value.contains(item.node.path),
+                                isChecked = nodeId != null && selectedIds.contains(nodeId),
+                                onToggleExpand = {
+                                    expandedPathsState.value = if (expandedPathsState.value.contains(item.node.path)) {
+                                        expandedPathsState.value - item.node.path
+                                    } else {
+                                        expandedPathsState.value + item.node.path
+                                    }
+                                },
+                                onToggleChecked = {
+                                    val id = item.node.id ?: return@OrgUnitTreeMultiRow
+                                    selectedIds = if (selectedIds.contains(id)) {
+                                        selectedIds - id
+                                    } else {
+                                        selectedIds + id
+                                    }
+                                }
+                            )
+                        }
+                    }
+                }
+            }
+        },
+        confirmButton = {
+            TextButton(onClick = { onConfirmSelection(selectedIds) }) {
+                Text("Apply")
+            }
+        },
+        dismissButton = {
+            TextButton(onClick = onDismiss) {
+                Text("Cancel")
+            }
+        }
+    )
+}
+
+@Composable
 private fun OrgUnitTreeRow(
     item: OrgUnitTreeItem,
     isExpanded: Boolean,
@@ -168,6 +255,55 @@ private fun OrgUnitTreeRow(
             } else {
                 MaterialTheme.colorScheme.onSurface
             },
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis,
+            modifier = Modifier.weight(1f)
+        )
+    }
+}
+
+@Composable
+private fun OrgUnitTreeMultiRow(
+    item: OrgUnitTreeItem,
+    isExpanded: Boolean,
+    isChecked: Boolean,
+    onToggleExpand: () -> Unit,
+    onToggleChecked: () -> Unit
+) {
+    val indent = (item.depth * 16).dp
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(start = indent, top = 4.dp, bottom = 4.dp),
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        if (item.hasChildren) {
+            IconButton(
+                onClick = onToggleExpand,
+                modifier = Modifier.size(24.dp)
+            ) {
+                Icon(
+                    imageVector = if (isExpanded) Icons.Default.ExpandMore else Icons.Default.ChevronRight,
+                    contentDescription = null,
+                    modifier = Modifier.size(18.dp)
+                )
+            }
+        } else {
+            Spacer(modifier = Modifier.size(24.dp))
+        }
+
+        Checkbox(
+            checked = isChecked,
+            onCheckedChange = { onToggleChecked() },
+            enabled = item.node.id != null,
+            modifier = Modifier.size(24.dp)
+        )
+
+        Spacer(modifier = Modifier.width(8.dp))
+
+        Text(
+            text = item.node.name,
+            style = MaterialTheme.typography.bodyMedium,
             maxLines = 1,
             overflow = TextOverflow.Ellipsis,
             modifier = Modifier.weight(1f)
