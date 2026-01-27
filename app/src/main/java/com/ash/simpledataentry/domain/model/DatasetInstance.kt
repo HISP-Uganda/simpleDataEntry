@@ -24,5 +24,8 @@ data class Period(
 data class OrganisationUnit(
     val id: String,
     val name: String,
-    val path: String? = null
+    val path: String? = null,
+    val uidPath: String? = null,
+    val parentId: String? = null,
+    val level: Int? = null
 )

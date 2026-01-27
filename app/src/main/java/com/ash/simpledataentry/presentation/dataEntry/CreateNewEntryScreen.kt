@@ -217,17 +217,7 @@ fun CreateNewEntryScreen(
                             }
 
                             // Organization Unit Picker (tree view)
-                            OutlinedTextField(
-                                value = selectedOrgUnit?.name ?: "Select Organization Unit",
-                                onValueChange = {},
-                                readOnly = true,
-                                label = { Text("Organization Unit") },
-                                trailingIcon = {
-                                    Icon(
-                                        imageVector = Icons.Default.ChevronRight,
-                                        contentDescription = null
-                                    )
-                                },
+                            Box(
                                 modifier = Modifier
                                     .fillMaxWidth()
                                     .clickable {
@@ -242,7 +232,22 @@ fun CreateNewEntryScreen(
                                             showOrgUnitPicker = true
                                         }
                                     }
-                            )
+                            ) {
+                                OutlinedTextField(
+                                    value = selectedOrgUnit?.name ?: "Select Organization Unit",
+                                    onValueChange = {},
+                                    readOnly = true,
+                                    enabled = false,
+                                    label = { Text("Organization Unit") },
+                                    trailingIcon = {
+                                        Icon(
+                                            imageVector = Icons.Default.ChevronRight,
+                                            contentDescription = null
+                                        )
+                                    },
+                                    modifier = Modifier.fillMaxWidth()
+                                )
+                            }
 
                             ExposedDropdownMenuBox(
                                 expanded = expandedPeriod,

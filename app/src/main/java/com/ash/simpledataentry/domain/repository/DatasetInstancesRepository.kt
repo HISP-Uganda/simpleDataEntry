@@ -8,7 +8,7 @@ import kotlinx.coroutines.flow.Flow
 interface DatasetInstancesRepository {
     // Existing dataset methods
     suspend fun getDatasetInstances(datasetId: String): List<DatasetInstance>
-    suspend fun getDatasetInstanceCount(datasetId: String): Int
+    suspend fun getDatasetInstanceCount(datasetId: String, orgUnitIds: Set<String>? = null): Int
     suspend fun syncDatasetInstances()
     suspend fun completeDatasetInstance(datasetId: String, period: String, orgUnit: String, attributeOptionCombo: String): Result<Unit>
     suspend fun markDatasetInstanceIncomplete(datasetId: String, period: String, orgUnit: String, attributeOptionCombo: String): Result<Unit>

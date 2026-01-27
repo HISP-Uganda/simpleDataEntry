@@ -85,11 +85,12 @@ import androidx.navigation.NavController
 import com.ash.simpledataentry.data.SessionManager
 import com.ash.simpledataentry.domain.model.FilterState
 import com.ash.simpledataentry.domain.model.DatasetPeriodType
-import com.ash.simpledataentry.domain.model.OrganizationUnitFilter
+import com.ash.simpledataentry.domain.model.OrganisationUnit
 import com.ash.simpledataentry.domain.model.ProgramItem
 import com.ash.simpledataentry.domain.model.ProgramType as DomainProgramType
 import com.ash.simpledataentry.navigation.Screen
 import com.ash.simpledataentry.presentation.core.BaseScreen
+import com.ash.simpledataentry.presentation.core.OrgUnitTreeMultiPickerDialog
 import kotlinx.coroutines.launch
 import org.hisp.dhis.mobile.ui.designsystem.theme.TextColor
 import androidx.compose.animation.AnimatedVisibility
@@ -116,6 +117,8 @@ import android.text.format.DateUtils
 @Composable
 fun DatasetsFilterSection(
     currentFilter: FilterState,
+    orgUnits: List<OrganisationUnit>,
+    attachedOrgUnitIds: Set<String>,
     onApplyFilter: (FilterState) -> Unit
 ) {
     Column(
@@ -126,10 +129,30 @@ fun DatasetsFilterSection(
     ) {
         var searchQuery by remember { mutableStateOf(currentFilter.searchQuery) }
         var datasetPeriodType by remember { mutableStateOf(currentFilter.datasetPeriodType) }
-        var organizationUnit by remember { mutableStateOf(currentFilter.organizationUnit) }
+        var selectedOrgUnitIds by remember(currentFilter.orgUnitIds) { mutableStateOf(currentFilter.orgUnitIds) }
+        var selectedOrgUnitNames by remember(currentFilter.orgUnitNames) { mutableStateOf(currentFilter.orgUnitNames) }
 
         var showDatasetPeriodDropdown by remember { mutableStateOf(false) }
-        var showOrgUnitDropdown by remember { mutableStateOf(false) }
+        var showOrgUnitPicker by remember { mutableStateOf(false) }
+
+        val orgUnitMap = remember(orgUnits) { orgUnits.associateBy { it.id } }
+        val descendantCount = remember(selectedOrgUnitIds, orgUnits, attachedOrgUnitIds) {
+            computeDescendantCount(
+                selectedOrgUnitIds = selectedOrgUnitIds,
+                orgUnits = orgUnits,
+                allowedOrgUnitIds = attachedOrgUnitIds
+            )
+        }
+        val orgUnitLabel = when {
+            selectedOrgUnitNames.isEmpty() -> "All organization units"
+            selectedOrgUnitNames.size == 1 -> selectedOrgUnitNames.first()
+            else -> "${selectedOrgUnitNames.size} organization units selected"
+        }
+        val orgUnitLabelWithDescendants = if (selectedOrgUnitIds.isNotEmpty() && descendantCount > 0) {
+            "$orgUnitLabel (+$descendantCount descendants)"
+        } else {
+            orgUnitLabel
+        }
 
         // Row 1: Search field
         OutlinedTextField(
@@ -138,7 +161,9 @@ fun DatasetsFilterSection(
                 searchQuery = it
                 onApplyFilter(
                     currentFilter.copy(
-                        searchQuery = searchQuery
+                        searchQuery = searchQuery,
+                        orgUnitIds = selectedOrgUnitIds,
+                        orgUnitNames = selectedOrgUnitNames
                     )
                 )
             },
@@ -190,7 +215,9 @@ fun DatasetsFilterSection(
                             showDatasetPeriodDropdown = false
                             onApplyFilter(
                                 currentFilter.copy(
-                                    datasetPeriodType = datasetPeriodType
+                                    datasetPeriodType = datasetPeriodType,
+                                    orgUnitIds = selectedOrgUnitIds,
+                                    orgUnitNames = selectedOrgUnitNames
                                 )
                             )
                         }
@@ -201,55 +228,43 @@ fun DatasetsFilterSection(
 
         // Row 3: Organization Unit Filter
         Box(modifier = Modifier.fillMaxWidth()) {
-            OutlinedTextField(
-                value = organizationUnit.displayName,
-                onValueChange = { },
-                label = { Text("Organization Unit", color = Color.White) },
-                readOnly = true,
-                modifier = Modifier.fillMaxWidth(),
-                colors = OutlinedTextFieldDefaults.colors(
-                    focusedTextColor = Color.White,
-                    unfocusedTextColor = Color.White,
-                    focusedBorderColor = Color.White,
-                    unfocusedBorderColor = Color.White.copy(alpha = 0.7f)
-                ),
-                trailingIcon = {
-                    IconButton(onClick = { showOrgUnitDropdown = !showOrgUnitDropdown }) {
-                        Icon(Icons.Default.ArrowDropDown, contentDescription = null, tint = Color.White)
-                    }
-                }
-            )
-
-            DropdownMenu(
-                expanded = showOrgUnitDropdown,
-                onDismissRequest = { showOrgUnitDropdown = false }
+            Box(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .clickable(enabled = orgUnits.isNotEmpty()) { showOrgUnitPicker = true }
             ) {
-                OrganizationUnitFilter.entries.forEach { unit ->
-                    DropdownMenuItem(
-                        text = { Text(unit.displayName) },
-                        onClick = {
-                            organizationUnit = unit
-                            showOrgUnitDropdown = false
-                            onApplyFilter(
-                                currentFilter.copy(
-                                    organizationUnit = organizationUnit
-                                )
-                            )
-                        }
-                    )
-                }
+                OutlinedTextField(
+                    value = orgUnitLabelWithDescendants,
+                    onValueChange = { },
+                    label = { Text("Organization Unit", color = Color.White) },
+                    readOnly = true,
+                    enabled = false,
+                    modifier = Modifier.fillMaxWidth(),
+                    colors = OutlinedTextFieldDefaults.colors(
+                        focusedTextColor = Color.White,
+                        unfocusedTextColor = Color.White,
+                        focusedBorderColor = Color.White,
+                        unfocusedBorderColor = Color.White.copy(alpha = 0.7f)
+                    ),
+                    trailingIcon = {
+                        Icon(
+                            imageVector = Icons.Default.ArrowDropDown,
+                            contentDescription = null,
+                            tint = Color.White
+                        )
+                    }
+                )
             }
         }
 
         // Clear button
-        if (searchQuery.isNotBlank() || datasetPeriodType != DatasetPeriodType.ALL ||
-            organizationUnit != OrganizationUnitFilter.ALL
-        ) {
+        if (searchQuery.isNotBlank() || datasetPeriodType != DatasetPeriodType.ALL || selectedOrgUnitIds.isNotEmpty()) {
             OutlinedButton(
                 onClick = {
                     searchQuery = ""
                     datasetPeriodType = DatasetPeriodType.ALL
-                    organizationUnit = OrganizationUnitFilter.ALL
+                    selectedOrgUnitIds = emptySet()
+                    selectedOrgUnitNames = emptyList()
                     onApplyFilter(FilterState())
                 },
                 modifier = Modifier.align(Alignment.CenterHorizontally),
@@ -261,7 +276,53 @@ fun DatasetsFilterSection(
                 Text("Clear All")
             }
         }
+
+        if (showOrgUnitPicker) {
+            OrgUnitTreeMultiPickerDialog(
+                orgUnits = orgUnits,
+                initiallySelectedIds = selectedOrgUnitIds,
+                onConfirmSelection = { newIds ->
+                    selectedOrgUnitIds = newIds
+                    selectedOrgUnitNames = newIds.mapNotNull { orgUnitMap[it]?.name }.sorted()
+                    showOrgUnitPicker = false
+                    onApplyFilter(
+                        currentFilter.copy(
+                            orgUnitIds = selectedOrgUnitIds,
+                            orgUnitNames = selectedOrgUnitNames
+                        )
+                    )
+                },
+                onDismiss = { showOrgUnitPicker = false }
+            )
+        }
     }
+}
+
+private fun computeDescendantCount(
+    selectedOrgUnitIds: Set<String>,
+    orgUnits: List<OrganisationUnit>,
+    allowedOrgUnitIds: Set<String>
+): Int {
+    if (selectedOrgUnitIds.isEmpty() || orgUnits.isEmpty()) return 0
+
+    val selectedById = orgUnits
+        .filter { it.id in selectedOrgUnitIds }
+        .associateBy { it.id }
+
+    val descendantIds = mutableSetOf<String>()
+    selectedById.values.forEach { selected ->
+        val selectedPath = selected.uidPath ?: return@forEach
+        val prefix = "$selectedPath/"
+        orgUnits.forEach { candidate ->
+            val candidatePath = candidate.uidPath ?: return@forEach
+            val allowed = allowedOrgUnitIds.isEmpty() || candidate.id in allowedOrgUnitIds
+            if (allowed && candidate.id != selected.id && candidatePath.startsWith(prefix)) {
+                descendantIds.add(candidate.id)
+            }
+        }
+    }
+
+    return descendantIds.size
 }
 
 @Composable
@@ -313,6 +374,8 @@ fun DatasetsScreen(
     val snackbarHostState = remember { SnackbarHostState() }
     var showDeleteConfirmation by remember { mutableStateOf(false) }
     var showFilterSection by remember { mutableStateOf(false) }
+    var filterOrgUnits by remember { mutableStateOf<List<OrganisationUnit>>(emptyList()) }
+    var attachedOrgUnitIds by remember { mutableStateOf<Set<String>>(emptySet()) }
     val activeAccountLabel by viewModel.activeAccountLabel.collectAsState()
     val activeAccountSubtitle by viewModel.activeAccountSubtitle.collectAsState()
     val subtitle = when ((uiState as? UiState.Success)?.data?.currentProgramType ?: DomainProgramType.ALL) {
@@ -333,6 +396,9 @@ fun DatasetsScreen(
     }
 
     // Do not auto-sync when navigating back; sync is login/ manual only.
+    LaunchedEffect(Unit) {
+        filterOrgUnits = runCatching { viewModel.getScopedOrgUnits() }.getOrDefault(emptyList())
+    }
 
     ModalNavigationDrawer(
         drawerState = drawerState,
@@ -512,6 +578,18 @@ fun DatasetsScreen(
                     is UiState.Error -> state.previousData ?: DatasetsData()
                     is UiState.Loading -> DatasetsData()
                 }
+                val datasetIds = remember(data.programs) {
+                    data.programs
+                        .filterIsInstance<ProgramItem.DatasetProgram>()
+                        .map { it.id }
+                        .distinct()
+                }
+
+                LaunchedEffect(datasetIds) {
+                    attachedOrgUnitIds = runCatching {
+                        viewModel.getAttachedOrgUnitIdsForDatasets(datasetIds)
+                    }.getOrDefault(emptySet())
+                }
 
                 Column {
                     // Pull-down filter section
@@ -536,6 +614,8 @@ fun DatasetsScreen(
                         ) {
                             DatasetsFilterSection(
                                 currentFilter = data.currentFilter,
+                                orgUnits = filterOrgUnits,
+                                attachedOrgUnitIds = attachedOrgUnitIds,
                                 onApplyFilter = { newFilter ->
                                     viewModel.applyFilter(newFilter)
                                 }

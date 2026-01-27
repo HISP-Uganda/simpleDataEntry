@@ -479,36 +479,140 @@ class DataEntryRepositoryImpl @Inject constructor(
 
     override suspend fun getUserOrgUnit(datasetId: String): OrganisationUnit {
         return withContext(Dispatchers.IO) {
-            val orgUnits = d2.organisationUnitModule().organisationUnits()
-                .byOrganisationUnitScope(org.hisp.dhis.android.core.organisationunit.OrganisationUnit.Scope.SCOPE_DATA_CAPTURE)
-                .blockingGet()
-
-            if (orgUnits.isEmpty()) {
-                throw Exception("No organization units available for data capture")
-            }
-
-            OrganisationUnit(
-                id = orgUnits.first().uid(),
-                name = orgUnits.first().displayName() ?: orgUnits.first().uid(),
-                path = orgUnits.first().displayNamePath()?.joinToString(" / ")
-            )
+            val orgUnits = getUserOrgUnits(datasetId)
+            orgUnits.firstOrNull()
+                ?: throw Exception("No organization units available for data capture")
         }
     }
 
     override suspend fun getUserOrgUnits(datasetId: String): List<OrganisationUnit> {
         return withContext(Dispatchers.IO) {
-            val orgUnits = d2.organisationUnitModule().organisationUnits()
+            val scopedOrgUnits = d2.organisationUnitModule().organisationUnits()
                 .byOrganisationUnitScope(org.hisp.dhis.android.core.organisationunit.OrganisationUnit.Scope.SCOPE_DATA_CAPTURE)
                 .blockingGet()
 
-            orgUnits.map { orgUnit ->
-                OrganisationUnit(
-                    id = orgUnit.uid(),
-                    name = orgUnit.displayName() ?: orgUnit.uid(),
-                    path = orgUnit.displayNamePath()?.joinToString(" / ")
-                )
+            if (scopedOrgUnits.isEmpty()) {
+                return@withContext emptyList()
             }
+
+            val targetType = resolveTargetType(datasetId)
+            val attachedOrgUnits = getAttachedOrgUnits(datasetId, targetType)
+
+            val attachedIds = attachedOrgUnits.map { it.uid() }.toSet()
+            val intersected = scopedOrgUnits.filter { it.uid() in attachedIds }
+
+            val relevantOrgUnits = if (attachedIds.isNotEmpty()) intersected else scopedOrgUnits
+
+            mapAndSortOrgUnits(relevantOrgUnits)
         }
+    }
+
+    override suspend fun getScopedOrgUnits(): List<OrganisationUnit> {
+        return withContext(Dispatchers.IO) {
+            val scopedOrgUnits = d2.organisationUnitModule().organisationUnits()
+                .byOrganisationUnitScope(org.hisp.dhis.android.core.organisationunit.OrganisationUnit.Scope.SCOPE_DATA_CAPTURE)
+                .blockingGet()
+            mapAndSortOrgUnits(scopedOrgUnits)
+        }
+    }
+
+    override suspend fun getOrgUnitsAttachedToDataSets(datasetIds: List<String>): Set<String> {
+        if (datasetIds.isEmpty()) return emptySet()
+        return withContext(Dispatchers.IO) {
+            d2.organisationUnitModule().organisationUnits()
+                .byDataSetUids(datasetIds)
+                .blockingGet()
+                .map { it.uid() }
+                .toSet()
+        }
+    }
+
+    override suspend fun expandOrgUnitSelection(targetId: String, orgUnitId: String): Set<String> {
+        return withContext(Dispatchers.IO) {
+            val targetType = resolveTargetType(targetId)
+
+            val scopedOrgUnits = d2.organisationUnitModule().organisationUnits()
+                .byOrganisationUnitScope(org.hisp.dhis.android.core.organisationunit.OrganisationUnit.Scope.SCOPE_DATA_CAPTURE)
+                .blockingGet()
+            if (scopedOrgUnits.isEmpty()) {
+                return@withContext emptySet()
+            }
+
+            val attachedOrgUnits = getAttachedOrgUnits(targetId, targetType)
+            val attachedIds = attachedOrgUnits.map { it.uid() }.toSet()
+            val scopedIds = scopedOrgUnits.map { it.uid() }.toSet()
+            val allowedIds = scopedIds.intersect(attachedIds).ifEmpty { scopedIds }
+
+            val selected = d2.organisationUnitModule().organisationUnits()
+                .uid(orgUnitId)
+                .blockingGet()
+                ?: return@withContext emptySet()
+
+            val selectedPath = selected.path()
+            val descendants = if (!selectedPath.isNullOrBlank()) {
+                d2.organisationUnitModule().organisationUnits()
+                    .byPath().like("$selectedPath/%")
+                    .blockingGet()
+            } else {
+                emptyList()
+            }
+
+            val expandedIds = buildSet {
+                add(orgUnitId)
+                descendants.forEach { add(it.uid()) }
+            }
+
+            expandedIds.intersect(allowedIds)
+        }
+    }
+
+    private enum class TargetType {
+        DATASET,
+        PROGRAM
+    }
+
+    private fun resolveTargetType(targetId: String): TargetType {
+        val isDataset = d2.dataSetModule().dataSets()
+            .uid(targetId)
+            .blockingGet() != null
+        if (isDataset) {
+            return TargetType.DATASET
+        }
+
+        val isProgram = d2.programModule().programs()
+            .uid(targetId)
+            .blockingGet() != null
+        return if (isProgram) TargetType.PROGRAM else TargetType.DATASET
+    }
+
+    private fun getAttachedOrgUnits(targetId: String, targetType: TargetType): List<org.hisp.dhis.android.core.organisationunit.OrganisationUnit> {
+        val repository = d2.organisationUnitModule().organisationUnits()
+        return when (targetType) {
+            TargetType.DATASET -> repository
+                .byDataSetUids(listOf(targetId))
+                .blockingGet()
+            TargetType.PROGRAM -> repository
+                .byProgramUids(listOf(targetId))
+                .blockingGet()
+        }
+    }
+
+    private fun mapAndSortOrgUnits(
+        orgUnits: List<org.hisp.dhis.android.core.organisationunit.OrganisationUnit>
+    ): List<OrganisationUnit> {
+        return orgUnits.map { orgUnit ->
+            OrganisationUnit(
+                id = orgUnit.uid(),
+                name = orgUnit.displayName() ?: orgUnit.uid(),
+                path = orgUnit.displayNamePath()?.joinToString(" / "),
+                uidPath = orgUnit.path(),
+                parentId = orgUnit.parent()?.uid(),
+                level = orgUnit.level()
+            )
+        }.sortedWith(
+            compareBy<OrganisationUnit> { it.path ?: it.name }
+                .thenBy { it.name }
+        )
     }
 
     override suspend fun getDefaultAttributeOptionCombo(): String {

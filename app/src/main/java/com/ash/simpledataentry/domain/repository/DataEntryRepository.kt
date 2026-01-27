@@ -34,6 +34,9 @@ interface DataEntryRepository {
     suspend fun getAvailablePeriods(datasetId: String, limit: Int = 5, showAll: Boolean = false): List<Period>
     suspend fun getUserOrgUnit(datasetId: String): OrganisationUnit
     suspend fun getUserOrgUnits(datasetId: String): List<OrganisationUnit>
+    suspend fun getScopedOrgUnits(): List<OrganisationUnit>
+    suspend fun getOrgUnitsAttachedToDataSets(datasetIds: List<String>): Set<String>
+    suspend fun expandOrgUnitSelection(targetId: String, orgUnitId: String): Set<String>
     suspend fun getDefaultAttributeOptionCombo(): String
     suspend fun getAttributeOptionCombos(datasetId: String): List<Pair<String, String>>
     suspend fun getCategoryComboStructure(categoryComboUid: String): List<Pair<String, List<Pair<String, String>>>>
@@ -59,4 +62,3 @@ interface DataEntryRepository {
     // Validation rules for intelligent grouping
     suspend fun getValidationRulesForDataset(datasetId: String): List<org.hisp.dhis.android.core.validation.ValidationRule>
 }
-
