@@ -6,16 +6,23 @@ import android.util.Log
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
+import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.material3.LinearProgressIndicator
+import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Scaffold
+import androidx.compose.runtime.SideEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.luminance
+import androidx.compose.ui.graphics.toArgb
+import androidx.core.view.WindowCompat
+import androidx.core.view.WindowInsetsControllerCompat
 import androidx.lifecycle.lifecycleScope
 import androidx.navigation.compose.rememberNavController
 import com.ash.simpledataentry.data.SessionManager
@@ -25,7 +32,7 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
-import org.hisp.dhis.mobile.ui.designsystem.theme.DHIS2Theme
+import com.ash.simpledataentry.ui.theme.SimpleDataEntryTheme
 import javax.inject.Inject
 
 
@@ -41,7 +48,7 @@ class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
-
+        WindowCompat.setDecorFitsSystemWindows(window, true)
         // Initialize D2 on app start
         lifecycleScope.launch {
             try {
@@ -54,7 +61,21 @@ class MainActivity : ComponentActivity() {
 
         setContent {
             val isRestoring by isRestoringSession.collectAsState()
-            DHIS2Theme {
+            SimpleDataEntryTheme {
+                val isLightTheme = !isSystemInDarkTheme()
+                val barColor = if (isLightTheme) {
+                    MaterialTheme.colorScheme.surface
+                } else {
+                    MaterialTheme.colorScheme.primary
+                }
+                val useDarkIcons = isLightTheme && barColor.luminance() > 0.5f
+                SideEffect {
+                    window.statusBarColor = barColor.toArgb()
+                    window.navigationBarColor = barColor.toArgb()
+                    val insetsController = WindowInsetsControllerCompat(window, window.decorView)
+                    insetsController.isAppearanceLightStatusBars = useDarkIcons
+                    insetsController.isAppearanceLightNavigationBars = useDarkIcons
+                }
                 val navController = rememberNavController()
                 Scaffold(modifier = Modifier.fillMaxSize()) { innerPadding ->
                     Box(

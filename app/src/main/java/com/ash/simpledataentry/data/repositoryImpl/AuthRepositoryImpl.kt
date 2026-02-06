@@ -44,41 +44,37 @@ class AuthRepositoryImpl @Inject constructor(
         context: Context,
         onProgress: (NavigationProgress) -> Unit
     ): Boolean {
-        return try {
-            // Blocking metadata download with UI lock (completes before returning)
-            sessionManager.loginWithProgress(context, Dhis2Config(serverUrl, username, password), backgroundSyncManager, onProgress)
+        // Blocking metadata download with UI lock (completes before returning)
+        sessionManager.loginWithProgress(context, Dhis2Config(serverUrl, username, password), backgroundSyncManager, onProgress)
 
-            // CRITICAL: Clear metadata caches after successful login (handles user-switch scenarios)
-            metadataCacheService.clearAllCaches()
+        // CRITICAL: Clear metadata caches after successful login (handles user-switch scenarios)
+        metadataCacheService.clearAllCaches()
 
-            // CRITICAL: Start async background data sync AFTER metadata completes
-            // UI is unlocked, user can navigate immediately
-            Log.d("AuthRepositoryImpl", "Metadata sync complete - starting background data sync")
-            backgroundScope.launch {
-                var syncSuccess = false
-                var syncMessage: String? = null
+        // CRITICAL: Start async background data sync AFTER metadata completes
+        // UI is unlocked, user can navigate immediately
+        Log.d("AuthRepositoryImpl", "Metadata sync complete - starting background data sync")
+        backgroundScope.launch {
+            var syncSuccess = false
+            var syncMessage: String? = null
 
-                sessionManager.startBackgroundDataSync(context) { success, message ->
-                    syncSuccess = success
-                    syncMessage = message
-                }
-
-                // Show non-intrusive toast notification when background sync completes
-                withContext(Dispatchers.Main) {
-                    val toastMessage = if (syncSuccess) {
-                        "✓ Data sync complete"
-                    } else {
-                        "⚠ Data sync incomplete: ${syncMessage ?: "Unknown error"}"
-                    }
-                    Toast.makeText(context, toastMessage, Toast.LENGTH_LONG).show()
-                    Log.d("AuthRepositoryImpl", "Background sync completed: $toastMessage")
-                }
+            sessionManager.startBackgroundDataSync(context) { success, message ->
+                syncSuccess = success
+                syncMessage = message
             }
 
-            true
-        } catch (e: Exception) {
-            false
+            // Show non-intrusive toast notification when background sync completes
+            withContext(Dispatchers.Main) {
+                val toastMessage = if (syncSuccess) {
+                    "✓ Data sync complete"
+                } else {
+                    "⚠ Data sync incomplete: ${syncMessage ?: "Unknown error"}"
+                }
+                Toast.makeText(context, toastMessage, Toast.LENGTH_LONG).show()
+                Log.d("AuthRepositoryImpl", "Background sync completed: $toastMessage")
+            }
         }
+
+        return true
     }
 
     /**

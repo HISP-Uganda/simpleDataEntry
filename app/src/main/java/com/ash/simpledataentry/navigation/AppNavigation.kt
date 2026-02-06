@@ -24,6 +24,7 @@ import com.ash.simpledataentry.presentation.datasetInstances.DatasetInstancesScr
 import com.ash.simpledataentry.presentation.datasets.DatasetsScreen
 import com.ash.simpledataentry.presentation.issues.ReportIssuesScreen
 import com.ash.simpledataentry.presentation.login.LoginScreen
+import com.ash.simpledataentry.presentation.settings.EditAccountScreen
 import com.ash.simpledataentry.presentation.settings.SettingsScreen
 import com.ash.simpledataentry.presentation.tracker.TrackerEnrollmentScreen
 import com.ash.simpledataentry.presentation.tracker.EventCaptureScreen
@@ -35,6 +36,8 @@ sealed class Screen(val route: String) {
     data object DatasetsScreen : Screen("datasets")
     data class DatasetInstanceScreen(val datasetId: String, val datasetName: String) : Screen("instances")
     data object SettingsScreen : Screen("settings")
+    data object AddAccountScreen : Screen("add_account")
+    data object EditAccountScreen : Screen("edit_account")
     data object AboutScreen : Screen("about")
     data object ReportIssuesScreen : Screen("report_issues")
 //    data object CreateNewEntryScreen : Screen("createnewinstance")
@@ -57,6 +60,17 @@ fun AppNavigation(
     ) {
         composable(LoginScreen.route) {
             LoginScreen(navController = navController)
+        }
+        composable(
+            route = "${Screen.AddAccountScreen.route}?skipAutoLogin={skipAutoLogin}",
+            arguments = listOf(
+                navArgument("skipAutoLogin") {
+                    type = NavType.BoolType
+                    defaultValue = true
+                }
+            )
+        ) {
+            LoginScreen(navController = navController, isAddAccount = true)
         }
         composable(DatasetsScreen.route) {
             DatasetsScreen(navController = navController)
@@ -168,6 +182,9 @@ fun AppNavigation(
 
         composable(Screen.SettingsScreen.route) {
             SettingsScreen(navController = navController)
+        }
+        composable(Screen.EditAccountScreen.route) {
+            EditAccountScreen(navController = navController)
         }
 
         composable(Screen.AboutScreen.route) {

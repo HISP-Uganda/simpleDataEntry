@@ -34,6 +34,7 @@ import com.ash.simpledataentry.presentation.core.UiState
 import com.ash.simpledataentry.util.toUiError
 import dagger.hilt.android.lifecycle.HiltViewModel
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -572,7 +573,12 @@ class DatasetInstancesViewModel @Inject constructor(
                                 } else {
                                     "Dataset instances synced successfully"
                                 }
-                                loadData() // Reload all data after sync
+                                viewModelScope.launch {
+                                    withContext(Dispatchers.IO) {
+                                        clearDraftsForInstances(currentData().instancesWithDrafts)
+                                    }
+                                    loadData() // Reload all data after sync
+                                }
                             },
                             onFailure = { throwable ->
                                 Log.e("DatasetInstancesVM", "Dataset sync failed", throwable)
@@ -621,8 +627,18 @@ class DatasetInstancesViewModel @Inject constructor(
                 result.fold(
                     onSuccess = {
                         syncQueueManager.clearErrorState()
-                        loadData()
-                        onResult(true, "Entry synced successfully.")
+                        viewModelScope.launch {
+                            withContext(Dispatchers.IO) {
+                                draftDao.deleteDraftsForInstance(
+                                    datasetId = instance.programId,
+                                    period = instance.period.id,
+                                    orgUnit = instance.organisationUnit.id,
+                                    attributeOptionCombo = instance.attributeOptionCombo
+                                )
+                            }
+                            loadData()
+                            onResult(true, "Entry synced successfully.")
+                        }
                     },
                     onFailure = { error ->
                         syncQueueManager.clearErrorState()
@@ -640,6 +656,23 @@ class DatasetInstancesViewModel @Inject constructor(
 
     fun manualRefresh() {
         loadData()
+    }
+
+    private suspend fun clearDraftsForInstances(instanceKeys: Set<String>) {
+        if (instanceKeys.isEmpty()) {
+            return
+        }
+        instanceKeys.forEach { key ->
+            val parts = key.split("|")
+            if (parts.size >= 4) {
+                draftDao.deleteDraftsForInstance(
+                    datasetId = parts[0],
+                    period = parts[1],
+                    orgUnit = parts[2],
+                    attributeOptionCombo = parts[3]
+                )
+            }
+        }
     }
 
     fun dismissSyncOverlay() {

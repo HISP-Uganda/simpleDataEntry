@@ -9,8 +9,11 @@ import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.material.icons.Icons
+import androidx.compose.foundation.layout.FlowRow
+import androidx.compose.foundation.layout.ExperimentalLayoutApi
 import androidx.compose.material.icons.filled.KeyboardArrowDown
 import androidx.compose.material.icons.filled.Check
+import androidx.compose.material.icons.filled.DateRange
 import androidx.compose.material3.*
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.runtime.*
@@ -18,8 +21,11 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.rotate
 import androidx.compose.ui.graphics.Color
+import android.text.format.DateUtils
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.TextFieldValue
+import androidx.compose.foundation.text.KeyboardOptions
+import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
@@ -28,6 +34,11 @@ import androidx.navigation.NavController
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import com.ash.simpledataentry.presentation.datasetInstances.SyncConfirmationDialog
+import com.ash.simpledataentry.presentation.core.DatePickerDialog
+import com.ash.simpledataentry.presentation.core.DatePickerUtils
+import java.text.SimpleDateFormat
+import java.util.Locale
+import java.util.Date
 import com.ash.simpledataentry.presentation.datasetInstances.SyncOptions
 import org.hisp.dhis.mobile.ui.designsystem.component.Button
 import org.hisp.dhis.mobile.ui.designsystem.component.ButtonStyle
@@ -61,6 +72,57 @@ import com.ash.simpledataentry.presentation.core.LoadingProgress
 import com.ash.simpledataentry.presentation.core.UiState
 
 data class Quadruple<A, B, C, D>(val first: A, val second: B, val third: C, val fourth: D)
+
+private val LocalShowFieldLabel = compositionLocalOf { true }
+
+private data class ParsedGridField(
+    val rowTitle: String,
+    val rowKey: String,
+    val columnTitle: String,
+    val dataValue: DataValue
+)
+
+private fun parseGridLabel(name: String): Pair<String, String>? {
+    // Only split on primary separators between row and column.
+    // Avoid splitting on "/" which is commonly inside column titles like "Meeting/Workshop".
+    val delimiterRegex = Regex("\\s*[-–—:|]\\s*")
+    val matches = delimiterRegex.findAll(name).toList()
+    if (matches.isNotEmpty()) {
+        val last = matches.last()
+        val index = last.range.first
+        val delimiterLength = last.value.length
+        if (index > 0 && index < name.length - delimiterLength) {
+            val row = name.substring(0, index)
+                .replace(Regex("\\s+"), " ")
+                .trim()
+                .trimEnd('-', ':', '|', '/', '\\')
+                .trim()
+            val col = name.substring(index + delimiterLength)
+                .replace(Regex("\\s+"), " ")
+                .trim()
+            if (row.isNotBlank() && col.isNotBlank()) {
+                return row to col
+            }
+        }
+    }
+    return null
+}
+
+private fun normalizeRowKey(value: String): String {
+    return value
+        .lowercase()
+        .replace(Regex("\\s+"), " ")
+        .replace(Regex("\\s*\\(.*?\\)\\s*"), " ")
+        .trim()
+}
+
+private fun formatRelativeTime(timestamp: Long): String {
+    return DateUtils.getRelativeTimeSpanString(
+        timestamp,
+        System.currentTimeMillis(),
+        DateUtils.MINUTE_IN_MILLIS
+    ).toString()
+}
 
 
 @Composable
@@ -108,7 +170,8 @@ fun SectionContent(
                 DataValueField(
                     dataValue = firstValue,
                     onValueChange = { value -> onValueChange(value, firstValue) },
-                    viewModel = viewModel
+                    viewModel = viewModel,
+                    showLabel = false
                 )
             } else {
                 // Has category combo - render nested category accordions
@@ -121,7 +184,8 @@ fun SectionContent(
                     viewModel = viewModel,
                     parentPath = listOf(elementKey),
                     expandedAccordions = expandedAccordions,
-                    onToggle = onToggle
+                    onToggle = onToggle,
+                    showElementHeader = false
                 )
             }
         }
@@ -133,17 +197,25 @@ fun DataElementRow(
     dataElementName: String,
     fields: List<DataValue?>,
     onValueChange: (String, DataValue) -> Unit,
-    viewModel: DataEntryViewModel
+    viewModel: DataEntryViewModel,
+    showHeader: Boolean = true
 ) {
     Column(modifier = Modifier
         .fillMaxWidth()
         .padding(vertical = 4.dp)) {
-        Text(text = dataElementName, style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.Bold)
+        if (showHeader) {
+            Text(
+                text = dataElementName,
+                style = MaterialTheme.typography.titleSmall,
+                fontWeight = FontWeight.Bold
+            )
+        }
         fields.filterNotNull().forEach { dataValue ->
             DataValueField(
                 dataValue = dataValue,
                 onValueChange = { value -> onValueChange(value, dataValue) },
-                viewModel = viewModel
+                viewModel = viewModel,
+                showLabel = false
             )
         }
     }
@@ -155,8 +227,12 @@ fun DataValueField(
     dataValue: DataValue,
     onValueChange: (String) -> Unit,
     viewModel: DataEntryViewModel,
-    enabled: Boolean = true
+    enabled: Boolean = true,
+    showLabel: Boolean = true,
+    labelOverride: String? = null,
+    compact: Boolean = false
 ) {
+    val effectiveShowLabel = showLabel && LocalShowFieldLabel.current
     val key = remember(dataValue.dataElement, dataValue.categoryOptionCombo) {
         "${dataValue.dataElement}|${dataValue.categoryOptionCombo}"
     }
@@ -184,10 +260,20 @@ fun DataValueField(
         !isDisabledByRule &&
         !isDisabledByMetadata
 
+    val labelText = if (effectiveShowLabel) {
+        val baseLabel = labelOverride?.ifBlank { null } ?: dataValue.dataElementName
+        baseLabel + if (isMandatoryByRule) " *" else ""
+    } else {
+        ""
+    }
+
     Column(
         modifier = Modifier
             .fillMaxWidth()
-            .padding(horizontal = 16.dp, vertical = 4.dp)
+            .padding(
+                horizontal = if (compact) 0.dp else 16.dp,
+                vertical = if (compact) 2.dp else 4.dp
+            )
             .let { base ->
                 if (!effectiveEnabled) {
                     base.background(
@@ -199,12 +285,17 @@ fun DataValueField(
     ) {
         when {
             optionSet != null && renderType != null -> {
+                val selectedOptionCode = if (!dataValue.value.isNullOrBlank()) {
+                    dataValue.value
+                } else {
+                    calculatedValue
+                }
                 when (renderType) {
                     RenderType.DROPDOWN -> {
                         com.ash.simpledataentry.presentation.dataEntry.components.OptionSetDropdown(
                             optionSet = optionSet,
-                            selectedCode = calculatedValue ?: dataValue.value,
-                            title = dataValue.dataElementName + if (isMandatoryByRule) " *" else "",
+                            selectedCode = selectedOptionCode,
+                            title = labelText,
                             isRequired = isMandatoryByRule,
                             enabled = effectiveEnabled,
                             onOptionSelected = { selectedCode ->
@@ -218,8 +309,8 @@ fun DataValueField(
                     RenderType.RADIO_BUTTONS -> {
                         com.ash.simpledataentry.presentation.dataEntry.components.OptionSetRadioGroup(
                             optionSet = optionSet,
-                            selectedCode = calculatedValue ?: dataValue.value,
-                            title = dataValue.dataElementName + if (isMandatoryByRule) " *" else "",
+                            selectedCode = selectedOptionCode,
+                            title = labelText,
                             isRequired = isMandatoryByRule,
                             enabled = effectiveEnabled,
                             onOptionSelected = { selectedCode ->
@@ -232,8 +323,8 @@ fun DataValueField(
                     }
                     RenderType.YES_NO_BUTTONS -> {
                         com.ash.simpledataentry.presentation.dataEntry.components.YesNoCheckbox(
-                            selectedValue = calculatedValue ?: dataValue.value,
-                            title = dataValue.dataElementName + if (isMandatoryByRule) " *" else "",
+                            selectedValue = selectedOptionCode,
+                            title = labelText,
                             isRequired = isMandatoryByRule,
                             enabled = effectiveEnabled,
                             onValueChanged = { newValue ->
@@ -247,8 +338,8 @@ fun DataValueField(
                     else -> {
                         com.ash.simpledataentry.presentation.dataEntry.components.OptionSetDropdown(
                             optionSet = optionSet,
-                            selectedCode = calculatedValue ?: dataValue.value,
-                            title = dataValue.dataElementName + if (isMandatoryByRule) " *" else "",
+                            selectedCode = selectedOptionCode,
+                            title = labelText,
                             isRequired = isMandatoryByRule,
                             enabled = effectiveEnabled,
                             onOptionSelected = { selectedCode ->
@@ -262,6 +353,15 @@ fun DataValueField(
                 }
             }
             dataValue.dataEntryType == DataEntryType.YES_NO -> {
+                val yesNoLabel = if (labelText.isNotBlank()) labelText else dataValue.dataElementName
+                if (yesNoLabel.isNotBlank()) {
+                    Text(
+                        text = yesNoLabel,
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        modifier = Modifier.padding(bottom = 8.dp)
+                    )
+                }
                 Row(
                     modifier = Modifier.fillMaxWidth(),
                     horizontalArrangement = Arrangement.spacedBy(4.dp)
@@ -284,12 +384,112 @@ fun DataValueField(
                     )
                 }
             }
+            dataValue.dataEntryType == DataEntryType.DATE -> {
+                var showDatePicker by remember { mutableStateOf(false) }
+                val isoFormat = remember { SimpleDateFormat("yyyy-MM-dd", Locale.US).apply { isLenient = false } }
+                val displayFormat = remember { SimpleDateFormat("dd/MM/yyyy", Locale.getDefault()).apply { isLenient = false } }
+                val fallbackFormat = remember { SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss.SSS", Locale.US).apply { isLenient = false } }
+                val fallbackFormatNoMillis = remember { SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss", Locale.US).apply { isLenient = false } }
+                val rawDateText = fieldState.text
+                val parsedDate = remember(rawDateText) {
+                    listOf(isoFormat, displayFormat, fallbackFormat, fallbackFormatNoMillis)
+                        .firstNotNullOfOrNull { formatter ->
+                            runCatching { formatter.parse(rawDateText) }.getOrNull()
+                        }
+                }
+                val displayValue = if (rawDateText.isBlank()) {
+                    ""
+                } else {
+                    parsedDate?.let { DatePickerUtils.formatDateForDisplay(it) } ?: rawDateText
+                }
+
+                OutlinedTextField(
+                    value = displayValue,
+                    onValueChange = {},
+                    readOnly = true,
+                    enabled = effectiveEnabled,
+                    label = { if (labelText.isNotBlank()) Text(labelText) },
+                    isError = dataValue.validationState == ValidationState.ERROR || error != null,
+                    trailingIcon = {
+                        IconButton(
+                            onClick = { showDatePicker = true },
+                            enabled = effectiveEnabled
+                        ) {
+                            Icon(
+                                imageVector = Icons.Default.DateRange,
+                                contentDescription = "Pick date"
+                            )
+                        }
+                    },
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .clickable(enabled = effectiveEnabled) { showDatePicker = true }
+                )
+
+                if (showDatePicker) {
+                    DatePickerDialog(
+                        onDateSelected = { date ->
+                            val isoValue = isoFormat.format(date)
+                            viewModel.onFieldValueChange(TextFieldValue(isoValue), dataValue)
+                            showDatePicker = false
+                        },
+                        onDismissRequest = { showDatePicker = false },
+                        initialDate = parsedDate ?: Date(),
+                        title = if (labelText.isNotBlank()) labelText else "Select date"
+                    )
+                }
+            }
+            dataValue.dataEntryType == DataEntryType.YES_ONLY -> {
+                val yesOnlyLabel = if (labelText.isNotBlank()) labelText else dataValue.dataElementName
+                val isChecked = (calculatedValue ?: dataValue.value)?.lowercase() in listOf("true", "1", "yes")
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(vertical = 4.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Checkbox(
+                        checked = isChecked,
+                        onCheckedChange = { checked ->
+                            if (effectiveEnabled) {
+                                val newValue = if (checked) "true" else ""
+                                onValueChange(newValue)
+                            }
+                        },
+                        enabled = effectiveEnabled
+                    )
+                    Spacer(modifier = Modifier.width(8.dp))
+                    Text(
+                        text = yesOnlyLabel,
+                        style = MaterialTheme.typography.bodyMedium
+                    )
+                }
+            }
+            dataValue.dataEntryType == DataEntryType.PHONE_NUMBER -> {
+                OutlinedTextField(
+                    value = fieldState,
+                    onValueChange = { newValue ->
+                        if (effectiveEnabled) {
+                            val cleaned = newValue.text.filter { it.isDigit() || it == '+' }
+                            viewModel.onFieldValueChange(
+                                newValue.copy(text = cleaned),
+                                dataValue
+                            )
+                        }
+                    },
+                    label = { if (labelText.isNotBlank()) Text(labelText) },
+                    isError = dataValue.validationState == ValidationState.ERROR || error != null,
+                    enabled = effectiveEnabled,
+                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Phone),
+                    modifier = Modifier.fillMaxWidth()
+                )
+            }
             dataValue.dataEntryType == DataEntryType.NUMBER ||
                     dataValue.dataEntryType == DataEntryType.INTEGER ||
                     dataValue.dataEntryType == DataEntryType.POSITIVE_INTEGER ||
                     dataValue.dataEntryType == DataEntryType.NEGATIVE_INTEGER -> {
                 InputNumber(
-                    title = dataValue.dataElementName + if (isMandatoryByRule) " *" else "",
+                    title = labelText,
                     state = when {
                         !effectiveEnabled -> InputShellState.DISABLED
                         dataValue.validationState == ValidationState.ERROR || error != null -> InputShellState.ERROR
@@ -305,7 +505,7 @@ fun DataValueField(
             }
             dataValue.dataEntryType == DataEntryType.PERCENTAGE -> {
                 InputText(
-                    title = dataValue.dataElementName + if (isMandatoryByRule) " *" else "",
+                    title = labelText,
                     state = when {
                         !effectiveEnabled -> InputShellState.DISABLED
                         dataValue.validationState == ValidationState.ERROR || error != null -> InputShellState.ERROR
@@ -321,7 +521,7 @@ fun DataValueField(
             }
             else -> {
                 InputText(
-                    title = dataValue.dataElementName + if (isMandatoryByRule) " *" else "",
+                    title = labelText,
                     state = when {
                         !effectiveEnabled -> InputShellState.DISABLED
                         dataValue.validationState == ValidationState.ERROR || error != null -> InputShellState.ERROR
@@ -367,7 +567,11 @@ fun DataElementAccordion(
             .fillMaxWidth()
             .padding(vertical = 6.dp),
         colors = CardDefaults.cardColors(
-            containerColor = MaterialTheme.colorScheme.surface
+            containerColor = if (hasData) {
+                MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.35f)
+            } else {
+                MaterialTheme.colorScheme.surface
+            }
         ),
         border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline.copy(alpha = 0.3f)),
         elevation = CardDefaults.cardElevation(defaultElevation = 2.dp),
@@ -435,7 +639,71 @@ fun DataElementAccordion(
                             .padding(start = 12.dp, end = 12.dp, bottom = 16.dp)
                             .bringIntoViewRequester(bringIntoViewRequester)
                     ) {
-                        content()
+                        CompositionLocalProvider(LocalShowFieldLabel provides false) {
+                            content()
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+@Composable
+@OptIn(ExperimentalLayoutApi::class)
+private fun GridRowCard(
+    rowTitle: String,
+    columns: List<ParsedGridField>,
+    onValueChange: (String, DataValue) -> Unit,
+    viewModel: DataEntryViewModel,
+    enabled: Boolean
+) {
+    val maxItems = when {
+        columns.size >= 3 -> 3
+        else -> 2
+    }
+    Card(
+        modifier = Modifier.fillMaxWidth(),
+        colors = CardDefaults.cardColors(
+            containerColor = MaterialTheme.colorScheme.surface
+        ),
+        border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline.copy(alpha = 0.2f)),
+        elevation = CardDefaults.cardElevation(defaultElevation = 1.dp),
+        shape = RoundedCornerShape(12.dp)
+    ) {
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(12.dp),
+            verticalArrangement = Arrangement.spacedBy(12.dp)
+        ) {
+            Text(
+                text = rowTitle,
+                style = MaterialTheme.typography.titleSmall,
+                fontWeight = FontWeight.SemiBold
+            )
+            CompositionLocalProvider(LocalShowFieldLabel provides true) {
+                FlowRow(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(12.dp),
+                    verticalArrangement = Arrangement.spacedBy(8.dp),
+                    maxItemsInEachRow = maxItems
+                ) {
+                    columns.forEach { field ->
+                        Column(
+                            modifier = Modifier
+                                .widthIn(min = 120.dp)
+                        ) {
+                            DataValueField(
+                                dataValue = field.dataValue,
+                                onValueChange = { value -> onValueChange(value, field.dataValue) },
+                                viewModel = viewModel,
+                                enabled = enabled,
+                                showLabel = true,
+                                labelOverride = field.columnTitle,
+                                compact = true
+                            )
+                        }
                     }
                 }
             }
@@ -543,6 +811,7 @@ fun CategoryAccordionRecursive(
     parentPath: List<String> = emptyList(),
     expandedAccordions: Map<List<String>, String?>,
     onToggle: (List<String>, String) -> Unit,
+    showElementHeader: Boolean = true
 ) {
     if (categories.size == 1 &&
         categories.first().second.size == 1 &&
@@ -553,7 +822,8 @@ fun CategoryAccordionRecursive(
                 dataElementName = dataValue.dataElementName,
                 fields = listOf(dataValue),
                 onValueChange = onValueChange,
-                viewModel = viewModel
+                viewModel = viewModel,
+                showHeader = showElementHeader
             )
         }
         return
@@ -564,7 +834,8 @@ fun CategoryAccordionRecursive(
                 dataElementName = dataValue.dataElementName,
                 fields = listOf(dataValue),
                 onValueChange = onValueChange,
-                viewModel = viewModel
+                viewModel = viewModel,
+                showHeader = showElementHeader
             )
         }
         return
@@ -614,7 +885,8 @@ fun CategoryAccordionRecursive(
                             DataValueField(
                                 dataValue = dataValue,
                                 onValueChange = { value -> onValueChange(value, dataValue) },
-                                viewModel = viewModel
+                                viewModel = viewModel,
+                                showLabel = false
                             )
                         }
                     }
@@ -644,7 +916,8 @@ fun CategoryAccordionRecursive(
                             DataValueField(
                                 dataValue = dataValue,
                                 onValueChange = { value -> onValueChange(value, dataValue) },
-                                viewModel = viewModel
+                                viewModel = viewModel,
+                                showLabel = false
                             )
                         }
                     }
@@ -680,7 +953,8 @@ fun CategoryAccordionRecursive(
                     viewModel = viewModel,
                     parentPath = newPath,
                     expandedAccordions = expandedAccordions,
-                    onToggle = onToggle
+                    onToggle = onToggle,
+                    showElementHeader = showElementHeader
                 )
             }
         }
@@ -1160,6 +1434,16 @@ fun EditEntryScreen(
                         },
                         hasSubsections = subsectionTitles.isNotEmpty()
                     )
+                    state.lastSyncTime?.let { lastSync ->
+                        Text(
+                            text = "Last sync: ${formatRelativeTime(lastSync)}",
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            modifier = Modifier
+                                .padding(horizontal = 16.dp)
+                                .padding(bottom = 8.dp)
+                        )
+                    }
 
                     val showFormContent = !state.isLoading && isUIReady
                     when {
@@ -1266,114 +1550,170 @@ fun EditEntryScreen(
                                             }
 
                                             // Section Content - Use key to prevent unnecessary recomposition
-                                            AnimatedVisibility(
-                                                visible = sectionIsExpanded,
-                                                modifier = Modifier.fillMaxWidth()
-                                            ) {
-                                                // Memoize the section content to prevent recomposition on every animation frame
-                                                val sectionContent = remember(sectionName, elementGroups, state.radioButtonGroups) {
-                                                    elementGroups
-                                                }
-
-                                                Column(
-                                                    modifier = Modifier
-                                                        .fillMaxWidth()
-                                                        .padding(start = 12.dp, end = 12.dp, bottom = 12.dp),
-                                                    verticalArrangement = Arrangement.spacedBy(8.dp)
+                                            if (sectionIsExpanded) {
+                                                AnimatedVisibility(
+                                                    visible = true,
+                                                    modifier = Modifier.fillMaxWidth()
                                                 ) {
-                                                    if (allElementsHaveDefaultCategories) {
-                                                        // All elements have default categories - render as simple vertical list
-                                                        Column(
-                                                            modifier = Modifier
-                                                                .fillMaxWidth()
-                                                                .padding(horizontal = 16.dp),
-                                                            verticalArrangement = Arrangement.spacedBy(8.dp)
-                                                        ) {
-                                                            // Collect all data elements for this section
-                                                            val allDataElements = sectionContent.values.flatten()
+                                                    // Memoize the section content to prevent recomposition on every animation frame
+                                                    val sectionContent = remember(sectionName, elementGroups, state.radioButtonGroups) {
+                                                        elementGroups
+                                                    }
 
-                                                            // Track which fields are part of grouped radio buttons
-                                                            val fieldsInGroups = state.radioButtonGroups.values.flatten().toSet()
+                                                    Column(
+                                                        modifier = Modifier
+                                                            .fillMaxWidth()
+                                                            .padding(start = 12.dp, end = 12.dp, bottom = 12.dp),
+                                                        verticalArrangement = Arrangement.spacedBy(8.dp)
+                                                    ) {
+                                                        if (allElementsHaveDefaultCategories) {
+                                                            // All elements have default categories - render as simple vertical list
+                                                            Column(
+                                                                modifier = Modifier
+                                                                    .fillMaxWidth()
+                                                                    .padding(horizontal = 16.dp),
+                                                                verticalArrangement = Arrangement.spacedBy(8.dp)
+                                                            ) {
+                                                                // Collect all data elements for this section
+                                                                val allDataElements = sectionContent.values.flatten()
 
-                                                            // Render grouped radio buttons first
-                                                            state.radioButtonGroups.forEach { (groupTitle, dataElementIds) ->
-                                                                // Only render groups where at least one field is in this section
-                                                                val groupFields = allDataElements.filter { it.dataElement in dataElementIds }
-                                                                if (groupFields.isNotEmpty()) {
-                                                                    // Get optionSet if available, otherwise provide empty one
-                                                                    // Note: GroupedRadioButtons doesn't actually use optionSet, it's just for API compatibility
-                                                                    val optionSet = groupFields.firstOrNull()?.let { state.optionSets[it.dataElement] }
-                                                                        ?: com.ash.simpledataentry.domain.model.OptionSet(id = "", name = "", options = emptyList())
+                                                                // Track which fields are part of grouped radio buttons
+                                                                val fieldsInGroups = state.radioButtonGroups.values.flatten().toSet()
 
-                                                                    // Find which field (if any) has value "YES" or "true"
-                                                                    val selectedFieldId = groupFields.firstOrNull {
-                                                                        it.value?.lowercase() in listOf("yes", "true", "1")
-                                                                    }?.dataElement
+                                                                // Render grouped radio buttons first
+                                                                state.radioButtonGroups.forEach { (groupTitle, dataElementIds) ->
+                                                                    // Only render groups where at least one field is in this section
+                                                                    val groupFields = allDataElements.filter { it.dataElement in dataElementIds }
+                                                                    if (groupFields.isNotEmpty()) {
+                                                                        // Get optionSet if available, otherwise provide empty one
+                                                                        // Note: GroupedRadioButtons doesn't actually use optionSet, it's just for API compatibility
+                                                                        val optionSet = groupFields.firstOrNull()?.let { state.optionSets[it.dataElement] }
+                                                                            ?: com.ash.simpledataentry.domain.model.OptionSet(id = "", name = "", options = emptyList())
 
-                                                                    com.ash.simpledataentry.presentation.dataEntry.components.GroupedRadioButtons(
-                                                                        groupTitle = groupTitle,
-                                                                        fields = groupFields,
-                                                                        selectedFieldId = selectedFieldId,
-                                                                        optionSet = optionSet,
-                                                                        enabled = true,
-                                                                        onFieldSelected = { selectedDataElementId ->
-                                                                            // Set selected field to YES, others to NO
-                                                                            groupFields.forEach { field ->
-                                                                                val newValue = if (field.dataElement == selectedDataElementId) "true" else "false"
-                                                                                onValueChange(newValue, field)
+                                                                        // Find which field (if any) has value "YES" or "true"
+                                                                        val selectedFieldId = groupFields.firstOrNull {
+                                                                            it.value?.lowercase() in listOf("yes", "true", "1")
+                                                                        }?.dataElement
+
+                                                                        com.ash.simpledataentry.presentation.dataEntry.components.GroupedRadioButtons(
+                                                                            groupTitle = groupTitle,
+                                                                            fields = groupFields,
+                                                                            selectedFieldId = selectedFieldId,
+                                                                            optionSet = optionSet,
+                                                                            enabled = true,
+                                                                            onFieldSelected = { selectedDataElementId ->
+                                                                                // Set selected field to YES, others to NO
+                                                                                groupFields.forEach { field ->
+                                                                                    val newValue = if (field.dataElement == selectedDataElementId) "true" else "false"
+                                                                                    onValueChange(newValue, field)
+                                                                                }
+                                                                            },
+                                                                            modifier = Modifier.fillMaxWidth()
+                                                                        )
+                                                                    }
+                                                                }
+
+                                                                // Then render individual fields (excluding grouped ones)
+                                                                // Use remember to prevent recomputation on every recomposition
+                                                                val individualFields = remember(sectionContent, fieldsInGroups, dataElementOrder) {
+                                                                    sectionContent.entries
+                                                                        .sortedBy { dataElementOrder[it.key] ?: Int.MAX_VALUE }
+                                                                        .flatMap { (_, dataValues) ->
+                                                                            dataValues.filter { it.dataElement !in fieldsInGroups }
+                                                                        }
+                                                                }
+
+                                                                val parsedFields = remember(individualFields) {
+                                                                    individualFields.mapNotNull { dataValue ->
+                                                                        val parsed = parseGridLabel(dataValue.dataElementName) ?: return@mapNotNull null
+                                                                        val rowKey = normalizeRowKey(parsed.first)
+                                                                        ParsedGridField(
+                                                                            rowTitle = parsed.first,
+                                                                            rowKey = rowKey,
+                                                                            columnTitle = parsed.second,
+                                                                            dataValue = dataValue
+                                                                        )
+                                                                    }
+                                                                }
+                                                                val gridRowCounts = remember(parsedFields) {
+                                                                    parsedFields.groupingBy { it.rowKey }.eachCount()
+                                                                }
+                                                                val gridRowTitles = remember(gridRowCounts) {
+                                                                    gridRowCounts.filter { it.value >= 2 }.keys
+                                                                }
+                                                                val parsedByKey = remember(parsedFields) {
+                                                                    parsedFields.associateBy {
+                                                                        "${it.dataValue.dataElement}|${it.dataValue.categoryOptionCombo}"
+                                                                    }
+                                                                }
+                                                                val gridColumnsByRow = remember(individualFields, parsedByKey, gridRowTitles) {
+                                                                    val map = LinkedHashMap<String, MutableList<ParsedGridField>>()
+                                                                    individualFields.forEach { dataValue ->
+                                                                        val key = "${dataValue.dataElement}|${dataValue.categoryOptionCombo}"
+                                                                        val parsed = parsedByKey[key]
+                                                                        if (parsed != null && parsed.rowKey in gridRowTitles) {
+                                                                            map.getOrPut(parsed.rowKey) { mutableListOf() }.add(parsed)
+                                                                        }
+                                                                    }
+                                                                    map
+                                                                }
+
+                                                                val renderedRows = mutableSetOf<String>()
+                                                                individualFields.forEach { dataValue ->
+                                                                    val key = "${dataValue.dataElement}|${dataValue.categoryOptionCombo}"
+                                                                    val parsed = parsedByKey[key]
+                                                                    if (parsed != null && parsed.rowKey in gridRowTitles) {
+                                                                        if (renderedRows.add(parsed.rowKey)) {
+                                                                            val columns = gridColumnsByRow[parsed.rowKey].orEmpty()
+                                                                            val rowTitle = columns.firstOrNull()?.rowTitle ?: parsed.rowTitle
+                                                                            key("grid_${parsed.rowKey}") {
+                                                                                GridRowCard(
+                                                                                    rowTitle = rowTitle,
+                                                                                    columns = columns,
+                                                                                    onValueChange = onValueChange,
+                                                                                    viewModel = viewModel,
+                                                                                    enabled = state.isEntryEditable && !state.isCompleted
+                                                                                )
                                                                             }
-                                                                        },
-                                                                        modifier = Modifier.fillMaxWidth()
-                                                                    )
-                                                                }
-                                                            }
-
-                                                            // Then render individual fields (excluding grouped ones)
-                                                            // Use remember to prevent recomputation on every recomposition
-                                                            val individualFields = remember(sectionContent, fieldsInGroups, dataElementOrder) {
-                                                                sectionContent.entries
-                                                                    .sortedBy { dataElementOrder[it.key] ?: Int.MAX_VALUE }
-                                                                    .flatMap { (_, dataValues) ->
-                                                                        dataValues.filter { it.dataElement !in fieldsInGroups }
+                                                                        }
+                                                                    } else {
+                                                                        key("field_${dataValue.dataElement}_${dataValue.categoryOptionCombo}") {
+                                                                            DataValueField(
+                                                                                dataValue = dataValue,
+                                                                                onValueChange = { value -> onValueChange(value, dataValue) },
+                                                                                viewModel = viewModel
+                                                                            )
+                                                                        }
                                                                     }
-                                                            }
-
-                                                            individualFields.forEach { dataValue ->
-                                                                key("field_${dataValue.dataElement}_${dataValue.categoryOptionCombo}") {
-                                                                    DataValueField(
-                                                                        dataValue = dataValue,
-                                                                        onValueChange = { value -> onValueChange(value, dataValue) },
-                                                                        viewModel = viewModel
-                                                                    )
                                                                 }
                                                             }
+                                                        } else {
+                                                            val sectionValues = sectionContent.values.flatten()
+                                                            SectionContent(
+                                                                sectionName = sectionName,
+                                                                values = sectionValues,
+                                                                valuesByCombo = state.valuesByCombo,
+                                                                valuesByElement = state.valuesByElement,
+                                                                dataElementsForSection = state.dataElementsBySection[sectionName].orEmpty(),
+                                                                categoryComboStructures = state.categoryComboStructures,
+                                                                optionUidsToComboUidByCombo = state.optionUidsToComboUid,
+                                                                onValueChange = onValueChange,
+                                                                viewModel = viewModel,
+                                                                expandedAccordions = expandedAccordions.value,
+                                                                onToggle = onAccordionToggle,
+                                                                onElementSelected = { dataElementId ->
+                                                                    val targetTitle = subsectionGroups
+                                                                        .firstOrNull { group ->
+                                                                            group.members.any { it.dataElement == dataElementId }
+                                                                        }
+                                                                        ?.groupTitle
+                                                                    val targetIndex = subsectionTitles.indexOf(targetTitle)
+                                                                    if (targetIndex >= 0) {
+                                                                        subsectionIndex = targetIndex
+                                                                    }
+                                                                }
+                                                            )
                                                         }
-                                                    } else {
-                                                        val sectionValues = sectionContent.values.flatten()
-                                                        SectionContent(
-                                                            sectionName = sectionName,
-                                                            values = sectionValues,
-                                                            valuesByCombo = state.valuesByCombo,
-                                                            valuesByElement = state.valuesByElement,
-                                                            dataElementsForSection = state.dataElementsBySection[sectionName].orEmpty(),
-                                                            categoryComboStructures = state.categoryComboStructures,
-                                                            optionUidsToComboUidByCombo = state.optionUidsToComboUid,
-                                                            onValueChange = onValueChange,
-                                                            viewModel = viewModel,
-                                                            expandedAccordions = expandedAccordions.value,
-                                                            onToggle = onAccordionToggle,
-                                                            onElementSelected = { dataElementId ->
-                                                                val targetTitle = subsectionGroups
-                                                                    .firstOrNull { group ->
-                                                                        group.members.any { it.dataElement == dataElementId }
-                                                                    }
-                                                                    ?.groupTitle
-                                                                val targetIndex = subsectionTitles.indexOf(targetTitle)
-                                                                if (targetIndex >= 0) {
-                                                                    subsectionIndex = targetIndex
-                                                                }
-                                                            }
-                                                        )
                                                     }
                                                 }
                                             }

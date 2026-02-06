@@ -71,6 +71,8 @@ class DataEntryRepositoryImpl @Inject constructor(
             ValueType.PERCENTAGE -> DataEntryType.PERCENTAGE
             ValueType.DATE -> DataEntryType.DATE
             ValueType.BOOLEAN -> DataEntryType.YES_NO
+            ValueType.TRUE_ONLY -> DataEntryType.YES_ONLY
+            ValueType.PHONE_NUMBER -> DataEntryType.PHONE_NUMBER
             ValueType.COORDINATE -> DataEntryType.COORDINATES
             //ValueType.OPTION_SET -> DataEntryType.MULTIPLE_CHOICE
             else -> DataEntryType.TEXT
@@ -122,6 +124,8 @@ class DataEntryRepositoryImpl @Inject constructor(
             "PERCENTAGE" -> DataEntryType.PERCENTAGE
             "DATE" -> DataEntryType.DATE
             "BOOLEAN" -> DataEntryType.YES_NO
+            "TRUE_ONLY" -> DataEntryType.YES_ONLY
+            "PHONE_NUMBER" -> DataEntryType.PHONE_NUMBER
             "COORDINATE" -> DataEntryType.COORDINATES
             else -> DataEntryType.TEXT
         }
@@ -146,9 +150,16 @@ class DataEntryRepositoryImpl @Inject constructor(
                     severity = ValidationState.ERROR
                 ))
             }
+            "PHONE_NUMBER" -> {
+                rules.add(ValidationRule(
+                    rule = "phone",
+                    message = "Please enter a valid phone number",
+                    severity = ValidationState.ERROR
+                ))
+            }
             "COORDINATE" -> {
                 rules.add(ValidationRule(
-                    rule = "coordinates", 
+                    rule = "coordinates",
                     message = "Please enter valid coordinates",
                     severity = ValidationState.ERROR
                 ))
@@ -416,8 +427,9 @@ class DataEntryRepositoryImpl @Inject constructor(
                 .blockingGet() ?: return DataValueValidationResult(false, ValidationState.ERROR, "Unknown data element type")
 
             // Check if value is required
-            if (value.isBlank() && dataElementObj.optionSet() == null && 
-                dataElementObj.valueType() != org.hisp.dhis.android.core.common.ValueType.BOOLEAN) {
+            if (value.isBlank() && dataElementObj.optionSet() == null &&
+                dataElementObj.valueType() != org.hisp.dhis.android.core.common.ValueType.BOOLEAN &&
+                dataElementObj.valueType() != org.hisp.dhis.android.core.common.ValueType.TRUE_ONLY) {
                 return DataValueValidationResult(false, ValidationState.ERROR, "This field is required")
             }
 
@@ -439,6 +451,31 @@ class DataEntryRepositoryImpl @Inject constructor(
                 org.hisp.dhis.android.core.common.ValueType.BOOLEAN -> {
                     if (value != "true" && value != "false") {
                         DataValueValidationResult(false, ValidationState.ERROR, "Please enter true or false")
+                    } else {
+                        DataValueValidationResult(true, ValidationState.VALID, null)
+                    }
+                }
+                org.hisp.dhis.android.core.common.ValueType.TRUE_ONLY -> {
+                    if (value.isNotBlank() && value != "true") {
+                        DataValueValidationResult(false, ValidationState.ERROR, "Value must be true or empty")
+                    } else {
+                        DataValueValidationResult(true, ValidationState.VALID, null)
+                    }
+                }
+                org.hisp.dhis.android.core.common.ValueType.DATE -> {
+                    try {
+                        val sdf = java.text.SimpleDateFormat("yyyy-MM-dd", java.util.Locale.US)
+                        sdf.isLenient = false
+                        sdf.parse(value)
+                        DataValueValidationResult(true, ValidationState.VALID, null)
+                    } catch (e: Exception) {
+                        DataValueValidationResult(false, ValidationState.ERROR, "Use date format YYYY-MM-DD")
+                    }
+                }
+                org.hisp.dhis.android.core.common.ValueType.PHONE_NUMBER -> {
+                    val regex = Regex("^\\+?[0-9]{6,15}$")
+                    if (!regex.matches(value)) {
+                        DataValueValidationResult(false, ValidationState.ERROR, "Please enter a valid phone number")
                     } else {
                         DataValueValidationResult(true, ValidationState.VALID, null)
                     }
@@ -524,6 +561,23 @@ class DataEntryRepositoryImpl @Inject constructor(
                 .blockingGet()
                 .map { it.uid() }
                 .toSet()
+        }
+    }
+
+    override suspend fun getDatasetIdsAttachedToOrgUnits(
+        orgUnitIds: Set<String>,
+        datasetIds: List<String>
+    ): Set<String> {
+        if (orgUnitIds.isEmpty() || datasetIds.isEmpty()) return emptySet()
+        return withContext(Dispatchers.IO) {
+            datasetIds.filter { datasetId ->
+                val attachedOrgUnits = d2.organisationUnitModule().organisationUnits()
+                    .byDataSetUids(listOf(datasetId))
+                    .blockingGet()
+                    .map { it.uid() }
+                    .toSet()
+                attachedOrgUnits.any { it in orgUnitIds }
+            }.toSet()
         }
     }
 
@@ -638,6 +692,26 @@ class DataEntryRepositoryImpl @Inject constructor(
             combos
                 .sortedBy { (it.displayName() ?: it.uid()).lowercase() }
                 .map { it.uid() to (it.displayName() ?: it.uid()) }
+        }
+    }
+
+    override suspend fun refreshDataValues(
+        datasetId: String,
+        period: String,
+        orgUnit: String,
+        attributeOptionCombo: String
+    ): Int {
+        return metadataCacheService.refreshDataValues(datasetId, period, orgUnit, attributeOptionCombo)
+    }
+
+    override suspend fun hasCachedDataValues(
+        datasetId: String,
+        period: String,
+        orgUnit: String,
+        attributeOptionCombo: String
+    ): Boolean {
+        return withContext(Dispatchers.IO) {
+            dataValueDao.getValuesForInstance(datasetId, period, orgUnit, attributeOptionCombo).isNotEmpty()
         }
     }
 

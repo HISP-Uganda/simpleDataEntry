@@ -156,6 +156,47 @@ class MetadataCacheService @Inject constructor(
             
         baseData.copy(sdkDataValues = sdkDataValues)
     }
+
+    /**
+     * Force-refresh data values for a specific dataset instance and cache them in Room.
+     * Returns the number of values fetched from the server.
+     */
+    suspend fun refreshDataValues(
+        datasetId: String,
+        period: String,
+        orgUnit: String,
+        attributeOptionCombo: String
+    ): Int = withContext(Dispatchers.IO) {
+        val defaultCombo = d2.categoryModule().categoryOptionCombos()
+            .byDisplayName().eq("default")
+            .one()
+            .blockingGet()
+            ?.uid()
+            .orEmpty()
+
+        val resolvedAttr = if (attributeOptionCombo.isBlank()) defaultCombo else attributeOptionCombo
+
+        val rawSdkDataValues = d2.dataValueModule().dataValues()
+            .byDataSetUid(datasetId)
+            .byPeriod().eq(period)
+            .byOrganisationUnitUid().eq(orgUnit)
+            .byAttributeOptionComboUid().eq(resolvedAttr)
+            .blockingGet()
+
+        if (rawSdkDataValues.isEmpty() && resolvedAttr != defaultCombo && defaultCombo.isNotBlank()) {
+            val fallbackValues = d2.dataValueModule().dataValues()
+                .byDataSetUid(datasetId)
+                .byPeriod().eq(period)
+                .byOrganisationUnitUid().eq(orgUnit)
+                .byAttributeOptionComboUid().eq(defaultCombo)
+                .blockingGet()
+            storeDataValuesInRoom(datasetId, period, orgUnit, defaultCombo, fallbackValues)
+            fallbackValues.size
+        } else {
+            storeDataValuesInRoom(datasetId, period, orgUnit, resolvedAttr, rawSdkDataValues)
+            rawSdkDataValues.size
+        }
+    }
     
     /**
      * Get sections for a dataset with caching
@@ -166,6 +207,10 @@ class MetadataCacheService @Inject constructor(
                 .withDataElements()
                 .byDataSetUid().eq(datasetId)
                 .blockingGet()
+                .sortedWith(
+                    compareBy<org.hisp.dhis.android.core.dataset.Section> { it.sortOrder() ?: Int.MAX_VALUE }
+                        .thenBy { it.displayName() ?: "" }
+                )
 
             if (sections.isEmpty()) {
                 val dataSet = d2.dataSetModule().dataSets()
