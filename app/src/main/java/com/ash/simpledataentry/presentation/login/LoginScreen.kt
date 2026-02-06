@@ -1034,9 +1034,8 @@ fun LoginScreen(
                 Button(
                     onClick = {
                         if (displayName.isNotBlank()) {
-                            val (serverUrl, username, password) = loginData.pendingCredentials!!
                             android.util.Log.d("LoginDebug", "Saving account: $displayName")
-                            viewModel.saveAccount(displayName, serverUrl, username, password)
+                            viewModel.savePendingAccount(displayName)
                         }
                     },
                     enabled = displayName.isNotBlank()

@@ -416,6 +416,22 @@ class LoginViewModel @Inject constructor(
         }
     }
 
+    fun savePendingAccount(displayName: String) {
+        val pending = getCurrentData().pendingCredentials
+        if (pending == null) {
+            val currentData = getCurrentData().copy(
+                saveAccountOffered = false,
+                pendingCredentials = null
+            )
+            _uiState.value = UiState.Error(
+                UiError.Local("No pending credentials to save"),
+                currentData
+            )
+            return
+        }
+        saveAccount(displayName, pending.first, pending.second, pending.third)
+    }
+
     /**
      * Logs in using a saved account with encrypted credentials.
      * Supports both offline login (using cached session) and online login with progress tracking.
