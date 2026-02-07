@@ -16,53 +16,45 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.filled.Apps
+import androidx.compose.material.icons.filled.AccessTime
 import androidx.compose.material.icons.filled.ArrowDropDown
 import androidx.compose.material.icons.filled.ChevronRight
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.BugReport
 import androidx.compose.material.icons.filled.Event
 import androidx.compose.material.icons.filled.Search
-import androidx.compose.material.icons.filled.FilterList
+import androidx.compose.material.icons.filled.AccountCircle
+import androidx.compose.material.icons.filled.Edit
+import androidx.compose.material.icons.filled.Home
 import androidx.compose.material.icons.filled.People
-import androidx.compose.material.icons.filled.Sort
 import androidx.compose.material.icons.filled.Storage
 import androidx.compose.material.icons.filled.Info
-import androidx.compose.material.icons.automirrored.filled.Logout
-import androidx.compose.material.icons.filled.Menu
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material.icons.filled.Sync
-import androidx.compose.material.icons.filled.DataUsage
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.CircularProgressIndicator
-import androidx.compose.material3.DrawerValue
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.ModalDrawerSheet
-import androidx.compose.material3.ModalNavigationDrawer
-import androidx.compose.material3.NavigationDrawerItem
-import androidx.compose.material3.NavigationDrawerItemDefaults
+import androidx.compose.material3.NavigationBar
+import androidx.compose.material3.NavigationBarItem
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.OutlinedTextFieldDefaults
 import androidx.compose.material3.ButtonDefaults
+import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Snackbar
 import androidx.compose.material3.SnackbarHost
 import androidx.compose.material3.SnackbarHostState
-import androidx.compose.material3.ScrollableTabRow
-import androidx.compose.material3.Tab
-import androidx.compose.material3.TabRowDefaults
-import androidx.compose.material3.TabRowDefaults.tabIndicatorOffset
+import androidx.compose.material3.TextField
+import androidx.compose.material3.TextFieldDefaults
 import androidx.compose.material3.Text
 import androidx.compose.material3.Surface
 import androidx.compose.material3.TextButton
-import androidx.compose.material3.HorizontalDivider
-import androidx.compose.material3.rememberDrawerState
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.runtime.Composable
@@ -71,7 +63,7 @@ import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
-import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -80,22 +72,14 @@ import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.hilt.navigation.compose.hiltViewModel
-import androidx.lifecycle.viewmodel.compose.viewModel
 import androidx.navigation.NavController
-import com.ash.simpledataentry.data.SessionManager
 import com.ash.simpledataentry.domain.model.FilterState
 import com.ash.simpledataentry.domain.model.DatasetPeriodType
 import com.ash.simpledataentry.domain.model.OrganisationUnit
 import com.ash.simpledataentry.domain.model.ProgramItem
 import com.ash.simpledataentry.domain.model.ProgramType as DomainProgramType
 import com.ash.simpledataentry.navigation.Screen
-import com.ash.simpledataentry.presentation.core.BaseScreen
 import com.ash.simpledataentry.presentation.core.OrgUnitTreeMultiPickerDialog
-import kotlinx.coroutines.launch
-import org.hisp.dhis.mobile.ui.designsystem.theme.TextColor
-import androidx.compose.animation.AnimatedVisibility
-import androidx.compose.animation.slideInVertically
-import androidx.compose.animation.slideOutVertically
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
@@ -103,8 +87,6 @@ import com.ash.simpledataentry.presentation.datasets.components.DatasetIcon
 import com.ash.simpledataentry.presentation.datasets.components.ProgramType
 import com.ash.simpledataentry.presentation.core.AdaptiveLoadingOverlay
 import com.ash.simpledataentry.presentation.core.UiState
-import com.ash.simpledataentry.presentation.core.LoadingOperation
-import com.ash.simpledataentry.ui.theme.DHIS2BlueDeep
 import com.ash.simpledataentry.ui.theme.DatasetAccent
 import com.ash.simpledataentry.ui.theme.DatasetAccentLight
 import com.ash.simpledataentry.ui.theme.EventAccent
@@ -112,6 +94,151 @@ import com.ash.simpledataentry.ui.theme.EventAccentLight
 import com.ash.simpledataentry.ui.theme.TrackerAccent
 import com.ash.simpledataentry.ui.theme.TrackerAccentLight
 import android.text.format.DateUtils
+
+@Composable
+private fun HomeCategoryCard(
+    title: String,
+    subtitle: String,
+    icon: androidx.compose.ui.graphics.vector.ImageVector,
+    isSelected: Boolean,
+    accentColor: Color,
+    onClick: () -> Unit,
+    modifier: Modifier = Modifier
+) {
+    val containerColor = MaterialTheme.colorScheme.surface
+    val borderColor = if (isSelected) accentColor else MaterialTheme.colorScheme.outlineVariant
+
+    Card(
+        modifier = modifier
+            .height(150.dp)
+            .clickable { onClick() },
+        shape = RoundedCornerShape(18.dp),
+        colors = CardDefaults.cardColors(containerColor = containerColor),
+        elevation = CardDefaults.cardElevation(defaultElevation = 4.dp),
+        border = BorderStroke(1.dp, borderColor)
+    ) {
+        Column(
+            modifier = Modifier
+                .fillMaxSize()
+                .padding(12.dp),
+            verticalArrangement = Arrangement.SpaceBetween,
+            horizontalAlignment = Alignment.Start
+        ) {
+            Box(
+                modifier = Modifier
+                    .size(40.dp)
+                    .background(
+                        color = accentColor.copy(alpha = 0.12f),
+                        shape = CircleShape
+                    ),
+                contentAlignment = Alignment.Center
+            ) {
+                Icon(
+                    imageVector = icon,
+                    contentDescription = null,
+                    tint = accentColor,
+                    modifier = Modifier.size(22.dp)
+                )
+            }
+
+            Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                Text(
+                    text = title,
+                    style = MaterialTheme.typography.titleMedium,
+                    color = MaterialTheme.colorScheme.onSurface
+                )
+                Text(
+                    text = subtitle,
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+            }
+
+            if (isSelected) {
+                Box(
+                    modifier = Modifier
+                        .height(4.dp)
+                        .fillMaxWidth(0.4f)
+                        .background(
+                            color = accentColor,
+                            shape = RoundedCornerShape(999.dp)
+                        )
+                )
+            }
+        }
+    }
+}
+
+@Composable
+private fun HomeRecentItem(
+    program: ProgramItem,
+    onClick: () -> Unit
+) {
+    val (accentColor, accentLightColor) = when (program.programType) {
+        DomainProgramType.DATASET -> DatasetAccent to DatasetAccentLight
+        DomainProgramType.EVENT -> EventAccent to EventAccentLight
+        DomainProgramType.TRACKER -> TrackerAccent to TrackerAccentLight
+        else -> DatasetAccent to DatasetAccentLight
+    }
+
+    Card(
+        modifier = Modifier.fillMaxWidth(),
+        shape = RoundedCornerShape(16.dp),
+        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
+        elevation = CardDefaults.cardElevation(defaultElevation = 2.dp),
+        onClick = onClick
+    ) {
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(12.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(12.dp)
+        ) {
+            Box(
+                modifier = Modifier
+                    .size(40.dp)
+                    .background(color = accentLightColor, shape = CircleShape),
+                contentAlignment = Alignment.Center
+            ) {
+                DatasetIcon(
+                    style = when (program) {
+                        is ProgramItem.DatasetProgram -> program.style
+                        else -> null
+                    },
+                    size = 18.dp,
+                    programType = when (program.programType) {
+                        DomainProgramType.DATASET -> ProgramType.DATASET
+                        DomainProgramType.TRACKER -> ProgramType.TRACKER_PROGRAM
+                        DomainProgramType.EVENT -> ProgramType.EVENT_PROGRAM
+                        else -> ProgramType.DATASET
+                    },
+                    tint = accentColor
+                )
+            }
+
+            Column(modifier = Modifier.weight(1f)) {
+                Text(
+                    text = program.name,
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.onSurface,
+                    maxLines = 1
+                )
+                Text(
+                    text = "${program.instanceCount} entries",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+            }
+
+            Icon(
+                imageVector = Icons.Default.ChevronRight,
+                contentDescription = null,
+                tint = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+        }
+    }
+}
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -167,7 +294,7 @@ fun DatasetsFilterSection(
                     )
                 )
             },
-            label = { Text("Search datasets", color = Color.White) },
+            label = { Text("Search programs", color = Color.White) },
             placeholder = { Text("Enter dataset name...", color = Color.White.copy(alpha = 0.7f)) },
             modifier = Modifier.fillMaxWidth(),
             leadingIcon = {
@@ -368,22 +495,12 @@ fun DatasetsScreen(
     navController: NavController,
     viewModel: DatasetsViewModel = hiltViewModel()
 ) {
-    val drawerState = rememberDrawerState(initialValue = DrawerValue.Closed)
-    val scope = rememberCoroutineScope()
     val uiState by viewModel.uiState.collectAsState()
     val snackbarHostState = remember { SnackbarHostState() }
-    var showDeleteConfirmation by remember { mutableStateOf(false) }
-    var showFilterSection by remember { mutableStateOf(false) }
-    var filterOrgUnits by remember { mutableStateOf<List<OrganisationUnit>>(emptyList()) }
-    var attachedOrgUnitIds by remember { mutableStateOf<Set<String>>(emptySet()) }
+    var selectedTab by rememberSaveable { mutableStateOf(HomeTab.Home) }
+    var searchQuery by remember { mutableStateOf("") }
     val activeAccountLabel by viewModel.activeAccountLabel.collectAsState()
     val activeAccountSubtitle by viewModel.activeAccountSubtitle.collectAsState()
-    val subtitle = when ((uiState as? UiState.Success)?.data?.currentProgramType ?: DomainProgramType.ALL) {
-        DomainProgramType.ALL -> "All programs"
-        DomainProgramType.DATASET -> "Datasets"
-        DomainProgramType.TRACKER -> "Tracker programs"
-        DomainProgramType.EVENT -> "Event programs"
-    }
     val syncState by viewModel.syncController.appSyncState.collectAsState()
     val backgroundSyncRunning by viewModel.backgroundSyncRunning.collectAsState()
     val isRefreshingAfterSync by viewModel.isRefreshingAfterSync.collectAsState()
@@ -395,606 +512,695 @@ fun DatasetsScreen(
         else -> "Up to date"
     }
 
-    // Do not auto-sync when navigating back; sync is login/ manual only.
-    LaunchedEffect(Unit) {
-        filterOrgUnits = runCatching { viewModel.getScopedOrgUnits() }.getOrDefault(emptyList())
+    Scaffold(
+        bottomBar = {
+            NavigationBar {
+                NavigationBarItem(
+                    selected = selectedTab == HomeTab.Activities,
+                    onClick = { selectedTab = HomeTab.Activities },
+                    icon = { Icon(Icons.Default.AccessTime, contentDescription = null) },
+                    label = { Text("Activities") }
+                )
+                NavigationBarItem(
+                    selected = selectedTab == HomeTab.Home,
+                    onClick = { selectedTab = HomeTab.Home },
+                    icon = { Icon(Icons.Default.Home, contentDescription = null) },
+                    label = { Text("DHIS2 Home") }
+                )
+                NavigationBarItem(
+                    selected = selectedTab == HomeTab.Account,
+                    onClick = { selectedTab = HomeTab.Account },
+                    icon = { Icon(Icons.Default.AccountCircle, contentDescription = null) },
+                    label = { Text("My Account") }
+                )
+            }
+        }
+    ) { innerPadding ->
+        AdaptiveLoadingOverlay(
+            uiState = uiState,
+            modifier = Modifier
+                .fillMaxSize()
+                .padding(innerPadding)
+        ) {
+            val data = when (val state = uiState) {
+                is UiState.Success -> state.data
+                is UiState.Error -> state.previousData ?: DatasetsData()
+                is UiState.Loading -> DatasetsData()
+            }
+
+            LaunchedEffect(data.syncMessage) {
+                data.syncMessage?.let { message ->
+                    snackbarHostState.showSnackbar(message)
+                    viewModel.clearSyncMessage()
+                }
+            }
+
+            LaunchedEffect(data.currentFilter.searchQuery) {
+                if (searchQuery != data.currentFilter.searchQuery) {
+                    searchQuery = data.currentFilter.searchQuery
+                }
+            }
+
+            val applySearch: (String) -> Unit = { query ->
+                val trimmed = query.trim()
+                viewModel.applyFilter(data.currentFilter.copy(searchQuery = trimmed))
+                if (trimmed.isBlank()) {
+                    viewModel.filterByProgramType(DomainProgramType.ALL)
+                } else {
+                    val matchingTypes = data.programs.filter { program ->
+                        program.name.contains(trimmed, ignoreCase = true) ||
+                            (program.description?.contains(trimmed, ignoreCase = true) == true)
+                    }.map { it.programType }.distinct()
+                    if (matchingTypes.size == 1) {
+                        viewModel.filterByProgramType(matchingTypes.first())
+                    }
+                }
+            }
+
+            val recentPrograms = remember(data.programs) {
+                data.programs
+                    .filter { it.instanceCount > 0 }
+                    .sortedByDescending { it.instanceCount }
+                    .take(8)
+            }
+
+            when (selectedTab) {
+                HomeTab.Home -> {
+                    HomeContent(
+                        navController = navController,
+                        data = data,
+                        recentPrograms = recentPrograms,
+                        searchQuery = searchQuery,
+                        onSearchChange = {
+                            searchQuery = it
+                            applySearch(it)
+                        },
+                        onProgramTypeSelected = { viewModel.filterByProgramType(it) },
+                        onProgramSelected = { viewModel.prefetchProgramIfNeeded(it) },
+                        onSyncClick = {
+                            if (uiState !is UiState.Loading) {
+                                viewModel.downloadOnlySync()
+                            }
+                        },
+                        syncInProgress = syncState.isRunning,
+                        activeAccountLabel = activeAccountLabel,
+                        lastSyncLabel = lastSyncLabel,
+                        syncStatusLabel = syncStatusLabel,
+                        syncState = syncState
+                    )
+                }
+
+                HomeTab.Activities -> {
+                    ActivitiesContent(
+                        recentPrograms = recentPrograms,
+                        navController = navController,
+                        activeAccountLabel = activeAccountLabel
+                    )
+                }
+
+                HomeTab.Account -> {
+                    AccountContent(
+                        activeAccountLabel = activeAccountLabel,
+                        activeAccountSubtitle = activeAccountSubtitle,
+                        onEditAccount = { navController.navigate(Screen.EditAccountScreen.route) },
+                        onSettings = { navController.navigate(Screen.SettingsScreen.route) },
+                        onAbout = { navController.navigate(Screen.AboutScreen.route) },
+                        onReportIssues = { navController.navigate(Screen.ReportIssuesScreen.route) },
+                        onLogout = {
+                            viewModel.logout()
+                            navController.navigate("login") { popUpTo(0) }
+                        }
+                    )
+                }
+            }
+
+            SnackbarHost(
+                hostState = snackbarHostState,
+                modifier = Modifier
+                    .fillMaxSize()
+                    .padding(16.dp),
+                snackbar = { data ->
+                    Snackbar(
+                        containerColor = MaterialTheme.colorScheme.surface,
+                        contentColor = Color.White
+                    ) {
+                        Text(
+                            data.visuals.message,
+                            style = MaterialTheme.typography.bodyLarge
+                        )
+                    }
+                }
+            )
+        }
     }
 
-    ModalNavigationDrawer(
-        drawerState = drawerState,
-        drawerContent = {
-            ModalDrawerSheet {
-                Spacer(modifier = Modifier.height(16.dp))
-                val headerTitle = activeAccountLabel ?: "Menu"
-                val headerSubtitle = activeAccountSubtitle.orEmpty()
-                Column(modifier = Modifier.padding(horizontal = 16.dp, vertical = 12.dp)) {
-                    Text(
-                        text = headerTitle,
-                        style = MaterialTheme.typography.titleMedium,
-                        color = MaterialTheme.colorScheme.onSurface
-                    )
-                    if (headerSubtitle.isNotBlank()) {
+}
+
+private enum class HomeTab {
+    Activities,
+    Home,
+    Account
+}
+
+@Composable
+private fun HomeContent(
+    navController: NavController,
+    data: DatasetsData,
+    recentPrograms: List<ProgramItem>,
+    searchQuery: String,
+    onSearchChange: (String) -> Unit,
+    onProgramTypeSelected: (DomainProgramType) -> Unit,
+    onProgramSelected: (ProgramItem) -> Unit,
+    onSyncClick: () -> Unit,
+    syncInProgress: Boolean,
+    activeAccountLabel: String?,
+    lastSyncLabel: String,
+    syncStatusLabel: String,
+    syncState: com.ash.simpledataentry.data.sync.AppSyncState
+) {
+    val welcomeName = activeAccountLabel ?: "User"
+    val programs = data.filteredPrograms
+    val showProgramList = searchQuery.isNotBlank() || data.currentProgramType != DomainProgramType.ALL
+
+    Box(modifier = Modifier.fillMaxSize()) {
+        LazyColumn(
+            modifier = Modifier.fillMaxSize(),
+            contentPadding = PaddingValues(bottom = 140.dp)
+        ) {
+            item {
+                Column(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = 16.dp, vertical = 12.dp),
+                    verticalArrangement = Arrangement.spacedBy(6.dp)
+                ) {
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.SpaceBetween
+                    ) {
                         Text(
-                            text = headerSubtitle,
+                            text = "DHIS2 Home",
+                            style = MaterialTheme.typography.titleLarge,
+                            color = MaterialTheme.colorScheme.onSurface
+                        )
+                        IconButton(onClick = onSyncClick) {
+                            if (syncInProgress) {
+                                CircularProgressIndicator(
+                                    modifier = Modifier.size(20.dp),
+                                    strokeWidth = 2.dp
+                                )
+                            } else {
+                                Icon(
+                                    imageVector = Icons.Default.Sync,
+                                    contentDescription = "Sync data",
+                                    tint = MaterialTheme.colorScheme.primary
+                                )
+                            }
+                        }
+                    }
+                    Text(
+                        text = "Welcome, $welcomeName",
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
+            }
+
+            item {
+                Spacer(modifier = Modifier.height(8.dp))
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = 16.dp),
+                    horizontalArrangement = Arrangement.spacedBy(12.dp)
+                ) {
+                    HomeCategoryCard(
+                        title = "Datasets",
+                        subtitle = "Data Collection",
+                        icon = Icons.Default.Storage,
+                        isSelected = data.currentProgramType == DomainProgramType.DATASET,
+                        accentColor = DatasetAccent,
+                        onClick = { onProgramTypeSelected(DomainProgramType.DATASET) },
+                        modifier = Modifier.weight(1f)
+                    )
+                    HomeCategoryCard(
+                        title = "Tracker",
+                        subtitle = "Follow Up",
+                        icon = Icons.Default.People,
+                        isSelected = data.currentProgramType == DomainProgramType.TRACKER,
+                        accentColor = TrackerAccent,
+                        onClick = { onProgramTypeSelected(DomainProgramType.TRACKER) },
+                        modifier = Modifier.weight(1f)
+                    )
+                    HomeCategoryCard(
+                        title = "Events",
+                        subtitle = "Event Entry",
+                        icon = Icons.Default.Event,
+                        isSelected = data.currentProgramType == DomainProgramType.EVENT,
+                        accentColor = EventAccent,
+                        onClick = { onProgramTypeSelected(DomainProgramType.EVENT) },
+                        modifier = Modifier.weight(1f)
+                    )
+                }
+            }
+
+            if (showProgramList) {
+                if (programs.isEmpty()) {
+                    item {
+                        val showMessage = data.currentProgramType != DomainProgramType.ALL ||
+                            data.currentFilter.searchQuery.isNotBlank()
+                        if (showMessage) {
+                            Box(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .padding(24.dp),
+                                contentAlignment = Alignment.Center
+                            ) {
+                                Column(
+                                    horizontalAlignment = Alignment.CenterHorizontally,
+                                    verticalArrangement = Arrangement.spacedBy(8.dp)
+                                ) {
+                                    Text(
+                                        text = "No programs found",
+                                        style = MaterialTheme.typography.titleMedium,
+                                        color = MaterialTheme.colorScheme.onSurface
+                                    )
+                                    Text(
+                                        text = "Try re-sync to retrieve metadata.",
+                                        style = MaterialTheme.typography.bodySmall,
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                        textAlign = TextAlign.Center
+                                    )
+                                    TextButton(onClick = onSyncClick) {
+                                        Text("Sync metadata")
+                                    }
+                                }
+                            }
+                        }
+                    }
+                } else {
+                    items(items = programs, key = { it.id }) { program ->
+                    Card(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(horizontal = 16.dp, vertical = 4.dp),
+                        colors = CardDefaults.cardColors(
+                            containerColor = MaterialTheme.colorScheme.surface
+                        ),
+                            elevation = CardDefaults.cardElevation(
+                                defaultElevation = 2.dp,
+                                pressedElevation = 4.dp
+                            ),
+                        onClick = {
+                            onProgramSelected(program)
+                            val route = when (program.programType) {
+                                DomainProgramType.TRACKER -> "TrackerEnrollments/${program.id}/${program.name}"
+                                DomainProgramType.EVENT -> "EventInstances/${program.id}/${program.name}"
+                                else -> "DatasetInstances/${program.id}/${program.name}"
+                            }
+                            navController.navigate(route)
+                        }
+                        ) {
+                            Row(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .padding(16.dp),
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.spacedBy(12.dp)
+                            ) {
+                                val (accentColor, accentLightColor) = when (program.programType) {
+                                    DomainProgramType.DATASET -> DatasetAccent to DatasetAccentLight
+                                    DomainProgramType.EVENT -> EventAccent to EventAccentLight
+                                    DomainProgramType.TRACKER -> TrackerAccent to TrackerAccentLight
+                                    else -> DatasetAccent to DatasetAccentLight
+                                }
+
+                                Box(
+                                    modifier = Modifier
+                                        .size(44.dp)
+                                        .background(
+                                            color = accentLightColor,
+                                            shape = CircleShape
+                                        ),
+                                    contentAlignment = Alignment.Center
+                                ) {
+                                    DatasetIcon(
+                                        style = when (program) {
+                                            is ProgramItem.DatasetProgram -> program.style
+                                            else -> null
+                                        },
+                                        size = 22.dp,
+                                        programType = when (program.programType) {
+                                            DomainProgramType.DATASET -> ProgramType.DATASET
+                                            DomainProgramType.TRACKER -> ProgramType.TRACKER_PROGRAM
+                                            DomainProgramType.EVENT -> ProgramType.EVENT_PROGRAM
+                                            else -> ProgramType.DATASET
+                                        },
+                                        tint = accentColor
+                                    )
+                                }
+
+                                Column(
+                                    modifier = Modifier.weight(1f),
+                                    verticalArrangement = Arrangement.spacedBy(4.dp)
+                                ) {
+                                    val (countSingular, countPlural) = when (program.programType) {
+                                        DomainProgramType.DATASET -> "entry" to "entries"
+                                        DomainProgramType.TRACKER -> "enrollment" to "enrollments"
+                                        DomainProgramType.EVENT -> "event" to "events"
+                                        else -> "item" to "items"
+                                    }
+                                    val countLabel = if (program.instanceCount == 1) countSingular else countPlural
+                                    val countText = if (program.instanceCount > 0) {
+                                        "${program.instanceCount} $countLabel"
+                                    } else {
+                                        "No $countPlural yet"
+                                    }
+
+                                    Row(
+                                        verticalAlignment = Alignment.CenterVertically,
+                                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+                                    ) {
+                                        Text(
+                                            text = program.name,
+                                            style = MaterialTheme.typography.titleMedium,
+                                            color = MaterialTheme.colorScheme.onSurface,
+                                            maxLines = 2,
+                                            modifier = Modifier.weight(1f, fill = false)
+                                        )
+
+                                        Surface(
+                                            color = accentLightColor,
+                                            shape = RoundedCornerShape(12.dp)
+                                        ) {
+                                            Text(
+                                                text = program.instanceCount.toString(),
+                                                style = MaterialTheme.typography.labelSmall,
+                                                color = accentColor,
+                                                modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp)
+                                            )
+                                        }
+
+                                        Icon(
+                                            imageVector = Icons.Default.ChevronRight,
+                                            contentDescription = null,
+                                            tint = MaterialTheme.colorScheme.onSurfaceVariant
+                                        )
+                                    }
+
+                                    program.description?.let { description ->
+                                        if (description.isNotBlank()) {
+                                            Text(
+                                                text = description,
+                                                style = MaterialTheme.typography.bodyMedium,
+                                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                                maxLines = 2
+                                            )
+                                        }
+                                    }
+
+                                    Text(
+                                        text = countText,
+                                        style = MaterialTheme.typography.bodySmall,
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                                    )
+
+                                    Row(
+                                        verticalAlignment = Alignment.CenterVertically,
+                                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+                                    ) {
+                                        Text(
+                                            text = "Last sync: $lastSyncLabel",
+                                            style = MaterialTheme.typography.bodySmall,
+                                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                                        )
+                                        SyncStatusChip(
+                                            label = syncStatusLabel,
+                                            isError = !syncState.error.isNullOrBlank()
+                                        )
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        Row(
+            modifier = Modifier
+                .align(Alignment.BottomCenter)
+                .padding(horizontal = 16.dp, vertical = 16.dp)
+                .fillMaxWidth(),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(12.dp)
+        ) {
+            TextField(
+                value = searchQuery,
+                onValueChange = onSearchChange,
+                placeholder = { Text("Search programs...") },
+                leadingIcon = {
+                    Icon(
+                        imageVector = Icons.Default.Search,
+                        contentDescription = null
+                    )
+                },
+                singleLine = true,
+                modifier = Modifier.weight(1f),
+                colors = TextFieldDefaults.colors(
+                    focusedContainerColor = MaterialTheme.colorScheme.surfaceVariant,
+                    unfocusedContainerColor = MaterialTheme.colorScheme.surfaceVariant,
+                    disabledContainerColor = MaterialTheme.colorScheme.surfaceVariant,
+                    focusedIndicatorColor = Color.Transparent,
+                    unfocusedIndicatorColor = Color.Transparent
+                ),
+                shape = RoundedCornerShape(18.dp)
+            )
+
+            IconButton(
+                onClick = { navController.navigate(Screen.SettingsScreen.route) }
+            ) {
+                Icon(
+                    imageVector = Icons.Default.Settings,
+                    contentDescription = "Settings",
+                    tint = MaterialTheme.colorScheme.primary
+                )
+            }
+        }
+
+
+    }
+}
+
+@Composable
+private fun ActivitiesContent(
+    recentPrograms: List<ProgramItem>,
+    navController: NavController,
+    activeAccountLabel: String?
+) {
+    val welcomeName = activeAccountLabel ?: "User"
+
+    LazyColumn(
+        modifier = Modifier.fillMaxSize(),
+        contentPadding = PaddingValues(16.dp)
+    ) {
+        item {
+            Text(
+                text = "Activities",
+                style = MaterialTheme.typography.titleLarge,
+                color = MaterialTheme.colorScheme.onSurface
+            )
+            Text(
+                text = "Welcome, $welcomeName",
+                style = MaterialTheme.typography.bodyMedium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+            Spacer(modifier = Modifier.height(16.dp))
+        }
+
+        if (recentPrograms.isEmpty()) {
+            item {
+                Surface(
+                    color = MaterialTheme.colorScheme.surfaceVariant,
+                    shape = RoundedCornerShape(16.dp)
+                ) {
+                    Column(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(16.dp),
+                        verticalArrangement = Arrangement.spacedBy(6.dp)
+                    ) {
+                        Text(
+                            text = "No recent activity yet",
+                            style = MaterialTheme.typography.bodyMedium,
+                            color = MaterialTheme.colorScheme.onSurface
+                        )
+                        Text(
+                            text = "Your latest activity will appear here.",
                             style = MaterialTheme.typography.bodySmall,
                             color = MaterialTheme.colorScheme.onSurfaceVariant
                         )
                     }
                 }
-
-                HorizontalDivider(modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp))
-
-                Text(
-                    text = "Menu",
-                    style = MaterialTheme.typography.labelLarge,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    modifier = Modifier.padding(horizontal = 16.dp, vertical = 4.dp)
-                )
-
-                NavigationDrawerItem(
-                    icon = { Icon(Icons.Default.Settings, contentDescription = null) },
-                    label = { Text("Settings") },
-                    selected = false,
-                    onClick = {
-                        scope.launch {
-                            drawerState.close()
-                            navController.navigate("settings")
-                        }
-                    }
-                )
-
-                NavigationDrawerItem(
-                    icon = { Icon(Icons.Default.Info, contentDescription = null) },
-                    label = { Text("About") },
-                    selected = false,
-                    onClick = {
-                        scope.launch {
-                            drawerState.close()
-                            navController.navigate(Screen.AboutScreen.route)
-                        }
-                    }
-                )
-
-                NavigationDrawerItem(
-                    icon = { Icon(Icons.Default.BugReport, contentDescription = null) },
-                    label = { Text("Report Issues") },
-                    selected = false,
-                    onClick = {
-                        scope.launch {
-                            drawerState.close()
-                            navController.navigate(Screen.ReportIssuesScreen.route)
-                        }
-                    }
-                )
-
-                Spacer(modifier = Modifier.weight(1f))
-
-                HorizontalDivider(modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp))
-
-                Text(
-                    text = "Account",
-                    style = MaterialTheme.typography.labelLarge,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    modifier = Modifier.padding(horizontal = 16.dp, vertical = 4.dp)
-                )
-
-                NavigationDrawerItem(
-                    icon = { Icon(Icons.AutoMirrored.Filled.Logout, contentDescription = null) },
-                    label = { Text("Logout") },
-                    selected = false,
-                    onClick = {
-                        scope.launch {
-                            viewModel.logout()
-                            navController.navigate("login") {
-                                popUpTo(0)
-                            }
-                        }
-                    }
-                )
-
-                NavigationDrawerItem(
-                    icon = { Icon(Icons.Default.Delete, contentDescription = null) },
-                    label = { Text("Delete Account") },
-                    selected = false,
-                    onClick = { 
-                        scope.launch {
-                            drawerState.close()
-                            showDeleteConfirmation = true
-                        }
-                    },
-                    colors = NavigationDrawerItemDefaults.colors(
-                        unselectedIconColor = MaterialTheme.colorScheme.error,
-                        unselectedTextColor = MaterialTheme.colorScheme.error
-                    )
-                )
-                Spacer(modifier = Modifier.height(16.dp))
             }
-        },
-        gesturesEnabled = true
-    ) {
-        BaseScreen(
-            title = "Home",
-            subtitle = subtitle,
-            navController = navController,
-            actions = {
-                // Background loading indicator during sync
-                if (syncState.isRunning) {
-                    CircularProgressIndicator(
-                        modifier = Modifier.size(20.dp),
-                        strokeWidth = 2.dp,
-                        color = MaterialTheme.colorScheme.primary
-                    )
-                }
-
-                // Sync button
-                IconButton(
+        } else {
+            items(items = recentPrograms, key = { it.id }) { program ->
+                HomeRecentItem(
+                    program = program,
                     onClick = {
-                        if (uiState !is UiState.Loading) {
-                            viewModel.downloadOnlySync()
+                        val route = when (program.programType) {
+                            DomainProgramType.TRACKER -> "TrackerEnrollments/${program.id}/${program.name}"
+                            DomainProgramType.EVENT -> "EventInstances/${program.id}/${program.name}"
+                            else -> "DatasetInstances/${program.id}/${program.name}"
                         }
-                    }
-                ) {
-                    Icon(
-                        imageVector = Icons.Default.Sync,
-                        contentDescription = "Download latest data",
-                        tint = TextColor.OnSurface,
-                        modifier = Modifier.size(24.dp)
-                    )
-                }
-
-                IconButton(onClick = { showFilterSection = !showFilterSection }) {
-                    Icon(
-                        imageVector = Icons.Default.FilterList,
-                        contentDescription = "Filter & Sort",
-                        tint = if (showFilterSection) Color.White else TextColor.OnSurface,
-                        modifier = Modifier.size(24.dp)
-                    )
-                }
-            },
-            navigationIcon = {
-                IconButton(
-                    onClick = {
-                        scope.launch {
-                            drawerState.open()
-                        }
-                    }
-                ) {
-                    Icon(
-                        imageVector = Icons.Default.Menu,
-                        contentDescription = "Menu",
-                        tint = TextColor.OnSurface,
-                        modifier = Modifier.size(24.dp)
-                    )
-                }
-            }
-        ) {
-            AdaptiveLoadingOverlay(
-                uiState = uiState,
-                modifier = Modifier.fillMaxSize()
-            ) {
-                // Extract data safely from UiState
-                val data = when (val state = uiState) {
-                    is UiState.Success -> state.data
-                    is UiState.Error -> state.previousData ?: DatasetsData()
-                    is UiState.Loading -> DatasetsData()
-                }
-                val datasetIds = remember(data.programs) {
-                    data.programs
-                        .filterIsInstance<ProgramItem.DatasetProgram>()
-                        .map { it.id }
-                        .distinct()
-                }
-
-                LaunchedEffect(datasetIds) {
-                    attachedOrgUnitIds = runCatching {
-                        viewModel.getAttachedOrgUnitIdsForDatasets(datasetIds)
-                    }.getOrDefault(emptySet())
-                }
-
-                Column {
-                    // Pull-down filter section
-                    AnimatedVisibility(
-                        visible = showFilterSection,
-                        enter = slideInVertically(
-                            initialOffsetY = { -it },
-                            animationSpec = androidx.compose.animation.core.tween(200)
-                        ),
-                        exit = slideOutVertically(
-                            targetOffsetY = { -it },
-                            animationSpec = androidx.compose.animation.core.tween(150)
-                        )
-                    ) {
-                        Card(
-                            modifier = Modifier.fillMaxWidth(),
-                            colors = CardDefaults.cardColors(
-                                containerColor = DHIS2BlueDeep
-                            ),
-                            elevation = CardDefaults.cardElevation(defaultElevation = 6.dp),
-                            shape = RoundedCornerShape(topStart = 0.dp, topEnd = 0.dp, bottomStart = 8.dp, bottomEnd = 8.dp)
-                        ) {
-                            DatasetsFilterSection(
-                                currentFilter = data.currentFilter,
-                                orgUnits = filterOrgUnits,
-                                attachedOrgUnitIds = attachedOrgUnitIds,
-                                onApplyFilter = { newFilter ->
-                                    viewModel.applyFilter(newFilter)
-                                }
-                            )
-                        }
-                    }
-
-                    // Program type filter tabs
-                    ScrollableTabRow(
-                        selectedTabIndex = when (data.currentProgramType) {
-                            DomainProgramType.ALL -> 0
-                            DomainProgramType.DATASET -> 1
-                            DomainProgramType.TRACKER -> 2
-                            DomainProgramType.EVENT -> 3
-                        },
-                            modifier = Modifier.fillMaxWidth(),
-                            containerColor = MaterialTheme.colorScheme.surface,
-                            contentColor = MaterialTheme.colorScheme.onSurface,
-                            indicator = { tabPositions ->
-                                TabRowDefaults.SecondaryIndicator(
-                                    modifier = Modifier.tabIndicatorOffset(tabPositions[when (data.currentProgramType) {
-                                        DomainProgramType.ALL -> 0
-                                        DomainProgramType.DATASET -> 1
-                                        DomainProgramType.TRACKER -> 2
-                                        DomainProgramType.EVENT -> 3
-                                    }]),
-                                    color = MaterialTheme.colorScheme.primary
-                                )
-                            }
-                        ) {
-                            // All Programs Tab
-                            Tab(
-                                selected = data.currentProgramType == DomainProgramType.ALL,
-                                onClick = { viewModel.filterByProgramType(DomainProgramType.ALL) },
-                                text = { Text(text = "All", style = MaterialTheme.typography.labelMedium) },
-                                icon = {
-                                    Icon(
-                                        imageVector = Icons.Default.Apps,
-                                        contentDescription = null
-                                    )
-                                }
-                            )
-
-                            // Datasets Tab
-                            Tab(
-                                selected = data.currentProgramType == DomainProgramType.DATASET,
-                                onClick = { viewModel.filterByProgramType(DomainProgramType.DATASET) },
-                                text = { Text(text = "Datasets", style = MaterialTheme.typography.labelMedium) },
-                                icon = {
-                                    Icon(
-                                        imageVector = Icons.Default.Storage,
-                                        contentDescription = null
-                                    )
-                                }
-                            )
-
-                            // Tracker Programs Tab
-                            Tab(
-                                selected = data.currentProgramType == DomainProgramType.TRACKER,
-                                onClick = { viewModel.filterByProgramType(DomainProgramType.TRACKER) },
-                                text = { Text(text = "Tracker", style = MaterialTheme.typography.labelMedium) },
-                                icon = {
-                                    Icon(
-                                        imageVector = Icons.Default.People,
-                                        contentDescription = null
-                                    )
-                                }
-                            )
-
-                            // Event Programs Tab
-                            Tab(
-                                selected = data.currentProgramType == DomainProgramType.EVENT,
-                                onClick = { viewModel.filterByProgramType(DomainProgramType.EVENT) },
-                                text = { Text(text = "Events", style = MaterialTheme.typography.labelMedium) },
-                                icon = {
-                                    Icon(
-                                        imageVector = Icons.Default.Event,
-                                        contentDescription = null
-                                    )
-                                }
-                            )
-                        }
-
-                    // Show sync success message
-                    LaunchedEffect(data.syncMessage) {
-                        data.syncMessage?.let { message ->
-                            snackbarHostState.showSnackbar(message)
-                            // Don't clear immediately - let snackbar show first
-                            kotlinx.coroutines.delay(2000)
-                            viewModel.clearSyncMessage()
-                        }
-                    }
-
-                    // Main content - programs list
-                    val programs = data.filteredPrograms
-                    if (programs.isEmpty()) {
-                        val hasFilters = data.currentFilter != FilterState() || data.currentProgramType != DomainProgramType.ALL
-                        val headline = if (hasFilters) "No programs match your filters" else "No programs available"
-                        val guidance = if (hasFilters) {
-                            "Clear filters or change program type."
-                        } else {
-                            "Try syncing or confirm your account access."
-                        }
-
-                        Box(
-                            modifier = Modifier
-                                .fillMaxSize()
-                                .padding(24.dp),
-                            contentAlignment = Alignment.Center
-                        ) {
-                            Column(
-                                horizontalAlignment = Alignment.CenterHorizontally,
-                                verticalArrangement = Arrangement.spacedBy(8.dp)
-                            ) {
-                                Text(
-                                    text = headline,
-                                    style = MaterialTheme.typography.titleMedium,
-                                    color = MaterialTheme.colorScheme.onSurface
-                                )
-                                Text(
-                                    text = guidance,
-                                    style = MaterialTheme.typography.bodySmall,
-                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                    textAlign = TextAlign.Center
-                                )
-                                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                                    if (hasFilters) {
-                                        OutlinedButton(
-                                            onClick = {
-                                                viewModel.applyFilter(FilterState())
-                                                viewModel.filterByProgramType(DomainProgramType.ALL)
-                                            }
-                                        ) {
-                                            Text("Clear filters")
-                                        }
-                                    }
-                                    Button(
-                                        onClick = { viewModel.downloadOnlySync() }
-                                    ) {
-                                        Text("Sync now")
-                                    }
-                                }
-                            }
-                        }
-                    } else {
-                        LazyColumn(
-                            modifier = Modifier.fillMaxSize(),
-                            contentPadding = PaddingValues(16.dp),
-                            verticalArrangement = Arrangement.spacedBy(8.dp)
-                        ) {
-                            items(items = programs, key = { it.id }) { program ->
-                                Card(
-                                    modifier = Modifier.fillMaxWidth(),
-                                    colors = CardDefaults.cardColors(
-                                        containerColor = MaterialTheme.colorScheme.surface
-                                    ),
-                                    elevation = CardDefaults.cardElevation(
-                                        defaultElevation = 2.dp,
-                                        pressedElevation = 4.dp
-                                    ),
-                                    onClick = {
-                                        // Route to appropriate screen based on program type
-                                        val route = when (program.programType) {
-                                            DomainProgramType.TRACKER -> "TrackerEnrollments/${program.id}/${program.name}"
-                                            DomainProgramType.EVENT -> "EventInstances/${program.id}/${program.name}"
-                                            else -> "DatasetInstances/${program.id}/${program.name}"
-                                        }
-                                        navController.navigate(route)
-                                    }
-                                ) {
-                                    Row(
-                                        modifier = Modifier
-                                            .fillMaxWidth()
-                                            .padding(16.dp),
-                                        verticalAlignment = Alignment.CenterVertically,
-                                        horizontalArrangement = Arrangement.spacedBy(12.dp)
-                                    ) {
-                                        val (accentColor, accentLightColor) = when (program.programType) {
-                                            DomainProgramType.DATASET -> DatasetAccent to DatasetAccentLight
-                                            DomainProgramType.EVENT -> EventAccent to EventAccentLight
-                                            DomainProgramType.TRACKER -> TrackerAccent to TrackerAccentLight
-                                            else -> DatasetAccent to DatasetAccentLight
-                                        }
-
-                                        Box(
-                                            modifier = Modifier
-                                                .size(44.dp)
-                                                .background(
-                                                    color = accentLightColor,
-                                                    shape = CircleShape
-                                                ),
-                                            contentAlignment = Alignment.Center
-                                        ) {
-                                            DatasetIcon(
-                                                style = when (program) {
-                                                    is ProgramItem.DatasetProgram -> program.style
-                                                    else -> null
-                                                },
-                                                size = 22.dp,
-                                                programType = when (program.programType) {
-                                                    DomainProgramType.DATASET -> ProgramType.DATASET
-                                                    DomainProgramType.TRACKER -> ProgramType.TRACKER_PROGRAM
-                                                    DomainProgramType.EVENT -> ProgramType.EVENT_PROGRAM
-                                                    else -> ProgramType.DATASET
-                                                },
-                                                tint = accentColor
-                                            )
-                                        }
-
-                                        // Content column
-                                        Column(
-                                            modifier = Modifier.weight(1f),
-                                            verticalArrangement = Arrangement.spacedBy(4.dp)
-                                        ) {
-                                            val (countSingular, countPlural) = when (program.programType) {
-                                                DomainProgramType.DATASET -> "entry" to "entries"
-                                                DomainProgramType.TRACKER -> "enrollment" to "enrollments"
-                                                DomainProgramType.EVENT -> "event" to "events"
-                                                else -> "item" to "items"
-                                            }
-                                            val countLabel = if (program.instanceCount == 1) countSingular else countPlural
-                                            val countText = if (program.instanceCount > 0) {
-                                                "${program.instanceCount} $countLabel"
-                                            } else {
-                                                "No $countPlural yet"
-                                            }
-
-                                            // Title with program type badge
-                                            Row(
-                                                verticalAlignment = Alignment.CenterVertically,
-                                                horizontalArrangement = Arrangement.spacedBy(8.dp)
-                                            ) {
-                                                Text(
-                                                    text = program.name,
-                                                    style = MaterialTheme.typography.titleMedium,
-                                                    color = MaterialTheme.colorScheme.onSurface,
-                                                    maxLines = 2,
-                                                    modifier = Modifier.weight(1f, fill = false)
-                                                )
-
-                                                Surface(
-                                                    color = accentLightColor,
-                                                    shape = RoundedCornerShape(12.dp)
-                                                ) {
-                                                    Text(
-                                                        text = program.instanceCount.toString(),
-                                                        style = MaterialTheme.typography.labelSmall,
-                                                        color = accentColor,
-                                                        modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp)
-                                                    )
-                                                }
-
-                                                Icon(
-                                                    imageVector = Icons.Default.ChevronRight,
-                                                    contentDescription = null,
-                                                    tint = MaterialTheme.colorScheme.onSurfaceVariant
-                                                )
-                                            }
-
-                                            // Description (if available)
-                                            program.description?.let { description ->
-                                                if (description.isNotBlank()) {
-                                                    Text(
-                                                        text = description,
-                                                        style = MaterialTheme.typography.bodyMedium,
-                                                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                                        maxLines = 2
-                                                    )
-                                                }
-                                            }
-
-                                            Text(
-                                                text = countText,
-                                                style = MaterialTheme.typography.bodySmall,
-                                                color = MaterialTheme.colorScheme.onSurfaceVariant
-                                            )
-
-                                            Row(
-                                                verticalAlignment = Alignment.CenterVertically,
-                                                horizontalArrangement = Arrangement.spacedBy(8.dp)
-                                            ) {
-                                                Text(
-                                                    text = "Last sync: $lastSyncLabel",
-                                                    style = MaterialTheme.typography.bodySmall,
-                                                    color = MaterialTheme.colorScheme.onSurfaceVariant
-                                                )
-                                                SyncStatusChip(
-                                                    label = syncStatusLabel,
-                                                    isError = !syncState.error.isNullOrBlank()
-                                                )
-                                            }
-                                        }
-                                    }
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-                }
-
-                Box(modifier = Modifier.fillMaxSize()) {
-                    SnackbarHost(
-                        hostState = snackbarHostState,
-                        modifier = Modifier
-                            .align(Alignment.BottomCenter)
-                            .padding(16.dp),
-                        snackbar = { data ->
-                            Snackbar(
-                                containerColor = MaterialTheme.colorScheme.surface,
-                                contentColor = Color.White
-                            ) {
-                                Text(
-                                    data.visuals.message,
-                                    style = MaterialTheme.typography.bodyLarge
-                                )
-                            }
-                        }
-                    )
-                }
-            }
-
-            // Delete Account Confirmation Dialog
-            if (showDeleteConfirmation) {
-                val context = androidx.compose.ui.platform.LocalContext.current
-
-                AlertDialog(
-                    onDismissRequest = { showDeleteConfirmation = false },
-                    title = {
-                        Text(
-                            "Delete Account",
-                            color = MaterialTheme.colorScheme.error
-                        )
-                    },
-                    text = {
-                        Column {
-                            Text("Are you sure you want to delete your account?")
-                            Spacer(modifier = Modifier.height(8.dp))
-                            Text(
-                                "This will permanently delete:",
-                                style = MaterialTheme.typography.bodyMedium,
-                                fontWeight = FontWeight.Bold
-                            )
-                            Spacer(modifier = Modifier.height(4.dp))
-                            Text("• All saved login credentials")
-                            Text("• All downloaded data")
-                            Text("• All unsaved draft entries")
-                            Spacer(modifier = Modifier.height(8.dp))
-                            Text(
-                                "This action cannot be undone.",
-                                color = MaterialTheme.colorScheme.error,
-                                style = MaterialTheme.typography.bodySmall
-                            )
-                        }
-                    },
-                    confirmButton = {
-                        Button(
-                            onClick = {
-                                viewModel.deleteAccount(context)
-                                showDeleteConfirmation = false
-                                // Navigate to login after deletion
-                                navController.navigate("login") {
-                                    popUpTo(0)
-                                }
-                            },
-                            colors = ButtonDefaults.buttonColors(
-                                containerColor = MaterialTheme.colorScheme.error
-                            )
-                        ) {
-                            Text("Delete Account")
-                        }
-                    },
-                    dismissButton = {
-                        TextButton(
-                            onClick = { showDeleteConfirmation = false }
-                        ) {
-                            Text("Cancel")
-                        }
+                        navController.navigate(route)
                     }
                 )
+                Spacer(modifier = Modifier.height(8.dp))
             }
         }
+    }
+}
+
+@Composable
+private fun AccountContent(
+    activeAccountLabel: String?,
+    activeAccountSubtitle: String?,
+    onEditAccount: () -> Unit,
+    onSettings: () -> Unit,
+    onAbout: () -> Unit,
+    onReportIssues: () -> Unit,
+    onLogout: () -> Unit
+) {
+    val accountName = activeAccountLabel ?: "My Account"
+    val accountSubtitle = activeAccountSubtitle.orEmpty()
+
+    LazyColumn(
+        modifier = Modifier.fillMaxSize(),
+        contentPadding = PaddingValues(16.dp)
+    ) {
+        item {
+            Text(
+                text = "My Account",
+                style = MaterialTheme.typography.titleLarge,
+                color = MaterialTheme.colorScheme.onSurface
+            )
+            Spacer(modifier = Modifier.height(16.dp))
+        }
+
+        item {
+            Card(
+                shape = RoundedCornerShape(16.dp),
+                colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
+                elevation = CardDefaults.cardElevation(defaultElevation = 2.dp)
+            ) {
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(16.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(12.dp)
+                ) {
+                    Icon(
+                        imageVector = Icons.Default.AccountCircle,
+                        contentDescription = null,
+                        tint = MaterialTheme.colorScheme.primary,
+                        modifier = Modifier.size(40.dp)
+                    )
+                    Column(modifier = Modifier.weight(1f)) {
+                        Text(
+                            text = accountName,
+                            style = MaterialTheme.typography.titleMedium,
+                            color = MaterialTheme.colorScheme.onSurface
+                        )
+                        if (accountSubtitle.isNotBlank()) {
+                            Text(
+                                text = accountSubtitle,
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                        }
+                    }
+                }
+            }
+            Spacer(modifier = Modifier.height(16.dp))
+        }
+
+        item {
+            AccountRow(
+                icon = Icons.Default.Edit,
+                title = "Edit Account",
+                onClick = onEditAccount
+            )
+            AccountRow(
+                icon = Icons.Default.Settings,
+                title = "Settings",
+                onClick = onSettings
+            )
+            AccountRow(
+                icon = Icons.Default.Info,
+                title = "About",
+                onClick = onAbout
+            )
+            AccountRow(
+                icon = Icons.Default.BugReport,
+                title = "Report Issues",
+                onClick = onReportIssues
+            )
+        }
+
+        item {
+            Spacer(modifier = Modifier.height(24.dp))
+            Text(
+                text = "Version ${com.ash.simpledataentry.BuildConfig.VERSION_NAME}",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+            Spacer(modifier = Modifier.height(12.dp))
+            Button(
+                onClick = onLogout,
+                modifier = Modifier.fillMaxWidth()
+            ) {
+                Text("Logout")
+            }
+        }
+    }
+}
+
+@Composable
+private fun AccountRow(
+    icon: androidx.compose.ui.graphics.vector.ImageVector,
+    title: String,
+    titleColor: Color = MaterialTheme.colorScheme.onSurface,
+    onClick: () -> Unit
+) {
+    Card(
+        shape = RoundedCornerShape(14.dp),
+        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
+        elevation = CardDefaults.cardElevation(defaultElevation = 1.dp),
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(vertical = 6.dp)
+            .clickable { onClick() }
+    ) {
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(14.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(12.dp)
+        ) {
+            Icon(
+                imageVector = icon,
+                contentDescription = null,
+                tint = titleColor
+            )
+            Text(
+                text = title,
+                style = MaterialTheme.typography.bodyMedium,
+                color = titleColor
+            )
+        }
+    }
+}

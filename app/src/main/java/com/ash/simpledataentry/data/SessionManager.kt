@@ -32,6 +32,7 @@ import java.security.MessageDigest
 import java.nio.charset.StandardCharsets
 import org.hisp.dhis.android.core.maintenance.D2Error
 import org.hisp.dhis.android.core.maintenance.D2ErrorCode
+import java.util.concurrent.TimeUnit
 
 /**
  * Result of downloading a single metadata type
@@ -87,6 +88,13 @@ class SessionManager @Inject constructor(
             throwable is RuntimeException && throwable.cause is D2Error -> throwable.cause as D2Error
             else -> null
         }
+    }
+
+    private fun isOptionalUseCasesMissing(error: Throwable?): Boolean {
+        val message = error?.message ?: return false
+        return message.contains("stockUseCases", ignoreCase = true) ||
+            message.contains("USE_CASES", ignoreCase = true) ||
+            message.contains("E1005", ignoreCase = true)
     }
 
     /**
@@ -361,8 +369,6 @@ class SessionManager @Inject constructor(
             ))
 
             // Set this as the active account
-            accountManager.setActiveAccountId(context, accountInfo.accountId)
-
             // SECURITY ENHANCEMENT: Store password hash for secure offline validation
             val passwordHash = hashPassword(dhis2Config.password, dhis2Config.username + dhis2Config.serverUrl)
             val prefs = context.getSharedPreferences("session_prefs", Context.MODE_PRIVATE)
@@ -372,10 +378,6 @@ class SessionManager @Inject constructor(
                 putString("password_hash", passwordHash)
                 putLong("hash_created", System.currentTimeMillis())
             }
-
-            // Emit account change event for ViewModels (using accountId, not username@serverUrl)
-            _currentAccountId.value = accountInfo.accountId
-            Log.d("SessionManager", "Account changed, notifying observers: ${accountInfo.accountId}")
 
             // Step 3: Download Metadata (30-80%) - RESILIENT, UI LOCKED
             // Use resilient metadata download with granular progress feedback
@@ -410,6 +412,13 @@ class SessionManager @Inject constructor(
                     Log.w("SessionManager", "Non-critical metadata '${failure.type}' failed but continuing: ${failure.error}")
                 }
             }
+
+            // Now that metadata is available, mark account as active
+            accountManager.setActiveAccountId(context, accountInfo.accountId)
+
+            // Emit account change event for ViewModels (using accountId, not username@serverUrl)
+            _currentAccountId.value = accountInfo.accountId
+            Log.d("SessionManager", "Account changed, notifying observers: ${accountInfo.accountId}")
 
             onProgress(NavigationProgress(
                 phase = LoadingPhase.DOWNLOADING_METADATA,
@@ -491,7 +500,23 @@ class SessionManager @Inject constructor(
 
             Log.e("SessionManager", "Enhanced login failed: errorCode=$errorCode, description=${d2Error?.errorDescription()}", e)
             onProgress(NavigationProgress.error(userMessage))
-            throw e
+            secureLogout(context)
+            accountManager.clearActiveAccountId(context)
+            _currentAccountId.value = null
+
+            val mappedException = when (errorCode) {
+                D2ErrorCode.SERVER_CONNECTION_ERROR,
+                D2ErrorCode.UNKNOWN_HOST,
+                D2ErrorCode.SOCKET_TIMEOUT,
+                D2ErrorCode.SSL_ERROR,
+                D2ErrorCode.URL_NOT_FOUND,
+                D2ErrorCode.SERVER_URL_MALFORMED -> java.io.IOException(userMessage)
+                D2ErrorCode.BAD_CREDENTIALS,
+                D2ErrorCode.USER_ACCOUNT_DISABLED,
+                D2ErrorCode.USER_ACCOUNT_LOCKED -> SecurityException(userMessage)
+                else -> Exception(userMessage)
+            }
+            throw mappedException
         }
     }
 
@@ -842,6 +867,7 @@ class SessionManager @Inject constructor(
 
         var lastError: String? = null
         val maxRetries = 3
+        val progressTimeoutSeconds = 60L
 
         for (attempt in 1..maxRetries) {
             Log.d("SessionManager", "Metadata download attempt $attempt of $maxRetries")
@@ -858,25 +884,37 @@ class SessionManager @Inject constructor(
             try {
                 // Following official DHIS2 Capture app pattern:
                 // Use non-blocking download() with onErrorComplete() to swallow errors
-                io.reactivex.Completable.fromObservable(
-                    d2Instance.metadataModule().download()
-                        .doOnNext { progress ->
-                            val percent = progress.percentage() ?: 0.0
-                            Log.d("SessionManager", "Metadata progress: ${percent.toInt()}%")
+                val downloadObservable = d2Instance.metadataModule().download()
+                    .doOnNext { progress ->
+                        val percent = progress.percentage() ?: 0.0
+                        Log.d("SessionManager", "Metadata progress: ${percent.toInt()}%")
+                        onProgress(NavigationProgress(
+                            phase = LoadingPhase.DOWNLOADING_METADATA,
+                            overallPercentage = 30 + (percent * 0.5).toInt(),
+                            phaseTitle = "Downloading Metadata",
+                            phaseDetail = "Progress: ${percent.toInt()}%"
+                        ))
+                    }
+                    .timeout(progressTimeoutSeconds, TimeUnit.SECONDS)
+
+                io.reactivex.Completable.fromObservable(downloadObservable)
+                    .doOnError { error ->
+                        if (isOptionalUseCasesMissing(error)) {
+                            Log.w("SessionManager", "Optional server config missing: USE_CASES/stockUseCases (continuing)")
                             onProgress(NavigationProgress(
                                 phase = LoadingPhase.DOWNLOADING_METADATA,
-                                overallPercentage = 30 + (percent * 0.5).toInt(),
+                                overallPercentage = 35,
                                 phaseTitle = "Downloading Metadata",
-                                phaseDetail = "Progress: ${percent.toInt()}%"
+                                phaseDetail = "Optional server config missing (USE_CASES/stockUseCases). Ask admin to add it."
                             ))
+                            downloadError = null
+                        } else {
+                            Log.w("SessionManager", "Metadata download error: ${error.message}")
+                            downloadError = error.message
                         }
-                )
-                .doOnError { error ->
-                    Log.w("SessionManager", "Metadata download error: ${error.message}")
-                    downloadError = error.message
-                }
-                .onErrorComplete() // Swallow errors like official app
-                .blockingAwait()
+                    }
+                    .onErrorComplete { error -> isOptionalUseCasesMissing(error) }
+                    .blockingAwait()
 
                 Log.d("SessionManager", "Metadata download stream completed for attempt $attempt")
             } catch (e: Exception) {

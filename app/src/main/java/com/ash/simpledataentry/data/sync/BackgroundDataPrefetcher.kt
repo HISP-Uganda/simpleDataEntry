@@ -25,7 +25,7 @@ class BackgroundDataPrefetcher @Inject constructor(
     /**
      * Start background prefetching after successful login
      */
-    fun startPrefetching() {
+    fun startPrefetching(topDatasetCount: Int = 3) {
         prefetchJob?.cancel()
         prefetchJob = CoroutineScope(Dispatchers.IO + SupervisorJob()).launch {
             try {
@@ -33,18 +33,34 @@ class BackgroundDataPrefetcher @Inject constructor(
 
                 // 1. Pre-warm metadata caches for all available datasets
                 datasetDao.getAll().collect { datasets ->
-                    val datasetIds = datasets.map { it.id }
+                    val datasetIds = datasets.map { it.id }.take(topDatasetCount)
 
                     Log.d("BackgroundDataPrefetcher", "Pre-warming caches for ${datasetIds.size} datasets")
                     metadataCacheService.preWarmCaches(datasetIds)
 
                     // 2. Pre-fetch recent data values for commonly used datasets (optional)
-                    prefetchRecentDataValues(datasetIds.take(5)) // Limit to top 5 datasets to avoid excessive API calls
+                    prefetchRecentDataValues(datasetIds)
 
                     Log.d("BackgroundDataPrefetcher", "Background prefetching completed successfully")
                 }
             } catch (e: Exception) {
                 Log.w("BackgroundDataPrefetcher", "Background prefetching failed", e)
+            }
+        }
+    }
+
+    /**
+     * Preload metadata (and a small slice of data values) for a selected dataset.
+     * Used to speed up form preparation after user selection.
+     */
+    fun prefetchForDataset(datasetId: String) {
+        CoroutineScope(Dispatchers.IO + SupervisorJob()).launch {
+            try {
+                Log.d("BackgroundDataPrefetcher", "Prefetching data for dataset $datasetId")
+                metadataCacheService.preWarmCaches(listOf(datasetId))
+                prefetchRecentDataValues(listOf(datasetId))
+            } catch (e: Exception) {
+                Log.w("BackgroundDataPrefetcher", "Dataset prefetch failed for $datasetId", e)
             }
         }
     }

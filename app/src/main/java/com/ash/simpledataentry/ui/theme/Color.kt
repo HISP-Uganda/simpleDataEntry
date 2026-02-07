@@ -2,34 +2,38 @@ package com.ash.simpledataentry.ui.theme
 
 import androidx.compose.ui.graphics.Color
 
-// Primary brand and neutral tones inspired by the design-system bundle.
+// Clean clinical palette: cool neutrals with a strong primary.
 val BrandGreen = Color(0xFF16A34A)
-val BrandGreenDark = Color(0xFF15803D)
 val BrandGreenLight = Color(0xFFD1FAE5)
 
-// DHIS2 blue remains available for secondary accents and legacy usage.
-val DHIS2Blue = Color(0xFF0073E7)
-val DHIS2BlueLight = Color(0xFF4A90E2)
-val DHIS2BlueDark = Color(0xFF004BA0)
-val DHIS2BlueDeep = Color(0xFF1976D2)
+val ClinicalBlue = Color(0xFF0F6CBD)
+val ClinicalBlueLight = Color(0xFF5BA3E6)
+val ClinicalBlueDark = Color(0xFF0B4F8A)
+val ClinicalBlueContainer = Color(0xFFD7E9FF)
 
-// Neutral surfaces (matching design-system theme.css intent).
-val NeutralBackground = Color(0xFFFFFFFF)
+// Legacy DHIS2 color aliases (keep existing usages compiling)
+val DHIS2Blue = ClinicalBlue
+val DHIS2BlueLight = ClinicalBlueLight
+val DHIS2BlueDark = ClinicalBlueDark
+val DHIS2BlueDeep = ClinicalBlueDark
+
+// Cool neutral surfaces.
+val NeutralBackground = Color(0xFFF5F7FA)
 val NeutralSurface = Color(0xFFFFFFFF)
-val NeutralSurfaceVariant = Color(0xFFECECF0)
-val NeutralOutline = Color(0x1A000000) // 10% black
-val NeutralMuted = Color(0xFF717182)
-val NeutralOnSurface = Color(0xFF0F0F12)
+val NeutralSurfaceVariant = Color(0xFFE9EEF3)
+val NeutralOutline = Color(0xFFCBD5E1)
+val NeutralMuted = Color(0xFF64748B)
+val NeutralOnSurface = Color(0xFF1B2430)
 
 // Light theme colors
-val Primary40 = DHIS2Blue
-val PrimaryContainer40 = Color(0xFFDBEAFE)  // Light blue
-val Secondary40 = BrandGreen  // Green available as secondary accent
+val Primary40 = ClinicalBlue
+val PrimaryContainer40 = ClinicalBlueContainer
+val Secondary40 = BrandGreen
 
 // Dark theme colors
-val Primary80 = DHIS2BlueLight
-val PrimaryContainer80 = Color(0xFF1E3A5F)  // Dark blue
-val Secondary80 = BrandGreenLight  // Green as secondary accent
+val Primary80 = ClinicalBlueLight
+val PrimaryContainer80 = Color(0xFF19304A)
+val Secondary80 = BrandGreenLight
 
 // Legacy colors for compatibility
 val Purple80 = Primary80
@@ -45,8 +49,8 @@ val Pink40 = Color(0xFF7D5260)
 // ============================================
 
 // Dataset accent (blue)
-val DatasetAccent = Color(0xFF2563EB)        // blue-600
-val DatasetAccentLight = Color(0xFFDBEAFE)   // blue-100
+val DatasetAccent = ClinicalBlue
+val DatasetAccentLight = ClinicalBlueContainer
 
 // Event accent (orange)
 val EventAccent = Color(0xFFEA580C)          // orange-600

@@ -24,6 +24,7 @@ enum class DataEntryType {
     NUMBER,
     DATE,
     YES_NO,
+    YES_ONLY,
     MULTIPLE_CHOICE,
     COORDINATES,
     PERCENTAGE,
@@ -31,7 +32,8 @@ enum class DataEntryType {
     POSITIVE_INTEGER,
     NEGATIVE_INTEGER,
     POSITIVE_NUMBER,
-    NEGATIVE_NUMBER
+    NEGATIVE_NUMBER,
+    PHONE_NUMBER
 }
 
 sealed class DataEntryValidation {
@@ -65,6 +67,12 @@ fun DataEntryType.getDefaultValidation(): Array<DataEntryValidation> {
         DataEntryType.PERCENTAGE -> arrayOf(
             DataEntryValidation.Pattern("^\\d*\\.?\\d*$", "Please enter a valid percentage"),
             DataEntryValidation.MaxValue(100.0, "Percentage cannot exceed 100%")
+        )
+        DataEntryType.DATE -> arrayOf(
+            DataEntryValidation.Pattern("^\\d{4}-\\d{2}-\\d{2}$", "Use date format YYYY-MM-DD")
+        )
+        DataEntryType.PHONE_NUMBER -> arrayOf(
+            DataEntryValidation.Pattern("^\\+?[0-9]{6,15}$", "Please enter a valid phone number")
         )
         else -> emptyArray()
     }

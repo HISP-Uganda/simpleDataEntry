@@ -669,6 +669,7 @@ fun DatasetInstancesScreen(
         title = datasetName,
         subtitle = subtitle,
         navController = navController,
+        usePrimaryTopBar = false,
         syncStatusController = viewModel.syncController,
         actions = {
             IconButton(

@@ -27,6 +27,7 @@ import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
+import com.ash.simpledataentry.BuildConfig
 import org.json.JSONObject
 import java.net.HttpURLConnection
 import java.net.URL
@@ -46,7 +47,8 @@ data class SettingsData(
     val isDeleting: Boolean = false,
     val updateCheckInProgress: Boolean = false,
     val updateAvailable: Boolean = false,
-    val latestVersion: String? = null
+    val latestVersion: String? = null,
+    val currentVersion: String = BuildConfig.VERSION_NAME
 )
 
 
@@ -346,8 +348,8 @@ class SettingsViewModel @Inject constructor(
                     BackgroundOperation.Syncing
                 )
 
-                val currentVersion = "1.0" // Current app version from build.gradle
-                val latestVersion = fetchLatestVersionFromGitHub()
+                val currentVersion = normalizeVersion(getCurrentData().currentVersion)
+                val latestVersion = fetchLatestVersionFromGitHub()?.let(::normalizeVersion)
 
                 val updateAvailable = if (latestVersion != null) {
                     compareVersions(currentVersion, latestVersion) < 0
@@ -374,7 +376,7 @@ class SettingsViewModel @Inject constructor(
     private suspend fun fetchLatestVersionFromGitHub(): String? = withContext(Dispatchers.IO) {
         try {
             // Note: Replace with actual GitHub repository URL
-            val githubApiUrl = "https://api.github.com/repos/username/simpleDataEntry/releases/latest"
+            val githubApiUrl = "https://api.github.com/repos/HISP-Uganda/simpleDataEntry/releases/latest"
             val url = URL(githubApiUrl)
             val connection = url.openConnection() as HttpURLConnection
             
@@ -426,5 +428,9 @@ class SettingsViewModel @Inject constructor(
         }
         
         return 0
+    }
+
+    private fun normalizeVersion(version: String): String {
+        return Regex("\\d+(?:\\.\\d+)*").find(version)?.value ?: version
     }
 }

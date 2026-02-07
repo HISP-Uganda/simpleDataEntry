@@ -32,6 +32,8 @@ fun OptionSetDropdown(
 
     var expanded by remember { mutableStateOf(false) }
 
+    val labelText = if (isRequired) "$title *" else title
+
     ExposedDropdownMenuBox(
         expanded = expanded,
         onExpandedChange = { if (enabled) expanded = !expanded },
@@ -41,7 +43,11 @@ fun OptionSetDropdown(
             value = selectedOption?.let { it.displayName ?: it.name } ?: "",
             onValueChange = {},
             readOnly = true,
-            label = { Text(if (isRequired) "$title *" else title) },
+            label = if (labelText.isNotBlank()) {
+                { Text(labelText) }
+            } else {
+                null
+            },
             trailingIcon = { ExposedDropdownMenuDefaults.TrailingIcon(expanded = expanded) },
             enabled = enabled,
             modifier = Modifier
@@ -83,11 +89,14 @@ fun OptionSetRadioGroup(
     val sortedOptions = optionSet.options.sortedBy { it.sortOrder }
 
     Column(modifier = modifier) {
-        Text(
-            text = if (isRequired) "$title *" else title,
-            style = MaterialTheme.typography.bodyMedium
-        )
-        Spacer(modifier = Modifier.height(8.dp))
+        val labelText = if (isRequired) "$title *" else title
+        if (labelText.isNotBlank()) {
+            Text(
+                text = labelText,
+                style = MaterialTheme.typography.bodyMedium
+            )
+            Spacer(modifier = Modifier.height(8.dp))
+        }
 
         sortedOptions.forEach { option ->
             Row(
@@ -135,6 +144,7 @@ fun YesNoCheckbox(
         localChecked = isChecked
     }
 
+    val labelText = if (isRequired) "$title *" else title
     Row(
         modifier = modifier
             .fillMaxWidth()
@@ -157,10 +167,12 @@ fun YesNoCheckbox(
             enabled = enabled
         )
         Spacer(modifier = Modifier.width(8.dp))
-        Text(
-            text = if (isRequired) "$title *" else title,
-            style = MaterialTheme.typography.bodyMedium
-        )
+        if (labelText.isNotBlank()) {
+            Text(
+                text = labelText,
+                style = MaterialTheme.typography.bodyMedium
+            )
+        }
     }
 }
 

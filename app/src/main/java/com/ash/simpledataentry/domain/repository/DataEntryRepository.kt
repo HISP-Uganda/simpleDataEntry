@@ -36,9 +36,22 @@ interface DataEntryRepository {
     suspend fun getUserOrgUnits(datasetId: String): List<OrganisationUnit>
     suspend fun getScopedOrgUnits(): List<OrganisationUnit>
     suspend fun getOrgUnitsAttachedToDataSets(datasetIds: List<String>): Set<String>
+    suspend fun getDatasetIdsAttachedToOrgUnits(orgUnitIds: Set<String>, datasetIds: List<String>): Set<String>
     suspend fun expandOrgUnitSelection(targetId: String, orgUnitId: String): Set<String>
     suspend fun getDefaultAttributeOptionCombo(): String
     suspend fun getAttributeOptionCombos(datasetId: String): List<Pair<String, String>>
+    suspend fun refreshDataValues(
+        datasetId: String,
+        period: String,
+        orgUnit: String,
+        attributeOptionCombo: String
+    ): Int
+    suspend fun hasCachedDataValues(
+        datasetId: String,
+        period: String,
+        orgUnit: String,
+        attributeOptionCombo: String
+    ): Boolean
     suspend fun getCategoryComboStructure(categoryComboUid: String): List<Pair<String, List<Pair<String, String>>>>
     suspend fun getCategoryOptionCombos(categoryComboUid: String): List<Pair<String, List<String>>>
 

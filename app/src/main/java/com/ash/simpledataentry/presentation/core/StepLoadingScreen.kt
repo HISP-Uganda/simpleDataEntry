@@ -28,19 +28,26 @@ import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.Icon
 import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.SideEffect
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.shadow
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.luminance
+import androidx.compose.ui.graphics.toArgb
+import androidx.compose.ui.platform.LocalView
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import com.ash.simpledataentry.ui.theme.DHIS2Blue
 import com.ash.simpledataentry.ui.theme.DHIS2BlueDark
 import com.ash.simpledataentry.ui.theme.DatasetAccent
+import androidx.core.view.WindowInsetsControllerCompat
+import android.app.Activity
 
 enum class StepLoadingType {
     LOGIN,
@@ -57,8 +64,21 @@ fun StepLoadingScreen(
     currentStep: Int,
     progressPercent: Int,
     currentLabel: String? = null,
+    actionLabel: String? = null,
+    onAction: (() -> Unit)? = null,
     modifier: Modifier = Modifier
 ) {
+    val view = LocalView.current
+    val statusBarColor = DHIS2Blue
+    SideEffect {
+        val window = (view.context as? Activity)?.window ?: return@SideEffect
+        val colorInt = statusBarColor.toArgb()
+        window.statusBarColor = colorInt
+        window.navigationBarColor = colorInt
+        val insetsController = WindowInsetsControllerCompat(window, view)
+        insetsController.isAppearanceLightStatusBars = statusBarColor.luminance() > 0.5f
+        insetsController.isAppearanceLightNavigationBars = statusBarColor.luminance() > 0.5f
+    }
     val steps = when (type) {
         StepLoadingType.LOGIN -> listOf(
             StepLoadingStep("Initializing"),
@@ -229,6 +249,16 @@ fun StepLoadingScreen(
             }
 
             Spacer(modifier = Modifier.height(20.dp))
+
+            if (actionLabel != null && onAction != null) {
+                OutlinedButton(
+                    onClick = onAction,
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Text(text = actionLabel)
+                }
+                Spacer(modifier = Modifier.height(8.dp))
+            }
 
             Text(
                 text = "Please do not close the app",

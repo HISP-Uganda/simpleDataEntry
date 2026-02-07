@@ -102,7 +102,8 @@ data class DataEntryState(
     // PERFORMANCE OPTIMIZATION: Pre-computed data element ordering per section
     // This avoids expensive re-computation on every render
     // Key: sectionName, Value: Map<dataElement, orderIndex>
-    val dataElementOrdering: Map<String, Map<String, Int>> = emptyMap()
+    val dataElementOrdering: Map<String, Map<String, Int>> = emptyMap(),
+    val lastSyncTime: Long? = null
 )
 
 @HiltViewModel
@@ -125,6 +126,11 @@ class DataEntryViewModel @Inject constructor(
     private var lastSuccessfulState: DataEntryState? = null
     val syncController: SyncStatusController = syncStatusController
     private val draftDao get() = databaseProvider.getCurrentDatabase().dataValueDraftDao()
+    private val optionSetCache = mutableMapOf<String, Map<String, com.ash.simpledataentry.domain.model.OptionSet>>()
+    private val renderTypeCache = mutableMapOf<String, Map<String, com.ash.simpledataentry.domain.model.RenderType>>()
+    private val refreshInFlight = mutableSetOf<String>()
+    private val lastRefreshByInstance = mutableMapOf<String, Long>()
+    private val refreshThrottleMs = 10 * 60 * 1000L
 
     private fun emitSuccessState() {
         val current = _state.value
@@ -172,6 +178,13 @@ class DataEntryViewModel @Inject constructor(
                 }
             }
         }
+        viewModelScope.launch {
+            syncController.appSyncState.collect { syncState ->
+                updateState { currentState ->
+                    currentState.copy(lastSyncTime = syncState.lastSync)
+                }
+            }
+        }
     }
 
     // --- BEGIN: Per-field TextFieldValue state ---
@@ -201,7 +214,8 @@ class DataEntryViewModel @Inject constructor(
         period: String,
         orgUnitId: String,
         attributeOptionCombo: String,
-        isEditMode: Boolean
+        isEditMode: Boolean,
+        skipBackgroundRefresh: Boolean = false
     ) {
         viewModelScope.launch(Dispatchers.IO) {
             try {
@@ -282,6 +296,7 @@ class DataEntryViewModel @Inject constructor(
                 }
 
                 val dataValuesFlow = repository.getDataValues(datasetId, period, orgUnitId, attributeOptionCombo)
+                var refreshTriggered = false
                 dataValuesFlow.collect { values ->
                     // Step 3: Process Categories (50-70%)
                     updateState {
@@ -381,14 +396,16 @@ class DataEntryViewModel @Inject constructor(
                         )
                     }
 
-                    val optionSets = repository.getAllOptionSetsForDataset(datasetId)
+                    val optionSets = optionSetCache[datasetId] ?: repository.getAllOptionSetsForDataset(datasetId).also {
+                        optionSetCache[datasetId] = it
+                    }
 
                     // Compute render types on background thread to avoid UI freezes
-                    val renderTypes = withContext(Dispatchers.Default) {
+                    val renderTypes = renderTypeCache[datasetId] ?: withContext(Dispatchers.Default) {
                         optionSets.mapValues { (_, optionSet) ->
                             optionSet.computeRenderType()
                         }
-                    }
+                    }.also { renderTypeCache[datasetId] = it }
 
                     // Fetch validation rules for intelligent grouping
                     val validationRules = repository.getValidationRulesForDataset(datasetId)
@@ -552,6 +569,15 @@ class DataEntryViewModel @Inject constructor(
                 // Load draft count after data is loaded
                 loadDraftCount()
                 emitSuccessState()
+                if (!skipBackgroundRefresh && !refreshTriggered) {
+                    refreshTriggered = true
+                    maybeRefreshDataValues(
+                        datasetId = datasetId,
+                        period = period,
+                        orgUnit = orgUnitId,
+                        attributeOptionCombo = attributeOptionCombo
+                    )
+                }
 
             } catch (e: Exception) {
                 Log.e("DataEntryViewModel", "Failed to load data values", e)
@@ -646,10 +672,14 @@ class DataEntryViewModel @Inject constructor(
                     .mapValues { (_, sectionValues) ->
                         sectionValues.groupBy { it.dataElement }
                     }
+                val updatedValuesByCombo = updatedValues.groupBy { it.categoryOptionCombo }
+                val updatedValuesByElement = updatedValues.groupBy { it.dataElement }
 
                 currentState.copy(
                     dataValues = updatedValues,
                     dataElementGroupedSections = updatedGroupedSections,
+                    valuesByCombo = updatedValuesByCombo,
+                    valuesByElement = updatedValuesByElement,
                     currentDataValue = if (currentState.currentDataValue?.dataElement == dataElementUid && currentState.currentDataValue?.categoryOptionCombo == categoryOptionComboUid) updatedValueObject else currentState.currentDataValue
                 )
             }
@@ -855,6 +885,42 @@ class DataEntryViewModel @Inject constructor(
 
     }
 
+    private fun maybeRefreshDataValues(
+        datasetId: String,
+        period: String,
+        orgUnit: String,
+        attributeOptionCombo: String
+    ) {
+        val instanceKey = "$datasetId|$period|$orgUnit|$attributeOptionCombo"
+        val now = System.currentTimeMillis()
+        val last = lastRefreshByInstance[instanceKey] ?: 0L
+        if (now - last < refreshThrottleMs) return
+        if (refreshInFlight.contains(instanceKey)) return
+        val networkState = networkStateManager.networkState.value
+        if (!networkState.isConnected || !networkState.hasInternet) return
+
+        refreshInFlight.add(instanceKey)
+        lastRefreshByInstance[instanceKey] = now
+        viewModelScope.launch(Dispatchers.IO) {
+            try {
+                repository.refreshDataValues(datasetId, period, orgUnit, attributeOptionCombo)
+                loadDataValues(
+                    datasetId = datasetId,
+                    datasetName = _state.value.datasetName,
+                    period = period,
+                    orgUnitId = orgUnit,
+                    attributeOptionCombo = attributeOptionCombo,
+                    isEditMode = _state.value.isEditMode,
+                    skipBackgroundRefresh = true
+                )
+            } catch (e: Exception) {
+                Log.w("DataEntryViewModel", "Background refresh failed: ${e.message}")
+            } finally {
+                refreshInFlight.remove(instanceKey)
+            }
+        }
+    }
+
     private fun loadDraftCount() {
         viewModelScope.launch {
             try {
@@ -870,6 +936,27 @@ class DataEntryViewModel @Inject constructor(
                 updateState { it.copy(localDraftCount = draftCount) }
             } catch (e: Exception) {
                 Log.e("DataEntryViewModel", "Failed to load draft count", e)
+            }
+        }
+    }
+
+    suspend fun fetchExistingDataForInstance(
+        datasetId: String,
+        period: String,
+        orgUnit: String,
+        attributeOptionCombo: String
+    ): Result<Int> {
+        return withContext(Dispatchers.IO) {
+            try {
+                val networkState = networkStateManager.networkState.value
+                if (!networkState.isConnected || !networkState.hasInternet) {
+                    return@withContext Result.failure(Exception("No internet connection"))
+                }
+                val count = repository.refreshDataValues(datasetId, period, orgUnit, attributeOptionCombo)
+                Result.success(count)
+            } catch (e: Exception) {
+                Log.e("DataEntryViewModel", "Failed to refresh existing data", e)
+                Result.failure(e)
             }
         }
     }
@@ -1186,6 +1273,22 @@ class DataEntryViewModel @Inject constructor(
             updateState { it.copy(isLoading = true, error = null) }
             
             try {
+                val validationSummary = stateSnapshot.validationSummary
+                if (validationSummary?.hasErrors == true) {
+                    val firstIssue = extractFirstValidationIssue(validationSummary)
+                    val message = firstIssue?.description ?: "Validation failed. Please fix errors before submitting."
+                    applyValidationIssues(validationSummary)
+                    firstIssue?.affectedDataElements?.firstOrNull()?.let { navigateToDataElement(it) }
+                    updateState {
+                        it.copy(
+                            isLoading = false,
+                            validationMessage = message
+                        )
+                    }
+                    onResult(false, message)
+                    return@launch
+                }
+
                 val result = useCases.completeDatasetInstance(
                     stateSnapshot.datasetId,
                     stateSnapshot.period,
@@ -1194,7 +1297,6 @@ class DataEntryViewModel @Inject constructor(
                 )
                 
                 if (result.isSuccess) {
-                    val validationSummary = stateSnapshot.validationSummary
                     val successMessage = if (validationSummary?.warningCount ?: 0 > 0) {
                         "Dataset marked as complete successfully. Note: ${validationSummary?.warningCount} validation warning(s) were found."
                     } else {
@@ -1225,6 +1327,40 @@ class DataEntryViewModel @Inject constructor(
                 }
                 onResult(false, "Error during completion: ${e.message}")
             }
+        }
+    }
+
+    private fun extractFirstValidationIssue(validationSummary: ValidationSummary): ValidationIssue? {
+        return when (val result = validationSummary.validationResult) {
+            is ValidationResult.Error -> result.errors.firstOrNull()
+            is ValidationResult.Mixed -> result.errors.firstOrNull()
+            else -> null
+        }
+    }
+
+    private fun applyValidationIssues(validationSummary: ValidationSummary) {
+        val errors = when (val result = validationSummary.validationResult) {
+            is ValidationResult.Error -> result.errors
+            is ValidationResult.Mixed -> result.errors
+            else -> emptyList()
+        }
+
+        if (errors.isEmpty()) return
+
+        val fieldErrors = errors.flatMap { issue ->
+            issue.affectedDataElements.map { it to issue.description }
+        }.toMap()
+
+        updateState { it.copy(fieldErrors = fieldErrors) }
+    }
+
+    private fun navigateToDataElement(dataElementId: String) {
+        val sections = _state.value.dataElementGroupedSections.entries.toList()
+        val targetIndex = sections.indexOfFirst { (_, elementGroups) ->
+            elementGroups.containsKey(dataElementId)
+        }
+        if (targetIndex >= 0) {
+            updateState { it.copy(currentSectionIndex = targetIndex) }
         }
     }
 

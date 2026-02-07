@@ -128,7 +128,7 @@ class DatasetsViewModel @Inject constructor(
         // Initial load (may use fallback database if session not yet restored)
         loadPrograms()
         // Start background prefetching after programs are loaded
-        backgroundDataPrefetcher.startPrefetching()
+        backgroundDataPrefetcher.startPrefetching(topDatasetCount = 3)
 
         // REMOVED: Background sync progress observer
         // Background sync after login should NOT block the UI with an overlay
@@ -158,6 +158,12 @@ class DatasetsViewModel @Inject constructor(
         }
     }
 
+    fun prefetchProgramIfNeeded(program: ProgramItem) {
+        if (program.programType == com.ash.simpledataentry.domain.model.ProgramType.DATASET) {
+            backgroundDataPrefetcher.prefetchForDataset(program.id)
+        }
+    }
+
     fun loadPrograms() {
         viewModelScope.launch {
             _uiState.emitLoading(LoadingOperation.Initial)
@@ -176,11 +182,38 @@ class DatasetsViewModel @Inject constructor(
                     val currentFilter = currentData.currentFilter
                     val currentProgramType = currentData.currentProgramType
 
+                    val scopedOrgUnitIds = runCatching {
+                        dataEntryRepository.getScopedOrgUnits().map { it.id }.toSet()
+                    }.getOrDefault(emptySet())
+
+                    val datasetIds = programs
+                        .filterIsInstance<ProgramItem.DatasetProgram>()
+                        .map { it.id }
+
+                    val allowedDatasetIds = if (scopedOrgUnitIds.isEmpty() || datasetIds.isEmpty()) {
+                        datasetIds.toSet()
+                    } else {
+                        runCatching {
+                            dataEntryRepository.getDatasetIdsAttachedToOrgUnits(scopedOrgUnitIds, datasetIds)
+                        }.getOrDefault(emptySet())
+                    }
+
+                    val scopedPrograms = if (allowedDatasetIds.isEmpty()) {
+                        programs
+                    } else {
+                        programs.filter { program ->
+                            when (program) {
+                                is ProgramItem.DatasetProgram -> program.id in allowedDatasetIds
+                                else -> true
+                            }
+                        }
+                    }
+
                     // Filter programs if needed
-                    val filteredPrograms = filterPrograms(programs, currentFilter, currentProgramType)
+                    val filteredPrograms = filterPrograms(scopedPrograms, currentFilter, currentProgramType)
 
                     val newData = DatasetsData(
-                        programs = programs,
+                        programs = scopedPrograms,
                         filteredPrograms = filteredPrograms,
                         currentFilter = currentFilter,
                         currentProgramType = currentProgramType,

@@ -1,6 +1,7 @@
 package com.ash.simpledataentry.presentation.login
 
 import android.content.Context
+import androidx.lifecycle.SavedStateHandle
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.ash.simpledataentry.domain.useCase.LoginUseCase
@@ -9,6 +10,7 @@ import com.ash.simpledataentry.data.repositoryImpl.LoginUrlCacheRepository
 import com.ash.simpledataentry.data.repositoryImpl.SavedAccountRepository
 import com.ash.simpledataentry.data.repositoryImpl.AuthRepositoryImpl
 import com.ash.simpledataentry.presentation.core.NavigationProgress
+import com.ash.simpledataentry.presentation.core.UiError
 import com.ash.simpledataentry.presentation.core.UiState
 import com.ash.simpledataentry.presentation.core.LoadingOperation
 import com.ash.simpledataentry.presentation.core.BackgroundOperation
@@ -72,6 +74,7 @@ data class LoginData(
  */
 @HiltViewModel
 class LoginViewModel @Inject constructor(
+    private val savedStateHandle: SavedStateHandle,
     private val loginUseCase: LoginUseCase,
     private val urlCacheRepository: LoginUrlCacheRepository,
     private val savedAccountRepository: SavedAccountRepository,
@@ -105,7 +108,10 @@ class LoginViewModel @Inject constructor(
     init {
         loadCachedUrls()
         loadSavedAccounts()
-        checkExistingSession()
+        val skipAutoLogin = savedStateHandle.get<Boolean>("skipAutoLogin") ?: false
+        if (!skipAutoLogin) {
+            checkExistingSession()
+        }
     }
 
     /**
@@ -280,6 +286,23 @@ class LoginViewModel @Inject constructor(
         }
     }
 
+    fun abortLogin(context: Context, message: String) {
+        viewModelScope.launch {
+            try {
+                sessionManager.secureLogout(context)
+            } catch (e: Exception) {
+                android.util.Log.w("LoginViewModel", "Abort login logout failed: ${e.message}")
+            }
+
+            val currentData = getCurrentData().copy(
+                isLoggedIn = false,
+                showSplash = false
+            )
+            val uiError = Exception(message).toUiError()
+            _uiState.value = UiState.Error(uiError, currentData)
+        }
+    }
+
     fun hideSplash() {
         val currentData = getCurrentData()
         val newData = currentData.copy(showSplash = false)
@@ -392,6 +415,22 @@ class LoginViewModel @Inject constructor(
                 _uiState.value = UiState.Error(uiError, newData)
             }
         }
+    }
+
+    fun savePendingAccount(displayName: String) {
+        val pending = getCurrentData().pendingCredentials
+        if (pending == null) {
+            val currentData = getCurrentData().copy(
+                saveAccountOffered = false,
+                pendingCredentials = null
+            )
+            _uiState.value = UiState.Error(
+                UiError.Local("No pending credentials to save"),
+                currentData
+            )
+            return
+        }
+        saveAccount(displayName, pending.first, pending.second, pending.third)
     }
 
     /**
