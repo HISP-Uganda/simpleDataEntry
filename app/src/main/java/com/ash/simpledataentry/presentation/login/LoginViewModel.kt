@@ -10,6 +10,7 @@ import com.ash.simpledataentry.data.repositoryImpl.LoginUrlCacheRepository
 import com.ash.simpledataentry.data.repositoryImpl.SavedAccountRepository
 import com.ash.simpledataentry.data.repositoryImpl.AuthRepositoryImpl
 import com.ash.simpledataentry.presentation.core.NavigationProgress
+import com.ash.simpledataentry.presentation.core.UiError
 import com.ash.simpledataentry.presentation.core.UiState
 import com.ash.simpledataentry.presentation.core.LoadingOperation
 import com.ash.simpledataentry.presentation.core.BackgroundOperation
