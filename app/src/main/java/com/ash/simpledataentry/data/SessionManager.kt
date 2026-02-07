@@ -503,7 +503,20 @@ class SessionManager @Inject constructor(
             secureLogout(context)
             accountManager.clearActiveAccountId(context)
             _currentAccountId.value = null
-            throw e
+
+            val mappedException = when (errorCode) {
+                D2ErrorCode.SERVER_CONNECTION_ERROR,
+                D2ErrorCode.UNKNOWN_HOST,
+                D2ErrorCode.SOCKET_TIMEOUT,
+                D2ErrorCode.SSL_ERROR,
+                D2ErrorCode.URL_NOT_FOUND,
+                D2ErrorCode.SERVER_URL_MALFORMED -> java.io.IOException(userMessage)
+                D2ErrorCode.BAD_CREDENTIALS,
+                D2ErrorCode.USER_ACCOUNT_DISABLED,
+                D2ErrorCode.USER_ACCOUNT_LOCKED -> SecurityException(userMessage)
+                else -> Exception(userMessage)
+            }
+            throw mappedException
         }
     }
 
