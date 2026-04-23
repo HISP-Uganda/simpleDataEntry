@@ -16,15 +16,19 @@ import com.ash.simpledataentry.data.local.DataValueDraftEntity
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import com.ash.simpledataentry.data.local.DataElementDao
+import com.ash.simpledataentry.data.local.DataElementEntity
 import com.ash.simpledataentry.data.local.CategoryComboDao
 import com.ash.simpledataentry.data.local.CategoryOptionComboDao
+import com.ash.simpledataentry.data.local.CategoryOptionComboEntity
 import com.ash.simpledataentry.data.local.OrganisationUnitDao
 import com.ash.simpledataentry.util.NetworkUtils
 import com.ash.simpledataentry.data.local.DataValueEntity
 import com.ash.simpledataentry.data.local.DataValueDao
 import com.ash.simpledataentry.data.cache.MetadataCacheService
+import com.ash.simpledataentry.data.sync.D2SdkOperationLocks
 import com.ash.simpledataentry.data.sync.NetworkStateManager
 import com.ash.simpledataentry.data.sync.SyncQueueManager
+import kotlinx.coroutines.sync.withLock
 import javax.inject.Inject
 import kotlin.Pair
 import kotlin.Result
@@ -71,6 +75,8 @@ class DataEntryRepositoryImpl @Inject constructor(
             ValueType.PERCENTAGE -> DataEntryType.PERCENTAGE
             ValueType.DATE -> DataEntryType.DATE
             ValueType.BOOLEAN -> DataEntryType.YES_NO
+            ValueType.TRUE_ONLY -> DataEntryType.YES_ONLY
+            ValueType.PHONE_NUMBER -> DataEntryType.PHONE_NUMBER
             ValueType.COORDINATE -> DataEntryType.COORDINATES
             //ValueType.OPTION_SET -> DataEntryType.MULTIPLE_CHOICE
             else -> DataEntryType.TEXT
@@ -122,6 +128,8 @@ class DataEntryRepositoryImpl @Inject constructor(
             "PERCENTAGE" -> DataEntryType.PERCENTAGE
             "DATE" -> DataEntryType.DATE
             "BOOLEAN" -> DataEntryType.YES_NO
+            "TRUE_ONLY" -> DataEntryType.YES_ONLY
+            "PHONE_NUMBER" -> DataEntryType.PHONE_NUMBER
             "COORDINATE" -> DataEntryType.COORDINATES
             else -> DataEntryType.TEXT
         }
@@ -146,9 +154,16 @@ class DataEntryRepositoryImpl @Inject constructor(
                     severity = ValidationState.ERROR
                 ))
             }
+            "PHONE_NUMBER" -> {
+                rules.add(ValidationRule(
+                    rule = "phone",
+                    message = "Please enter a valid phone number",
+                    severity = ValidationState.ERROR
+                ))
+            }
             "COORDINATE" -> {
                 rules.add(ValidationRule(
-                    rule = "coordinates", 
+                    rule = "coordinates",
                     message = "Please enter valid coordinates",
                     severity = ValidationState.ERROR
                 ))
@@ -165,7 +180,10 @@ class DataEntryRepositoryImpl @Inject constructor(
         orgUnit: String,
         attributeOptionCombo: String
     ): Flow<List<DataValue>> = flow {
-        Log.d("DataEntryRepositoryImpl", "Starting optimized getDataValues for dataset: $datasetId")
+        Log.d(
+            "DataEntryRepositoryImpl",
+            "DVTRACE getDataValues start dataset=$datasetId period=$period orgUnit=$orgUnit aoc=$attributeOptionCombo"
+        )
         
         // OFFLINE-FIRST APPROACH: Always use cached data for instant loading
         // Only fetch fresh data during explicit sync operations, not on screen loads
@@ -202,7 +220,55 @@ class DataEntryRepositoryImpl @Inject constructor(
         }
         
         // Get metadata from cache with pre-fetched data values (fast)
-        val optimizedData = metadataCacheService.getOptimizedDataForEntry(datasetId, period, orgUnit, attributeOptionCombo)
+        var optimizedData = metadataCacheService.getOptimizedDataForEntry(datasetId, period, orgUnit, attributeOptionCombo)
+        Log.d(
+            "DataEntryRepositoryImpl",
+            "DVTRACE sourceCounts dataset=$datasetId period=$period orgUnit=$orgUnit aoc=$attributeOptionCombo drafts=${draftMap.size} room=${cachedDataValues.size} sdk=${optimizedData.sdkDataValues.size}"
+        )
+        if (cachedDataValues.isNotEmpty()) {
+            cachedDataValues.entries.take(5).forEach { (key, dv) ->
+                Log.d(
+                    "DataEntryRepositoryImpl",
+                    "DVTRACE roomSample de=${key.first} coc=${key.second} value=${dv.value}"
+                )
+            }
+        }
+        if (optimizedData.sdkDataValues.isNotEmpty()) {
+            optimizedData.sdkDataValues.entries.take(5).forEach { (key, dv) ->
+                Log.d(
+                    "DataEntryRepositoryImpl",
+                    "DVTRACE sdkSample de=${key.first} coc=${key.second} value=${dv.value()}"
+                )
+            }
+        }
+        if (optimizedData.sdkDataValues.isEmpty() && cachedDataValues.isNotEmpty()) {
+            Log.w(
+                "DataEntryRepositoryImpl",
+                "DVTRACE mismatch: room has ${cachedDataValues.size} values but optimized SDK snapshot is empty for dataset=$datasetId period=$period orgUnit=$orgUnit aoc=$attributeOptionCombo"
+            )
+        }
+        if (optimizedData.sdkDataValues.isNotEmpty() && cachedDataValues.isEmpty()) {
+            Log.w(
+                "DataEntryRepositoryImpl",
+                "DVTRACE mismatch: optimized SDK snapshot has ${optimizedData.sdkDataValues.size} values but Room cache is empty for dataset=$datasetId period=$period orgUnit=$orgUnit aoc=$attributeOptionCombo"
+            )
+        }
+
+        if (optimizedData.sdkDataValues.isEmpty() && cachedDataValues.isEmpty() && draftMap.isEmpty() && !isOffline) {
+            try {
+                val refreshed = metadataCacheService.refreshDataValues(datasetId, period, orgUnit, attributeOptionCombo)
+                Log.d("DataEntryRepositoryImpl", "Empty state detected; triggered server refresh and fetched $refreshed values")
+                if (refreshed > 0) {
+                    optimizedData = metadataCacheService.getOptimizedDataForEntry(datasetId, period, orgUnit, attributeOptionCombo)
+                    Log.d(
+                        "DataEntryRepositoryImpl",
+                        "DVTRACE afterEmptyRefresh sdk=${optimizedData.sdkDataValues.size}"
+                    )
+                }
+            } catch (e: Exception) {
+                Log.w("DataEntryRepositoryImpl", "Server refresh on empty form failed: ${e.message}")
+            }
+        }
 
         Log.d("DataEntryRepositoryImpl", "Fresh SDK data loaded: ${optimizedData.sdkDataValues.size} values")
 
@@ -224,11 +290,147 @@ class DataEntryRepositoryImpl @Inject constructor(
         }
 
         // Build DataValue objects using cached metadata and data, prioritizing drafts
+        val comboOverrides = mutableMapOf<String, List<CategoryOptionComboEntity>>()
+        val uniqueComboIds = optimizedData.dataElements.values.mapNotNull { it.categoryComboId }.distinct()
+        uniqueComboIds.forEach { comboId ->
+            val roomCombos = optimizedData.categoryOptionCombos.values.filter { it.categoryComboId == comboId }
+            val structure = metadataCacheService.getCategoryComboStructureByComboUid(comboId)
+            val expectedCount = structure.fold(1) { acc, pair ->
+                val size = pair.second.size
+                if (size == 0) acc else acc * size
+            }
+            val shouldFetchFromSdk = when {
+                expectedCount > 0 -> roomCombos.size < expectedCount
+                else -> roomCombos.size <= 2
+            }
+            if (shouldFetchFromSdk) {
+                Log.w(
+                    "DataEntryRepositoryImpl",
+                    "ComboId=$comboId has ${roomCombos.size}/${if (expectedCount > 0) expectedCount else "unknown"} COCs in Room. Fetching from SDK..."
+                )
+                val sdkCombos = metadataCacheService.fetchCategoryOptionCombosByComboUid(comboId)
+                if (sdkCombos.isNotEmpty()) {
+                    comboOverrides[comboId] = sdkCombos
+                    withContext(Dispatchers.IO) {
+                        categoryOptionComboDao.insertAll(sdkCombos)
+                    }
+                }
+            }
+        }
+        run {
+            val debugComboId = "Opey7znPz0U"
+            val debugCombos = comboOverrides[debugComboId]
+                ?: optimizedData.categoryOptionCombos.values.filter { it.categoryComboId == debugComboId }
+            Log.d(
+                "DataEntryRepositoryImpl",
+                "DEBUG comboId=$debugComboId -> ${debugCombos.size} COCs loaded from Room"
+            )
+            debugCombos.take(10).forEach { coc ->
+                Log.d(
+                    "DataEntryRepositoryImpl",
+                    "  DEBUG COC id=${coc.id}, name=${coc.name}, optionUids=${coc.optionUids}"
+                )
+            }
+        }
+        val combosByComboId = optimizedData.categoryOptionCombos.values
+            .groupBy { it.categoryComboId }
+            .toMutableMap()
+        comboOverrides.forEach { (comboId, overrides) ->
+            combosByComboId[comboId] = overrides
+        }
+        val dataElementsByUid = optimizedData.dataElements.toMutableMap()
+        val sdkDataElementFallbacks = mutableMapOf<String, DataElementEntity?>()
+
+        val loggedComboIds = mutableSetOf<String>()
         val mappedDataValues = optimizedData.sections.flatMap { section ->
             val sectionResults = section.dataElementUids.flatMap { deUid ->
-                val dataElement = optimizedData.dataElements[deUid]
+                val dataElement = dataElementsByUid[deUid] ?: run {
+                    val sdkEntity = sdkDataElementFallbacks.getOrPut(deUid) {
+                        try {
+                            d2.dataElementModule().dataElements().uid(deUid).blockingGet()?.let { sdkDe ->
+                                DataElementEntity(
+                                    id = sdkDe.uid(),
+                                    name = sdkDe.displayName() ?: sdkDe.uid(),
+                                    valueType = sdkDe.valueType()?.name ?: "TEXT",
+                                    categoryComboId = sdkDe.categoryCombo()?.uid(),
+                                    description = sdkDe.description()
+                                )
+                            }
+                        } catch (e: Exception) {
+                            Log.w(
+                                "DataEntryRepositoryImpl",
+                                "Failed SDK fallback for dataElement=$deUid: ${e.message}"
+                            )
+                            null
+                        }
+                    }
+                    if (sdkEntity != null) {
+                        dataElementsByUid[deUid] = sdkEntity
+                    }
+                    sdkEntity
+                }
+
                 val comboId = dataElement?.categoryComboId ?: ""
-                val combos = optimizedData.categoryOptionCombos.values.filter { it.categoryComboId == comboId }
+                var combos = combosByComboId[comboId].orEmpty()
+
+                if (comboId.isNotBlank() && combos.isEmpty()) {
+                    val fetchedCombos = try {
+                        d2.categoryModule().categoryOptionCombos()
+                            .byCategoryComboUid().eq(comboId)
+                            .withCategoryOptions()
+                            .blockingGet()
+                            .map { coc ->
+                                CategoryOptionComboEntity(
+                                    id = coc.uid(),
+                                    name = coc.displayName() ?: coc.uid(),
+                                    categoryComboId = coc.categoryCombo()?.uid() ?: comboId,
+                                    optionUids = coc.categoryOptions()?.joinToString(",") { opt -> opt.uid() } ?: ""
+                                )
+                            }
+                    } catch (e: Exception) {
+                        Log.w(
+                            "DataEntryRepositoryImpl",
+                            "Failed COC fallback for comboId=$comboId: ${e.message}"
+                        )
+                        emptyList()
+                    }
+                    if (fetchedCombos.isNotEmpty()) {
+                        combosByComboId[comboId] = fetchedCombos
+                        combos = fetchedCombos
+                        Log.w(
+                            "DataEntryRepositoryImpl",
+                            "Recovered missing COCs for comboId=$comboId via SDK fallback: ${fetchedCombos.size}"
+                        )
+                    }
+                }
+
+                if (deUid == "mZeRxcTNykN") {
+                    Log.d(
+                        "DataEntryRepositoryImpl",
+                        "DEBUG DE mZeRxcTNykN -> comboId=$comboId, combos=${combos.size}, dataElementExists=${dataElement != null}"
+                    )
+                    combos.take(10).forEach { coc ->
+                        Log.d(
+                            "DataEntryRepositoryImpl",
+                            "  DEBUG mZeRxcTNykN COC id=${coc.id}, name=${coc.name}, optionUids=${coc.optionUids}"
+                        )
+                    }
+                }
+
+                if (comboId.isNotBlank() && loggedComboIds.add(comboId)) {
+                    Log.d(
+                        "DataEntryRepositoryImpl",
+                        "ComboId=$comboId has ${combos.size} categoryOptionCombos in Room for dataset=$datasetId"
+                    )
+                    if (combos.isNotEmpty()) {
+                        combos.take(10).forEach { coc ->
+                            Log.d(
+                                "DataEntryRepositoryImpl",
+                                "  COC id=${coc.id}, name=${coc.name}, optionUids=${coc.optionUids}"
+                            )
+                        }
+                    }
+                }
 
                 // Get display name with proper fallback hierarchy
                 val dataElementName = getDataElementDisplayName(deUid) ?: dataElement?.name ?: deUid
@@ -245,7 +447,7 @@ class DataEntryRepositoryImpl @Inject constructor(
                         dataElementName = dataElementName,
                         sectionName = section.name,
                         categoryOptionCombo = "",
-                        categoryOptionComboName = "Default",
+                        categoryOptionComboName = "",
                         value = finalValue, // Draft > SDK > cached
                         comment = draft?.comment ?: cached?.comment,
                         storedBy = null, // Cached data doesn't store storedBy info
@@ -283,7 +485,17 @@ class DataEntryRepositoryImpl @Inject constructor(
             sectionResults
         }
         
-        Log.d("DataEntryRepositoryImpl", "Loaded ${mappedDataValues.size} data values from cache (instant loading)")
+        val nonEmptyFinalValues = mappedDataValues.count { !it.value.isNullOrBlank() }
+        Log.d(
+            "DataEntryRepositoryImpl",
+            "DVTRACE emit mapped=${mappedDataValues.size} nonEmpty=$nonEmptyFinalValues dataset=$datasetId period=$period orgUnit=$orgUnit aoc=$attributeOptionCombo"
+        )
+        mappedDataValues.filter { !it.value.isNullOrBlank() }.take(5).forEach { dv ->
+            Log.d(
+                "DataEntryRepositoryImpl",
+                "DVTRACE finalSample de=${dv.dataElement} coc=${dv.categoryOptionCombo} value=${dv.value}"
+            )
+        }
         emit(mappedDataValues)
     }
 
@@ -303,7 +515,9 @@ class DataEntryRepositoryImpl @Inject constructor(
 
             if (value != null) {
                 try {
-                    dataValueObjectRepository.blockingSet(value)
+                    D2SdkOperationLocks.dataValueAndAggregateMutex.withLock {
+                        dataValueObjectRepository.blockingSet(value)
+                    }
 //                    if (comment != null) {
 //                        dataValueObjectRepository.blockingSetComment(comment)
 //                    }
@@ -328,7 +542,9 @@ class DataEntryRepositoryImpl @Inject constructor(
                     throw e
                 }
             } else {
-                dataValueObjectRepository.blockingDeleteIfExist()
+                D2SdkOperationLocks.dataValueAndAggregateMutex.withLock {
+                    dataValueObjectRepository.blockingDeleteIfExist()
+                }
                 // Also remove draft if value is deleted
                 draftDao.deleteDraft(datasetId, period, orgUnit, attributeOptionCombo, dataElement, categoryOptionCombo)
                 Log.d("DataEntryRepositoryImpl", "Deleted value and removed from draft queue")
@@ -355,7 +571,7 @@ class DataEntryRepositoryImpl @Inject constructor(
                 .find { section ->
                     section.dataElements()?.any { it.uid() == dataElement } == true
                 }
-                ?.displayName() ?: "Default Section"
+                ?.displayName() ?: "General Section"
 
             val categoryOptionComboName = if (categoryOptionCombo.isNotEmpty()) {
                 d2.categoryModule().categoryOptionCombos()
@@ -363,7 +579,7 @@ class DataEntryRepositoryImpl @Inject constructor(
                     .blockingGet()
                     ?.displayName() ?: categoryOptionCombo
             } else {
-                "Default"
+                ""
             }
 
             // Get value history
@@ -416,8 +632,9 @@ class DataEntryRepositoryImpl @Inject constructor(
                 .blockingGet() ?: return DataValueValidationResult(false, ValidationState.ERROR, "Unknown data element type")
 
             // Check if value is required
-            if (value.isBlank() && dataElementObj.optionSet() == null && 
-                dataElementObj.valueType() != org.hisp.dhis.android.core.common.ValueType.BOOLEAN) {
+            if (value.isBlank() && dataElementObj.optionSet() == null &&
+                dataElementObj.valueType() != org.hisp.dhis.android.core.common.ValueType.BOOLEAN &&
+                dataElementObj.valueType() != org.hisp.dhis.android.core.common.ValueType.TRUE_ONLY) {
                 return DataValueValidationResult(false, ValidationState.ERROR, "This field is required")
             }
 
@@ -439,6 +656,31 @@ class DataEntryRepositoryImpl @Inject constructor(
                 org.hisp.dhis.android.core.common.ValueType.BOOLEAN -> {
                     if (value != "true" && value != "false") {
                         DataValueValidationResult(false, ValidationState.ERROR, "Please enter true or false")
+                    } else {
+                        DataValueValidationResult(true, ValidationState.VALID, null)
+                    }
+                }
+                org.hisp.dhis.android.core.common.ValueType.TRUE_ONLY -> {
+                    if (value.isNotBlank() && value != "true") {
+                        DataValueValidationResult(false, ValidationState.ERROR, "Value must be true or empty")
+                    } else {
+                        DataValueValidationResult(true, ValidationState.VALID, null)
+                    }
+                }
+                org.hisp.dhis.android.core.common.ValueType.DATE -> {
+                    try {
+                        val sdf = java.text.SimpleDateFormat("yyyy-MM-dd", java.util.Locale.US)
+                        sdf.isLenient = false
+                        sdf.parse(value)
+                        DataValueValidationResult(true, ValidationState.VALID, null)
+                    } catch (e: Exception) {
+                        DataValueValidationResult(false, ValidationState.ERROR, "Use date format YYYY-MM-DD")
+                    }
+                }
+                org.hisp.dhis.android.core.common.ValueType.PHONE_NUMBER -> {
+                    val regex = Regex("^\\+?[0-9]{6,15}$")
+                    if (!regex.matches(value)) {
+                        DataValueValidationResult(false, ValidationState.ERROR, "Please enter a valid phone number")
                     } else {
                         DataValueValidationResult(true, ValidationState.VALID, null)
                     }
@@ -524,6 +766,23 @@ class DataEntryRepositoryImpl @Inject constructor(
                 .blockingGet()
                 .map { it.uid() }
                 .toSet()
+        }
+    }
+
+    override suspend fun getDatasetIdsAttachedToOrgUnits(
+        orgUnitIds: Set<String>,
+        datasetIds: List<String>
+    ): Set<String> {
+        if (orgUnitIds.isEmpty() || datasetIds.isEmpty()) return emptySet()
+        return withContext(Dispatchers.IO) {
+            datasetIds.filter { datasetId ->
+                val attachedOrgUnits = d2.organisationUnitModule().organisationUnits()
+                    .byDataSetUids(listOf(datasetId))
+                    .blockingGet()
+                    .map { it.uid() }
+                    .toSet()
+                attachedOrgUnits.any { it in orgUnitIds }
+            }.toSet()
         }
     }
 
@@ -638,6 +897,40 @@ class DataEntryRepositoryImpl @Inject constructor(
             combos
                 .sortedBy { (it.displayName() ?: it.uid()).lowercase() }
                 .map { it.uid() to (it.displayName() ?: it.uid()) }
+        }
+    }
+
+    override suspend fun refreshDataValues(
+        datasetId: String,
+        period: String,
+        orgUnit: String,
+        attributeOptionCombo: String
+    ): Int {
+        Log.d(
+            "DataEntryRepositoryImpl",
+            "DVTRACE refreshDataValues request dataset=$datasetId period=$period orgUnit=$orgUnit aoc=$attributeOptionCombo"
+        )
+        val refreshed = metadataCacheService.refreshDataValues(datasetId, period, orgUnit, attributeOptionCombo)
+        Log.d(
+            "DataEntryRepositoryImpl",
+            "DVTRACE refreshDataValues result dataset=$datasetId period=$period orgUnit=$orgUnit aoc=$attributeOptionCombo refreshed=$refreshed"
+        )
+        return refreshed
+    }
+
+    override suspend fun hasCachedDataValues(
+        datasetId: String,
+        period: String,
+        orgUnit: String,
+        attributeOptionCombo: String
+    ): Boolean {
+        return withContext(Dispatchers.IO) {
+            val count = dataValueDao.getValuesForInstance(datasetId, period, orgUnit, attributeOptionCombo).size
+            Log.d(
+                "DataEntryRepositoryImpl",
+                "DVTRACE hasCachedDataValues dataset=$datasetId period=$period orgUnit=$orgUnit aoc=$attributeOptionCombo count=$count"
+            )
+            count > 0
         }
     }
 

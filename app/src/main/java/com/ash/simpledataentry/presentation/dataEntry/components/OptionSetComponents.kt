@@ -6,11 +6,13 @@ import androidx.compose.material3.MenuAnchorType
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.ui.unit.dp
-import kotlinx.coroutines.launch
 import com.ash.simpledataentry.domain.model.Option
 import com.ash.simpledataentry.domain.model.OptionSet
 import com.ash.simpledataentry.domain.model.DataValue
+import com.ash.simpledataentry.ui.theme.LocalFormColors
+import com.ash.simpledataentry.ui.theme.LocalFormDimensions
 
 /**
  * Simple dropdown component for option sets with >4 options
@@ -31,6 +33,10 @@ fun OptionSetDropdown(
     val selectedOption = selectedCode?.let { code -> sortedOptions.firstOrNull { it.code == code } }
 
     var expanded by remember { mutableStateOf(false) }
+    val formColors = LocalFormColors.current
+    val formDimensions = LocalFormDimensions.current
+
+    val labelText = if (isRequired) "$title *" else title
 
     ExposedDropdownMenuBox(
         expanded = expanded,
@@ -41,9 +47,27 @@ fun OptionSetDropdown(
             value = selectedOption?.let { it.displayName ?: it.name } ?: "",
             onValueChange = {},
             readOnly = true,
-            label = { Text(if (isRequired) "$title *" else title) },
+            label = if (labelText.isNotBlank()) {
+                { Text(labelText) }
+            } else {
+                null
+            },
             trailingIcon = { ExposedDropdownMenuDefaults.TrailingIcon(expanded = expanded) },
             enabled = enabled,
+            shape = RoundedCornerShape(formDimensions.fieldCornerRadius),
+            colors = OutlinedTextFieldDefaults.colors(
+                focusedContainerColor = formColors.gridCellBackground,
+                unfocusedContainerColor = formColors.gridCellBackground,
+                disabledContainerColor = formColors.gridCellBackground.copy(alpha = 0.6f),
+                focusedBorderColor = formColors.gridBorderFocused,
+                unfocusedBorderColor = formColors.gridBorder,
+                disabledBorderColor = formColors.gridBorder.copy(alpha = 0.4f),
+                focusedLabelColor = formColors.gridHeaderText,
+                unfocusedLabelColor = formColors.gridHeaderText,
+                focusedTextColor = formColors.gridCellText,
+                unfocusedTextColor = formColors.gridCellText,
+                disabledTextColor = formColors.gridCellText.copy(alpha = 0.6f)
+            ),
             modifier = Modifier
                 .menuAnchor(MenuAnchorType.PrimaryNotEditable, enabled = enabled)
                 .fillMaxWidth()
@@ -83,11 +107,14 @@ fun OptionSetRadioGroup(
     val sortedOptions = optionSet.options.sortedBy { it.sortOrder }
 
     Column(modifier = modifier) {
-        Text(
-            text = if (isRequired) "$title *" else title,
-            style = MaterialTheme.typography.bodyMedium
-        )
-        Spacer(modifier = Modifier.height(8.dp))
+        val labelText = if (isRequired) "$title *" else title
+        if (labelText.isNotBlank()) {
+            Text(
+                text = labelText,
+                style = MaterialTheme.typography.bodyMedium
+            )
+            Spacer(modifier = Modifier.height(8.dp))
+        }
 
         sortedOptions.forEach { option ->
             Row(
@@ -135,6 +162,7 @@ fun YesNoCheckbox(
         localChecked = isChecked
     }
 
+    val labelText = if (isRequired) "$title *" else title
     Row(
         modifier = modifier
             .fillMaxWidth()
@@ -157,10 +185,12 @@ fun YesNoCheckbox(
             enabled = enabled
         )
         Spacer(modifier = Modifier.width(8.dp))
-        Text(
-            text = if (isRequired) "$title *" else title,
-            style = MaterialTheme.typography.bodyMedium
-        )
+        if (labelText.isNotBlank()) {
+            Text(
+                text = labelText,
+                style = MaterialTheme.typography.bodyMedium
+            )
+        }
     }
 }
 

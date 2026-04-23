@@ -29,6 +29,7 @@ import kotlinx.coroutines.rx2.await
 import org.hisp.dhis.android.core.D2
 import org.hisp.dhis.android.core.event.Event
 import org.hisp.dhis.android.core.event.EventCreateProjection
+import org.hisp.dhis.android.core.organisationunit.OrganisationUnit as SdkOrganisationUnit
 import org.hisp.dhis.android.core.program.ProgramRuleAction
 import org.hisp.dhis.android.core.program.ProgramRuleActionType
 import org.hisp.dhis.android.core.program.ProgramRuleVariable
@@ -210,6 +211,10 @@ private var isShowingSyncOverlay = false
     ) {
         viewModelScope.launch(Dispatchers.IO) {
             try {
+                android.util.Log.d(
+                    TAG,
+                    "initializeEvent(programId=$programId, programStageId=$programStageId, enrollmentId=$enrollmentId, eventId=$eventId)"
+                )
                 updateState {
                     it.copy(
                         isLoading = true,
@@ -242,6 +247,12 @@ private var isShowingSyncOverlay = false
                     d2Instance.eventModule().events().uid(eventId).get().await()
                         ?: throw Exception("Event not found")
                 } else null
+                existingEvent?.let { event ->
+                    android.util.Log.d(
+                        TAG,
+                        "initializeEvent: existing event=${event.uid()} status=${event.status()} sync=${event.aggregatedSyncState()} orgUnit=${event.organisationUnit()} eventDate=${event.eventDate()}"
+                    )
+                }
 
                 val stageId = programStageId
                     ?: existingEvent?.programStage()
@@ -297,10 +308,16 @@ private var isShowingSyncOverlay = false
                             storedBy = null,
                             validationState = ValidationState.VALID,
                             dataEntryType = when (de.valueType()?.name) {
-                                "INTEGER", "POSITIVE_INTEGER", "NEGATIVE_INTEGER" -> DataEntryType.NUMBER
+                                "INTEGER", "INTEGER_POSITIVE", "POSITIVE_INTEGER" -> DataEntryType.POSITIVE_INTEGER
+                                "INTEGER_ZERO_OR_POSITIVE" -> DataEntryType.POSITIVE_INTEGER
+                                "INTEGER_NEGATIVE", "NEGATIVE_INTEGER" -> DataEntryType.NEGATIVE_INTEGER
+                                "NUMBER" -> DataEntryType.NUMBER
+                                "UNIT_INTERVAL" -> DataEntryType.PERCENTAGE
                                 "PERCENTAGE" -> DataEntryType.PERCENTAGE
+                                "DATE", "DATETIME" -> DataEntryType.DATE
                                 "TRUE_ONLY" -> DataEntryType.YES_NO
                                 "BOOLEAN" -> DataEntryType.YES_NO
+                                "PHONE_NUMBER" -> DataEntryType.PHONE_NUMBER
                                 else -> DataEntryType.TEXT
                             },
                             lastModified = System.currentTimeMillis()
@@ -310,10 +327,14 @@ private var isShowingSyncOverlay = false
 
                 // Load existing data values if editing
                 val existingDataValues = if (eventId != null) {
-                    d2Instance.trackedEntityModule().trackedEntityDataValues()
+                    val sdkDataValues = d2Instance.trackedEntityModule().trackedEntityDataValues()
                         .byEvent().eq(eventId)
                         .get().await()
-                        .associate { it.dataElement()!! to it.value() }
+                    android.util.Log.d(TAG, "initializeEvent: loaded ${sdkDataValues.size} SDK data values for event=$eventId")
+                    sdkDataValues.take(10).forEach { dv ->
+                        android.util.Log.d(TAG, "initializeEvent: DV de=${dv.dataElement()} value='${dv.value()}'")
+                    }
+                    sdkDataValues.associate { it.dataElement()!! to it.value() }
                 } else emptyMap()
 
                 // Load option sets for data elements
@@ -368,18 +389,47 @@ private var isShowingSyncOverlay = false
 
                 // Load org units (only for standalone events)
                 val orgUnits = if (enrollmentId == null) {
-                    d2Instance.organisationUnitModule().organisationUnits()
+                    val programOrgUnits = d2Instance.organisationUnitModule().organisationUnits()
                         .byProgramUids(listOf(programId))
                         .get().await()
-                        .map { orgUnit ->
-                            OrganisationUnit(
-                                id = orgUnit.uid(),
-                                name = orgUnit.displayName() ?: orgUnit.name() ?: ""
-                            )
+
+                    val userCaptureRoots = d2Instance.organisationUnitModule().organisationUnits()
+                        .byOrganisationUnitScope(SdkOrganisationUnit.Scope.SCOPE_DATA_CAPTURE)
+                        .get().await()
+
+                    val accessibleOrgUnitIds = mutableSetOf<String>()
+                    userCaptureRoots.forEach { root ->
+                        accessibleOrgUnitIds.add(root.uid())
+                        val descendants = d2Instance.organisationUnitModule().organisationUnits()
+                            .byPath().like("${root.path()}/%")
+                            .get().await()
+                        descendants.forEach { descendant ->
+                            accessibleOrgUnitIds.add(descendant.uid())
                         }
+                    }
+
+                    val filteredProgramOrgUnits = programOrgUnits.filter { it.uid() in accessibleOrgUnitIds }
+                    android.util.Log.d(
+                        TAG,
+                        "initializeEvent: standalone orgUnit options program=${programOrgUnits.size}, accessible=${accessibleOrgUnitIds.size}, intersection=${filteredProgramOrgUnits.size}"
+                    )
+
+                    filteredProgramOrgUnits.map { orgUnit ->
+                        OrganisationUnit(
+                            id = orgUnit.uid(),
+                            name = orgUnit.displayName() ?: orgUnit.name() ?: ""
+                        )
+                    }
                 } else emptyList()
 
                 // Load existing event details if editing
+                val enrollmentOrgUnitId = if (enrollmentId != null) {
+                    d2Instance.enrollmentModule().enrollments()
+                        .uid(enrollmentId)
+                        .get().await()
+                        ?.organisationUnit()
+                } else null
+
                 val (eventDate, orgUnitId, completed) = if (existingEvent != null) {
                     Triple(
                         existingEvent.eventDate() ?: Date(),
@@ -387,7 +437,7 @@ private var isShowingSyncOverlay = false
                         existingEvent.status()?.name == "COMPLETED"
                     )
                 } else {
-                    Triple(Date(), null, false)
+                    Triple(Date(), enrollmentOrgUnitId, false)
                 }
 
                 // INFER IMPLIED CATEGORY STRUCTURE from data element names per section
@@ -431,6 +481,10 @@ private var isShowingSyncOverlay = false
                         sectionHasData = calculateSectionHasData(updatedDataValues)
                     )
                 }
+                android.util.Log.d(
+                    TAG,
+                    "initializeEvent complete: eventId=${eventId ?: "NEW"} fields=${updatedDataValues.size} prefilled=${updatedDataValues.count { !it.value.isNullOrBlank() }} sections=${sections.size}"
+                )
                 cacheInitialState(updatedDataValues, eventDate, orgUnitId)
 
                 updateCanSave()
@@ -560,6 +614,10 @@ private var isShowingSyncOverlay = false
             try {
                 updateState { it.copy(saveInProgress = true, error = null) }
                 val currentState = _state.value
+                android.util.Log.d(
+                    TAG,
+                    "saveEvent start: isEdit=${currentState.isEditMode} eventId=${currentState.eventId} enrollmentId=${currentState.enrollmentId} orgUnit=${currentState.selectedOrganisationUnitId} eventDate=${currentState.eventDate} filled=${currentState.dataValues.count { !it.value.isNullOrBlank() }}/${currentState.dataValues.size} canSave=${currentState.canSave}"
+                )
                 val savingProgress = LoadingProgress(
                     message = if (currentState.isEditMode) "Updating event..." else "Creating event..."
                 )
@@ -582,9 +640,14 @@ private var isShowingSyncOverlay = false
                 }
 
                 if (currentState.isEditMode && currentState.eventId != null) {
+                    android.util.Log.d(TAG, "saveEvent: updating event ${currentState.eventId}")
                     updateExistingEvent(d2Instance, currentState.eventId, currentState)
                 } else {
+                    android.util.Log.d(TAG, "saveEvent: creating new event stage=${currentState.programStageId}")
                     createNewEvent(d2Instance, currentState)
+                }
+                _state.value.eventId?.let { savedEventId ->
+                    logEventSnapshot(d2Instance, savedEventId, "saveEvent.afterLocalWrite")
                 }
 
                 updateState {
@@ -604,11 +667,12 @@ private var isShowingSyncOverlay = false
                 emitSuccessState()
 
             } catch (e: Exception) {
+                android.util.Log.e("EventCaptureVM", "saveEvent failed", e)
                 updateState {
                     it.copy(
                         saveInProgress = false,
                         saveResult = Result.failure(e),
-                        error = "Failed to save event: ${e.message}"
+                        error = "Failed to save event: ${formatErrorMessage(e)}"
                     )
                 }
                 emitSuccessState()
@@ -682,6 +746,7 @@ private var isShowingSyncOverlay = false
         viewModelScope.launch(Dispatchers.IO) {
             try {
                 val eventId = _state.value.eventId ?: return@launch
+                android.util.Log.d(TAG, "completeEvent start: eventId=$eventId")
                 updateState { it.copy(saveInProgress = true, error = null) }
                 val completionProgress = LoadingProgress(message = "Completing event...")
                 setUiLoading(
@@ -692,6 +757,9 @@ private var isShowingSyncOverlay = false
                 val result = repository.completeEvent(eventId)
                 if (result.isFailure) {
                     throw result.exceptionOrNull() ?: Exception("Failed to complete event")
+                }
+                d2?.let { d2Instance ->
+                    logEventSnapshot(d2Instance, eventId, "completeEvent.afterStatusChange")
                 }
 
                 updateState {
@@ -720,50 +788,130 @@ private var isShowingSyncOverlay = false
             .byDisplayName().eq("default").one().get().await()?.uid()
             ?: "HllvX50cXC0"
 
+        val resolvedOrgUnitId = state.selectedOrganisationUnitId
+            ?: state.enrollmentId?.let { enrollmentId ->
+                d2.enrollmentModule().enrollments()
+                    .uid(enrollmentId)
+                    .get().await()
+                    ?.organisationUnit()
+            }
+
+        if (resolvedOrgUnitId.isNullOrBlank()) {
+            throw IllegalStateException("Organisation unit is required to create an event")
+        }
+        android.util.Log.d(
+            TAG,
+            "createNewEvent: program=${state.programId} stage=${state.programStageId} enrollmentId=${state.enrollmentId} orgUnit=$resolvedOrgUnitId eventDate=${state.eventDate} filled=${state.dataValues.count { !it.value.isNullOrBlank() }}/${state.dataValues.size}"
+        )
+
         // Create event
         val eventUid = d2.eventModule().events().add(
             EventCreateProjection.create(
                 state.enrollmentId, // Can be null for standalone events
                 state.programId,
                 state.programStageId,
-                state.selectedOrganisationUnitId ?: "",
+                resolvedOrgUnitId,
                 defaultCombo
             )
         ).await()
+        android.util.Log.d(TAG, "createNewEvent: created eventUid=$eventUid")
+
+        updateState(autoEmit = false) {
+            it.copy(
+                eventId = eventUid,
+                selectedOrganisationUnitId = resolvedOrgUnitId
+            )
+        }
 
         // Set event date
         d2.eventModule().events().uid(eventUid).setEventDate(state.eventDate)
+        android.util.Log.d(TAG, "createNewEvent: setEventDate eventUid=$eventUid date=${state.eventDate}")
 
         // Save data values - reuse exact same pattern as datasets
-        state.dataValues.forEach { dataValue ->
-            dataValue.value?.let { value ->
-                if (value.isNotBlank()) {
-                    d2.trackedEntityModule().trackedEntityDataValues()
-                        .value(eventUid, dataValue.dataElement)
-                        .set(value)
-                }
-            }
-        }
+        persistEventDataValues(d2, eventUid, state.dataValues, deleteEmptyValues = false)
     }
 
     private fun updateExistingEvent(d2: D2, eventId: String, state: EventCaptureState) {
+        android.util.Log.d(
+            TAG,
+            "updateExistingEvent: eventId=$eventId eventDate=${state.eventDate} filled=${state.dataValues.count { !it.value.isNullOrBlank() }}/${state.dataValues.size}"
+        )
+        if (state.enrollmentId == null && !state.selectedOrganisationUnitId.isNullOrBlank()) {
+            d2.eventModule().events().uid(eventId).setOrganisationUnitUid(state.selectedOrganisationUnitId)
+            android.util.Log.d(TAG, "updateExistingEvent: setOrganisationUnitUid eventId=$eventId orgUnit=${state.selectedOrganisationUnitId}")
+        }
         // Update event date
         d2.eventModule().events().uid(eventId).setEventDate(state.eventDate)
 
         // Update data values
-        state.dataValues.forEach { dataValue ->
-            dataValue.value?.let { value ->
-                if (value.isNotBlank()) {
-                    d2.trackedEntityModule().trackedEntityDataValues()
-                        .value(eventId, dataValue.dataElement)
-                        .set(value)
+        persistEventDataValues(d2, eventId, state.dataValues, deleteEmptyValues = true)
+    }
+
+    private fun persistEventDataValues(
+        d2: D2,
+        eventId: String,
+        dataValues: List<DataValue>,
+        deleteEmptyValues: Boolean
+    ) {
+        dataValues.forEach { dataValue ->
+            try {
+                val editor = d2.trackedEntityModule().trackedEntityDataValues()
+                    .value(eventId, dataValue.dataElement)
+                val value = dataValue.value
+                if (value.isNullOrBlank()) {
+                    if (deleteEmptyValues) {
+                        android.util.Log.d(
+                            TAG,
+                            "persistEventDataValues: delete event=$eventId de=${dataValue.dataElement} label='${dataValue.dataElementName}'"
+                        )
+                        editor.blockingSet(null)
+                    }
                 } else {
-                    // Remove empty values
-                    d2.trackedEntityModule().trackedEntityDataValues()
-                        .value(eventId, dataValue.dataElement)
-                        .delete()
+                    android.util.Log.d(
+                        TAG,
+                        "persistEventDataValues: set event=$eventId de=${dataValue.dataElement} label='${dataValue.dataElementName}' len=${value.length}"
+                    )
+                    editor.blockingSet(value)
                 }
+            } catch (e: Exception) {
+                android.util.Log.e(
+                    TAG,
+                    "persistEventDataValues failed: event=$eventId de=${dataValue.dataElement} label='${dataValue.dataElementName}' value='${dataValue.value}'",
+                    e
+                )
+                throw IllegalStateException(
+                    "Failed to save field '${dataValue.dataElementName.ifBlank { dataValue.dataElement }}'",
+                    e
+                )
             }
+        }
+    }
+
+    private fun formatErrorMessage(error: Throwable): String {
+        return error.message
+            ?: error.cause?.message
+            ?: error::class.java.simpleName
+    }
+
+    private fun logEventSnapshot(d2: D2, eventId: String, source: String) {
+        try {
+            val event = d2.eventModule().events().uid(eventId).blockingGet()
+            if (event == null) {
+                android.util.Log.w(TAG, "$source: event=$eventId not found in local SDK")
+                return
+            }
+            val dataValues = d2.trackedEntityModule().trackedEntityDataValues()
+                .byEvent().eq(eventId)
+                .blockingGet()
+            android.util.Log.d(
+                TAG,
+                "$source: event=$eventId status=${event.status()} sync=${event.aggregatedSyncState()} orgUnit=${event.organisationUnit()} eventDate=${event.eventDate()} dataValues=${dataValues.size}"
+            )
+            dataValues.take(10).forEach { dv ->
+                android.util.Log.d(TAG, "$source: DV de=${dv.dataElement()} value='${dv.value()}'")
+            }
+        } catch (e: Exception) {
+            android.util.Log.e(TAG, "$source: failed to inspect event=$eventId", e)
         }
     }
 
@@ -773,6 +921,23 @@ private var isShowingSyncOverlay = false
             try {
                 val currentState = _state.value
                 if (currentState.programId.isBlank()) return@launch
+                val d2Instance = d2
+                val resolvedEnrollmentId = currentState.enrollmentId
+                    ?: currentState.eventId?.let { eventId ->
+                        d2Instance?.eventModule()?.events()?.uid(eventId)?.blockingGet()?.enrollment()
+                    }
+                val syncProgramType = if (!resolvedEnrollmentId.isNullOrBlank()) {
+                    ProgramType.TRACKER
+                } else {
+                    ProgramType.EVENT
+                }
+                android.util.Log.d(
+                    TAG,
+                    "syncEvent start: programId=${currentState.programId} currentEventId=${currentState.eventId} enrollmentId=${currentState.enrollmentId} resolvedEnrollmentId=$resolvedEnrollmentId syncProgramType=$syncProgramType completed=${currentState.isCompleted}"
+                )
+                currentState.eventId?.let { eventId ->
+                    d2Instance?.let { logEventSnapshot(it, eventId, "syncEvent.before") }
+                }
 
                 val syncProgress = NavigationProgress(
                     phase = com.ash.simpledataentry.presentation.core.LoadingPhase.INITIALIZING,
@@ -786,8 +951,11 @@ private var isShowingSyncOverlay = false
                     progress = LoadingProgress(message = syncProgress.phaseDetail)
                 )
 
-                repository.syncProgramInstances(currentState.programId, ProgramType.EVENT)
+                repository.syncProgramInstances(currentState.programId, syncProgramType)
                     .onSuccess {
+                        currentState.eventId?.let { eventId ->
+                            d2Instance?.let { logEventSnapshot(it, eventId, "syncEvent.after") }
+                        }
                         val refreshProgress = NavigationProgress(
                             phase = com.ash.simpledataentry.presentation.core.LoadingPhase.PROCESSING_DATA,
                             overallPercentage = 85,
@@ -800,7 +968,13 @@ private var isShowingSyncOverlay = false
                             progress = LoadingProgress(message = refreshProgress.phaseDetail)
                         )
                         updateState {
-                            it.copy(successMessage = "Event synced successfully")
+                            it.copy(
+                                successMessage = if (syncProgramType == ProgramType.TRACKER) {
+                                    "Tracker data synced successfully"
+                                } else {
+                                    "Event synced successfully"
+                                }
+                            )
                         }
                         emitSuccessState()
                     }
@@ -1255,5 +1429,9 @@ private var isShowingSyncOverlay = false
         }
 
         return inferred
+    }
+
+    companion object {
+        private const val TAG = "EventCaptureVM"
     }
 }

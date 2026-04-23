@@ -54,6 +54,8 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.ui.platform.LocalLifecycleOwner
+import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.zIndex
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
 import kotlinx.coroutines.launch
@@ -583,6 +585,12 @@ fun DatasetInstancesScreen(
     datasetName: String,
     viewModel: DatasetInstancesViewModel = hiltViewModel()
 ) {
+    fun safeMessage(message: String?, fallback: String): String {
+        return message?.takeIf { it.isNotBlank() } ?: fallback
+    }
+    val snackbarContainerColor = Color(0xFF1F2937)
+    val snackbarContentColor = Color.White
+
     val snackbarHostState = remember { SnackbarHostState() }
     val scope = rememberCoroutineScope()
     val uiState by viewModel.uiState.collectAsState()
@@ -627,6 +635,16 @@ fun DatasetInstancesScreen(
     val hasBlockingOverlay = currentUiState is UiState.Loading &&
         currentUiState.operation !is LoadingOperation.Initial &&
         currentData != null
+    var showBlockingOverlayUi by remember { mutableStateOf(false) }
+    LaunchedEffect(hasBlockingOverlay) {
+        if (hasBlockingOverlay) {
+            // Prevent short "flash" overlays for very fast loads.
+            kotlinx.coroutines.delay(300)
+            if (hasBlockingOverlay) showBlockingOverlayUi = true
+        } else {
+            showBlockingOverlayUi = false
+        }
+    }
     val isBlockingOperation = hasBlockingOverlay
     val isSyncInProgress = currentUiState is UiState.Loading &&
         currentUiState.operation is LoadingOperation.Syncing
@@ -650,7 +668,7 @@ fun DatasetInstancesScreen(
                 is UiError.Local -> error.message
             }
             snackbarHostState.showSnackbar(
-                message = message,
+                message = safeMessage(message, "Something went wrong. Please try again."),
                 duration = SnackbarDuration.Short
             )
         }
@@ -659,7 +677,7 @@ fun DatasetInstancesScreen(
     LaunchedEffect(currentData?.successMessage) {
         currentData?.successMessage?.let {
             snackbarHostState.showSnackbar(
-                message = it,
+                message = safeMessage(it, "Action completed."),
                 duration = SnackbarDuration.Short
             )
         }
@@ -669,12 +687,19 @@ fun DatasetInstancesScreen(
         title = datasetName,
         subtitle = subtitle,
         navController = navController,
+        usePrimaryTopBar = false,
         syncStatusController = viewModel.syncController,
         actions = {
             IconButton(
                 onClick = {
                     if (!isBlockingOperation && currentData != null) {
-                        showSyncDialog = true
+                        if (!viewModel.canStartSync()) {
+                            scope.launch {
+                                snackbarHostState.showSnackbar("No internet connection. Please check internet connectivity and try again.")
+                            }
+                        } else {
+                            showSyncDialog = true
+                        }
                     }
                 },
                 enabled = !isBlockingOperation && !bulkMode && currentData != null
@@ -819,7 +844,7 @@ fun DatasetInstancesScreen(
                             bulkMode = bulkMode,
                             selectedInstances = selectedInstances,
                             isBlockingOperation = isBlockingOperation,
-                            hasBlockingOverlay = hasBlockingOverlay,
+                            hasBlockingOverlay = showBlockingOverlayUi,
                             uiState = currentUiState,
                             navController = navController,
                             datasetId = datasetId,
@@ -829,7 +854,14 @@ fun DatasetInstancesScreen(
                                 viewModel.syncDatasetInstance(instance) { success, message ->
                                     scope.launch {
                                         snackbarHostState.showSnackbar(
-                                            message ?: if (success) "Entry synced." else "Entry sync failed."
+                                            safeMessage(
+                                                message,
+                                                if (success) {
+                                                    "Entry synced successfully."
+                                                } else {
+                                                    "Sync failed. No internet connection or server error."
+                                                }
+                                            )
                                         )
                                     }
                                 }
@@ -866,19 +898,29 @@ fun DatasetInstancesScreen(
                 hostState = snackbarHostState,
                 modifier = Modifier
                     .align(Alignment.BottomCenter)
-                    .padding(16.dp),
+                    .navigationBarsPadding()
+                    .padding(horizontal = 16.dp, vertical = 16.dp)
+                    .zIndex(3f),
                 snackbar = { data ->
                     Snackbar(
-                        containerColor = MaterialTheme.colorScheme.surface,
-                        contentColor = Color.White
+                        containerColor = snackbarContainerColor,
+                        contentColor = snackbarContentColor,
+                        actionContentColor = snackbarContentColor
                     ) {
-                        Text(data.visuals.message)
+                        Text(
+                            text = safeMessage(data.visuals.message, "Something happened."),
+                            color = snackbarContentColor,
+                            maxLines = 3,
+                            overflow = TextOverflow.Ellipsis
+                        )
                     }
                 }
             )
             if (bulkActionMessage != null) {
                 LaunchedEffect(bulkActionMessage) {
-                    snackbarHostState.showSnackbar(bulkActionMessage!!)
+                    snackbarHostState.showSnackbar(
+                        safeMessage(bulkActionMessage, "Action finished.")
+                    )
                     bulkActionMessage = null
                 }
             }
@@ -944,7 +986,13 @@ fun DatasetInstancesScreen(
                         localInstanceCount = currentData.localInstanceCount
                     ),
                     onConfirm = { uploadFirst ->
-                        viewModel.syncDatasetInstances(uploadFirst)
+                        if (!viewModel.canStartSync()) {
+                            scope.launch {
+                                snackbarHostState.showSnackbar("No internet connection. Please check internet connectivity and try again.")
+                            }
+                        } else {
+                            viewModel.syncDatasetInstances(uploadFirst)
+                        }
                         showSyncDialog = false
                     },
                     onDismiss = { showSyncDialog = false }

@@ -2,7 +2,6 @@ package com.ash.simpledataentry.data.repositoryImpl
 
 import android.content.Context
 import android.util.Log
-import android.widget.Toast
 import com.ash.simpledataentry.data.SessionManager
 import com.ash.simpledataentry.domain.model.Dhis2Config
 import com.ash.simpledataentry.domain.repository.AuthRepository
@@ -10,11 +9,6 @@ import com.ash.simpledataentry.domain.repository.SystemRepository
 import javax.inject.Inject
 import javax.inject.Singleton
 import com.ash.simpledataentry.presentation.core.NavigationProgress
-import kotlinx.coroutines.CoroutineScope
-import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.SupervisorJob
-import kotlinx.coroutines.launch
-import kotlinx.coroutines.withContext
 
 @Singleton
 class AuthRepositoryImpl @Inject constructor(
@@ -23,8 +17,6 @@ class AuthRepositoryImpl @Inject constructor(
     private val backgroundSyncManager: com.ash.simpledataentry.data.sync.BackgroundSyncManager
 ) : AuthRepository {
 
-    // Scope for background tasks that survive beyond the calling coroutine
-    private val backgroundScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
 
     override suspend fun login(serverUrl: String, username: String, password: String, context: Context): Boolean {
         return try {
@@ -44,37 +36,27 @@ class AuthRepositoryImpl @Inject constructor(
         context: Context,
         onProgress: (NavigationProgress) -> Unit
     ): Boolean {
+        // Blocking metadata download with UI lock (completes before returning)
+        sessionManager.loginWithProgress(context, Dhis2Config(serverUrl, username, password), backgroundSyncManager, onProgress)
+
+        // CRITICAL: Clear metadata caches after successful login (handles user-switch scenarios)
+        metadataCacheService.clearAllCaches()
+
+        // Background data sync is now manual (Settings -> "Download full data")
+        Log.d("AuthRepositoryImpl", "Metadata sync complete - skipping auto full data sync")
+
+        return true
+    }
+
+    suspend fun loginAuthOnly(
+        serverUrl: String,
+        username: String,
+        password: String,
+        context: Context
+    ): Boolean {
         return try {
-            // Blocking metadata download with UI lock (completes before returning)
-            sessionManager.loginWithProgress(context, Dhis2Config(serverUrl, username, password), backgroundSyncManager, onProgress)
-
-            // CRITICAL: Clear metadata caches after successful login (handles user-switch scenarios)
+            sessionManager.authenticateOnly(context, Dhis2Config(serverUrl, username, password))
             metadataCacheService.clearAllCaches()
-
-            // CRITICAL: Start async background data sync AFTER metadata completes
-            // UI is unlocked, user can navigate immediately
-            Log.d("AuthRepositoryImpl", "Metadata sync complete - starting background data sync")
-            backgroundScope.launch {
-                var syncSuccess = false
-                var syncMessage: String? = null
-
-                sessionManager.startBackgroundDataSync(context) { success, message ->
-                    syncSuccess = success
-                    syncMessage = message
-                }
-
-                // Show non-intrusive toast notification when background sync completes
-                withContext(Dispatchers.Main) {
-                    val toastMessage = if (syncSuccess) {
-                        "✓ Data sync complete"
-                    } else {
-                        "⚠ Data sync incomplete: ${syncMessage ?: "Unknown error"}"
-                    }
-                    Toast.makeText(context, toastMessage, Toast.LENGTH_LONG).show()
-                    Log.d("AuthRepositoryImpl", "Background sync completed: $toastMessage")
-                }
-            }
-
             true
         } catch (e: Exception) {
             false

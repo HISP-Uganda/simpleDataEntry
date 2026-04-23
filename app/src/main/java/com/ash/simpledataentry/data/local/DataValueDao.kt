@@ -21,4 +21,48 @@ interface DataValueDao {
 
     @Query("SELECT * FROM data_values WHERE datasetId = :datasetId")
     suspend fun getValuesForDataset(datasetId: String): List<DataValueEntity>
-} 
+
+    @Query("""
+        SELECT COUNT(*) FROM (
+            SELECT DISTINCT period, orgUnit, attributeOptionCombo
+            FROM data_values
+            WHERE datasetId = :datasetId
+        )
+    """)
+    suspend fun countDistinctInstances(datasetId: String): Int
+
+    @Query("""
+        SELECT COUNT(*) FROM (
+            SELECT DISTINCT period, orgUnit, attributeOptionCombo
+            FROM data_values
+            WHERE datasetId = :datasetId AND orgUnit IN (:orgUnitIds)
+        )
+    """)
+    suspend fun countDistinctInstancesForOrgUnits(datasetId: String, orgUnitIds: List<String>): Int
+
+    @Query("""
+        SELECT COUNT(*) FROM (
+            SELECT DISTINCT period, orgUnit, attributeOptionCombo
+            FROM data_values
+            WHERE datasetId = :datasetId
+            UNION
+            SELECT DISTINCT period, orgUnit, attributeOptionCombo
+            FROM data_value_drafts
+            WHERE datasetId = :datasetId
+        )
+    """)
+    suspend fun countDistinctInstancesIncludingDrafts(datasetId: String): Int
+
+    @Query("""
+        SELECT COUNT(*) FROM (
+            SELECT DISTINCT period, orgUnit, attributeOptionCombo
+            FROM data_values
+            WHERE datasetId = :datasetId AND orgUnit IN (:orgUnitIds)
+            UNION
+            SELECT DISTINCT period, orgUnit, attributeOptionCombo
+            FROM data_value_drafts
+            WHERE datasetId = :datasetId AND orgUnit IN (:orgUnitIds)
+        )
+    """)
+    suspend fun countDistinctInstancesIncludingDraftsForOrgUnits(datasetId: String, orgUnitIds: List<String>): Int
+}

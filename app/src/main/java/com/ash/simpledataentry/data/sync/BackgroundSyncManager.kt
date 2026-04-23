@@ -216,4 +216,10 @@ class BackgroundSyncManager @Inject constructor(
      * Get work info for monitoring metadata sync status
      */
     fun getMetadataSyncWorkInfo() = workManager.getWorkInfosForUniqueWorkLiveData(METADATA_SYNC_WORK_NAME)
+
+    /**
+     * Get work info for monitoring immediate metadata sync status (one-time jobs by tag)
+     */
+    fun getImmediateMetadataSyncWorkInfoByTag() =
+        workManager.getWorkInfosByTagLiveData("immediate_metadata_sync")
 }

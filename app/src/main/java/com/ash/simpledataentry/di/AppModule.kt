@@ -282,11 +282,15 @@ object AppModule {
     @Singleton
     fun provideMetadataCacheService(
         sessionManager: SessionManager,
-        databaseProvider: DatabaseProvider
+        databaseProvider: DatabaseProvider,
+        savedAccountRepository: com.ash.simpledataentry.data.repositoryImpl.SavedAccountRepository,
+        @ApplicationContext context: Context
     ): MetadataCacheService {
         return MetadataCacheService(
             sessionManager,
-            databaseProvider
+            databaseProvider,
+            savedAccountRepository,
+            context
         )
     }
 
@@ -318,9 +322,16 @@ object AppModule {
         networkStateManager: NetworkStateManager,
         sessionManager: SessionManager,
         databaseProvider: DatabaseProvider,
+        metadataCacheService: MetadataCacheService,
         @ApplicationContext context: Context
     ): SyncQueueManager {
-        return SyncQueueManager(networkStateManager, sessionManager, databaseProvider, context)
+        return SyncQueueManager(
+            networkStateManager,
+            sessionManager,
+            databaseProvider,
+            metadataCacheService,
+            context
+        )
     }
 
     @Provides

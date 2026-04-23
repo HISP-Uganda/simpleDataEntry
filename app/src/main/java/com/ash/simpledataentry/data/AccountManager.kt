@@ -149,6 +149,11 @@ class AccountManager @Inject constructor() {
         Log.d(TAG, "Active account set to: $accountId")
     }
 
+    fun clearActiveAccountId(context: Context) {
+        getPrefs(context).edit().remove(KEY_ACTIVE_ACCOUNT_ID).commit()
+        Log.d(TAG, "Active account cleared")
+    }
+
     /**
      * Get active account info
      */

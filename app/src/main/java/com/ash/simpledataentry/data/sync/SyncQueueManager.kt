@@ -5,12 +5,14 @@ import android.os.PowerManager
 import android.util.Log
 import com.ash.simpledataentry.data.SessionManager
 import com.ash.simpledataentry.data.DatabaseProvider
+import com.ash.simpledataentry.data.cache.MetadataCacheService
 import com.ash.simpledataentry.data.local.DataValueDraftEntity
 import kotlinx.coroutines.*
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.sync.withLock
 import javax.inject.Inject
 import javax.inject.Singleton
 
@@ -20,7 +22,16 @@ data class SyncState(
     val lastSyncAttempt: Long? = null,
     val lastSuccessfulSync: Long? = null,
     val failedAttempts: Int = 0,
-    val error: String? = null
+    val error: String? = null,
+    val lastSyncStatus: String = "Idle",
+    val totalSuccessCount: Int = 0,
+    val totalFailureCount: Int = 0
+)
+
+data class SyncLogEntry(
+    val timestamp: Long,
+    val level: String,
+    val message: String
 )
 
 enum class SyncPhase(val title: String, val defaultDetail: String) {
@@ -93,6 +104,7 @@ class SyncQueueManager @Inject constructor(
     private val networkStateManager: NetworkStateManager,
     private val sessionManager: SessionManager,
     private val databaseProvider: DatabaseProvider,
+    private val metadataCacheService: MetadataCacheService,
     private val context: Context
 ) {
 
@@ -108,10 +120,25 @@ class SyncQueueManager @Inject constructor(
 
     private val _detailedProgress = MutableStateFlow<DetailedSyncProgress?>(null)
     val detailedProgress: StateFlow<DetailedSyncProgress?> = _detailedProgress.asStateFlow()
+    private val _syncLogs = MutableStateFlow<List<SyncLogEntry>>(emptyList())
+    val syncLogs: StateFlow<List<SyncLogEntry>> = _syncLogs.asStateFlow()
 
     private var syncJob: Job? = null
     private var networkMonitorJob: Job? = null
     private var autoRetryJob: Job? = null
+
+    private fun addSyncLog(level: String, message: String) {
+        val entry = SyncLogEntry(
+            timestamp = System.currentTimeMillis(),
+            level = level,
+            message = message
+        )
+        _syncLogs.value = (_syncLogs.value + entry).takeLast(200)
+    }
+
+    fun clearSyncLogs() {
+        _syncLogs.value = emptyList()
+    }
 
     // DHIS2 SDK standard timeout configuration (v1.3.1+)
     private val uploadTimeoutMs = 600000L // 10 minutes - DHIS2 Android SDK standard since v1.3.1
@@ -162,20 +189,18 @@ class SyncQueueManager @Inject constructor(
     }
     
     suspend fun startSync(forceSync: Boolean = false): Result<Unit> {
+        if (syncJob?.isActive == true) {
+            return Result.failure(Exception("Sync already in progress"))
+        }
         if (_syncState.value.isRunning && !forceSync) {
             return Result.failure(Exception("Sync already in progress"))
         }
 
-        syncJob?.cancel()
         syncJob = syncScope.launch {
             try {
-                // Add overall sync timeout to prevent hanging during screen lock
-                withTimeout(overallSyncTimeoutMs) { // 15 minutes maximum for entire sync operation
-                    performSync()
-                }
-            } catch (e: TimeoutCancellationException) {
-                Log.e(tag, "Sync operation timed out after ${overallSyncTimeoutMs/1000} seconds")
-                setErrorState(SyncError.TimeoutError("Sync timed out - may be caused by screen lock or network issues"))
+                // Do not wrap upload-capable sync in coroutine timeout; SDK blocking uploads are
+                // not cancellable and can leave in-flight DB transactions if the coroutine times out.
+                performSync()
             } catch (e: Exception) {
                 Log.e(tag, "Sync operation failed", e)
                 setErrorState(classifyError(e))
@@ -200,11 +225,13 @@ class SyncQueueManager @Inject constructor(
     }
 
     suspend fun startDownloadOnlySync(forceSync: Boolean = false): Result<Unit> {
+        if (syncJob?.isActive == true) {
+            return Result.failure(Exception("Sync already in progress"))
+        }
         if (_syncState.value.isRunning && !forceSync) {
             return Result.failure(Exception("Sync already in progress"))
         }
 
-        syncJob?.cancel()
         syncJob = syncScope.launch {
             try {
                 withTimeout(downloadTimeoutMs) { // 5 minutes for download-only
@@ -242,29 +269,20 @@ class SyncQueueManager @Inject constructor(
         attributeOptionCombo: String,
         forceSync: Boolean = false
     ): Result<Unit> {
+        if (syncJob?.isActive == true) {
+            return Result.failure(Exception("Sync already in progress"))
+        }
         if (_syncState.value.isRunning && !forceSync) {
             return Result.failure(Exception("Sync already in progress"))
         }
 
-        syncJob?.cancel()
         syncJob = syncScope.launch {
             try {
-                // Reasonable timeout for instance sync aligned with upload timeout
-                withTimeout(uploadTimeoutMs) { // Use same timeout as regular uploads
-                    performSyncForInstance(datasetId, period, orgUnit, attributeOptionCombo)
-                }
-            } catch (e: TimeoutCancellationException) {
-                Log.e(tag, "Instance sync operation timed out after ${uploadTimeoutMs/1000} seconds")
-                _syncState.value = _syncState.value.copy(
-                    isRunning = false,
-                    error = "Sync timed out - may be caused by screen lock or network issues",
-                    failedAttempts = _syncState.value.failedAttempts + 1
-                )
-                clearDetailedProgress() // CRITICAL: Clear overlay on timeout
+                // Same rationale as startSync(): avoid coroutine timeout around non-cancellable SDK upload.
+                performSyncForInstance(datasetId, period, orgUnit, attributeOptionCombo)
             } catch (e: Exception) {
                 Log.e(tag, "Instance sync operation failed", e)
                 val errorMessage = when (e) {
-                    is kotlinx.coroutines.TimeoutCancellationException -> "Sync timed out"
                     else -> classifyError(e).let { error ->
                         when (error) {
                             is SyncError.NetworkError -> error.message
@@ -279,8 +297,11 @@ class SyncQueueManager @Inject constructor(
                 _syncState.value = _syncState.value.copy(
                     isRunning = false,
                     error = errorMessage,
-                    failedAttempts = _syncState.value.failedAttempts + 1
+                    failedAttempts = _syncState.value.failedAttempts + 1,
+                    lastSyncStatus = "Failed",
+                    totalFailureCount = _syncState.value.totalFailureCount + 1
                 )
+                addSyncLog("ERROR", errorMessage)
                 clearDetailedProgress() // CRITICAL: Clear overlay on any error
             }
         }
@@ -306,7 +327,8 @@ class SyncQueueManager @Inject constructor(
         _syncState.value = _syncState.value.copy(
             isRunning = true,
             lastSyncAttempt = System.currentTimeMillis(),
-            error = null
+            error = null,
+            lastSyncStatus = "Running"
         )
 
         // Acquire wake lock to prevent interruption
@@ -341,8 +363,11 @@ class SyncQueueManager @Inject constructor(
                     isRunning = false,
                     queueSize = 0,
                     lastSuccessfulSync = System.currentTimeMillis(),
-                    failedAttempts = 0
+                    failedAttempts = 0,
+                    lastSyncStatus = "Success",
+                    totalSuccessCount = _syncState.value.totalSuccessCount + 1
                 )
+                addSyncLog("INFO", "Sync completed successfully (no pending drafts).")
                 clearDetailedProgress()
                 return
             }
@@ -353,38 +378,11 @@ class SyncQueueManager @Inject constructor(
 
             for ((index, draft) in drafts.withIndex()) {
                 try {
-                    // Set the data value in DHIS2 local database
-                    d2.dataValueModule().dataValues()
-                        .value(
-                            period = draft.period,
-                            organisationUnit = draft.orgUnit,
-                            dataElement = draft.dataElement,
-                            categoryOptionCombo = draft.categoryOptionCombo,
-                            attributeOptionCombo = draft.attributeOptionCombo
-                        )
-                        .blockingSet(draft.value)
-
-                    // DHIS2 Security: Validate data state before marking for upload
-                    val dataValue = d2.dataValueModule().dataValues()
-                        .value(
-                            period = draft.period,
-                            organisationUnit = draft.orgUnit,
-                            dataElement = draft.dataElement,
-                            categoryOptionCombo = draft.categoryOptionCombo,
-                            attributeOptionCombo = draft.attributeOptionCombo
-                        )
-                        .blockingGet()
-
-                    // Only add to upload queue if state allows upload (not ERROR or WARNING)
-                    val syncState = dataValue?.syncState()
-                    if (syncState != null && (syncState.name == "ERROR" || syncState.name == "WARNING")) {
-                        Log.w(tag, "Skipping data value in ${syncState.name} state: ${draft.dataElement}")
-                        Log.d(tag, "Data value details - Period: ${draft.period}, OrgUnit: ${draft.orgUnit}, Value: ${draft.value}")
-                        // Don't add to successful drafts - requires resolution first
-                    } else {
-                        allSuccessfulDrafts.add(draft)
-                        Log.d(tag, "Added data value for upload: ${draft.dataElement} (State: ${syncState?.name ?: "UNKNOWN"})")
-                    }
+                    // Do not stage/write into the DHIS2 SDK database during prepare.
+                    // Chunk upload will stage values under the shared SDK lock right before upload.
+                    // This avoids duplicate SDK writes and nested SQLite transaction conflicts.
+                    allSuccessfulDrafts.add(draft)
+                    Log.d(tag, "Queued data value for upload: ${draft.dataElement}")
 
                     // Update progress for data preparation
                     val prepProgress = 20 + ((index + 1) * 10 / drafts.size)
@@ -398,7 +396,7 @@ class SyncQueueManager @Inject constructor(
                     )
 
                 } catch (e: Exception) {
-                    Log.w(tag, "Failed to set draft value for ${draft.dataElement}: ${e.message}")
+                    Log.w(tag, "Failed to prepare draft value for ${draft.dataElement}: ${e.message}")
                 }
             }
 
@@ -452,10 +450,13 @@ class SyncQueueManager @Inject constructor(
                 updateProgress(SyncPhase.DOWNLOADING_DATASETS, 85, "Downloading latest data...")
 
                 withTimeout(downloadTimeoutMs) {
-                    d2.dataValueModule().dataValues().get()
+                    D2SdkOperationLocks.dataValueAndAggregateMutex.withLock {
+                        d2.aggregatedModule().data().blockingDownload()
+                    }
                 }
 
                 updateProgress(SyncPhase.DOWNLOADING_DATASETS, 95, "Download completed")
+                Log.d(tag, "Aggregate data download completed after upload sync")
             } catch (e: Exception) {
                 Log.w(tag, "Failed to download latest data after upload: ${e.message}")
                 // Don't fail the entire sync just because download failed
@@ -470,8 +471,11 @@ class SyncQueueManager @Inject constructor(
                 queueSize = databaseProvider.getCurrentDatabase().dataValueDraftDao().getAllDrafts().size,
                 lastSuccessfulSync = System.currentTimeMillis(),
                 failedAttempts = 0,
-                error = null
+                error = null,
+                lastSyncStatus = "Success",
+                totalSuccessCount = _syncState.value.totalSuccessCount + 1
             )
+            addSyncLog("INFO", "Sync completed successfully.")
 
             updateProgress(SyncPhase.FINALIZING, 100, "Sync completed successfully")
 
@@ -495,8 +499,11 @@ class SyncQueueManager @Inject constructor(
                     is SyncError.ServerError -> error.message
                     is SyncError.ValidationError -> error.message
                     is SyncError.UnknownError -> error.message
-                }
+                },
+                lastSyncStatus = "Failed",
+                totalFailureCount = _syncState.value.totalFailureCount + 1
             )
+            addSyncLog("ERROR", _syncState.value.error ?: "Sync failed")
 
             // Don't clear progress on error - let user see error state and navigate back
             if (_detailedProgress.value?.error == null) {
@@ -512,7 +519,8 @@ class SyncQueueManager @Inject constructor(
         _syncState.value = _syncState.value.copy(
             isRunning = true,
             lastSyncAttempt = System.currentTimeMillis(),
-            error = null
+            error = null,
+            lastSyncStatus = "Running"
         )
 
         try {
@@ -565,13 +573,15 @@ class SyncQueueManager @Inject constructor(
                     updateProgress(
                         SyncPhase.DOWNLOADING_DATASETS,
                         40,
-                        "Downloading aggregate data...",
+                        "Downloading aggregate data and data values...",
                         currentItem = datasetCount,
                         totalItems = totalItems,
                         itemDescription = "datasets"
                     )
                     withTimeout(downloadTimeoutMs) {
-                        d2.aggregatedModule().data().blockingDownload()
+                        D2SdkOperationLocks.dataValueAndAggregateMutex.withLock {
+                            d2.aggregatedModule().data().blockingDownload()
+                        }
                     }
                 }
 
@@ -586,10 +596,12 @@ class SyncQueueManager @Inject constructor(
                         itemDescription = "enrollments"
                     )
                     withTimeout(downloadTimeoutMs) {
-                        d2.trackedEntityModule().trackedEntityInstanceDownloader()
-                            .limit(200)
-                            .limitByProgram(true)
-                            .blockingDownload()
+                        D2SdkOperationLocks.dataValueAndAggregateMutex.withLock {
+                            d2.trackedEntityModule().trackedEntityInstanceDownloader()
+                                .limit(200)
+                                .limitByProgram(true)
+                                .blockingDownload()
+                        }
                     }
                 }
 
@@ -604,10 +616,12 @@ class SyncQueueManager @Inject constructor(
                         itemDescription = "events"
                     )
                     withTimeout(downloadTimeoutMs) {
-                        d2.eventModule().eventDownloader()
-                            .limit(200)
-                            .limitByProgram(true)
-                            .blockingDownload()
+                        D2SdkOperationLocks.dataValueAndAggregateMutex.withLock {
+                            d2.eventModule().eventDownloader()
+                                .limit(200)
+                                .limitByProgram(true)
+                                .blockingDownload()
+                        }
                     }
                 }
 
@@ -623,8 +637,11 @@ class SyncQueueManager @Inject constructor(
             _syncState.value = _syncState.value.copy(
                 isRunning = false,
                 lastSuccessfulSync = System.currentTimeMillis(),
-                error = null
+                error = null,
+                lastSyncStatus = "Success",
+                totalSuccessCount = _syncState.value.totalSuccessCount + 1
             )
+            addSyncLog("INFO", "Download-only sync completed successfully.")
 
             // Clear progress after successful completion
             _detailedProgress.value = null
@@ -646,7 +663,8 @@ class SyncQueueManager @Inject constructor(
         _syncState.value = _syncState.value.copy(
             isRunning = true,
             lastSyncAttempt = System.currentTimeMillis(),
-            error = null
+            error = null,
+            lastSyncStatus = "Running"
         )
 
         try {
@@ -657,7 +675,7 @@ class SyncQueueManager @Inject constructor(
 
 
             if (!networkStateManager.isOnline()) {
-                throw Exception("No internet connection available")
+                throw Exception("No internet connection. Please check internet connectivity and try again.")
             }
 
             // Get drafts for specific dataset instance only
@@ -672,8 +690,11 @@ class SyncQueueManager @Inject constructor(
                     isRunning = false,
                     queueSize = databaseProvider.getCurrentDatabase().dataValueDraftDao().getAllDrafts().size,
                     lastSuccessfulSync = System.currentTimeMillis(),
-                    failedAttempts = 0
+                    failedAttempts = 0,
+                    lastSyncStatus = "Success",
+                    totalSuccessCount = _syncState.value.totalSuccessCount + 1
                 )
+                addSyncLog("INFO", "Instance sync completed successfully (no pending drafts).")
                 return
             }
 
@@ -684,15 +705,17 @@ class SyncQueueManager @Inject constructor(
             for (draft in drafts) {
                 try {
                     // Set the data value in DHIS2 local database
-                    d2.dataValueModule().dataValues()
-                        .value(
-                            period = draft.period,
-                            organisationUnit = draft.orgUnit,
-                            dataElement = draft.dataElement,
-                            categoryOptionCombo = draft.categoryOptionCombo,
-                            attributeOptionCombo = draft.attributeOptionCombo
-                        )
-                        .blockingSet(draft.value)
+                    D2SdkOperationLocks.dataValueAndAggregateMutex.withLock {
+                        d2.dataValueModule().dataValues()
+                            .value(
+                                period = draft.period,
+                                organisationUnit = draft.orgUnit,
+                                dataElement = draft.dataElement,
+                                categoryOptionCombo = draft.categoryOptionCombo,
+                                attributeOptionCombo = draft.attributeOptionCombo
+                            )
+                            .blockingSet(draft.value)
+                    }
 
                     allSuccessfulDrafts.add(draft)
                 } catch (e: Exception) {
@@ -716,8 +739,12 @@ class SyncQueueManager @Inject constructor(
                 try {
                     Log.d(tag, "Upload attempt ${attempt + 1} of $maxRetryAttempts for ${allSuccessfulDrafts.size} values from instance")
 
-                    // Use withTimeout to handle long-running upload operations
-                    val uploadResult = withTimeout(uploadTimeoutMs) {
+                    // IMPORTANT:
+                    // `blockingUpload()` is not coroutine-cancellable. Wrapping it with `withTimeout`
+                    // can throw in the coroutine while the SDK upload/DB transaction is still running,
+                    // causing retries to overlap and hit "cannot start a transaction within a transaction".
+                    // Rely on DHIS2 SDK HTTP timeouts configured in SessionManager instead.
+                    val uploadResult = D2SdkOperationLocks.dataValueAndAggregateMutex.withLock {
                         d2.dataValueModule().dataValues().blockingUpload()
                     }
                     Log.d(tag, "Upload result for instance: $uploadResult")
@@ -776,11 +803,35 @@ class SyncQueueManager @Inject constructor(
             if (allSuccessfulDrafts.isNotEmpty()) {
                 try {
                     withTimeout(downloadTimeoutMs) {
-                        d2.dataValueModule().dataValues().get()
+                        D2SdkOperationLocks.dataValueAndAggregateMutex.withLock {
+                            d2.aggregatedModule().data().blockingDownload()
+                        }
                     }
+                    Log.d(tag, "Aggregate data download completed after instance upload sync")
                 } catch (e: Exception) {
                     Log.w(tag, "Failed to download latest data after upload: ${e.message}")
                     // Don't fail the entire sync just because download failed
+                }
+
+                try {
+                    val refreshedCount = withTimeout(downloadTimeoutMs) {
+                        metadataCacheService.refreshDataValues(
+                            datasetId = datasetId,
+                            period = period,
+                            orgUnit = orgUnit,
+                            attributeOptionCombo = attributeOptionCombo
+                        )
+                    }
+                    Log.d(
+                        tag,
+                        "Refreshed instance data values into Room after upload sync: $refreshedCount values"
+                    )
+                } catch (e: Exception) {
+                    Log.w(
+                        tag,
+                        "Failed to refresh instance data values into Room after upload sync: ${e.message}"
+                    )
+                    // Don't fail the entire sync if cache refresh fails
                 }
             }
 
@@ -789,8 +840,16 @@ class SyncQueueManager @Inject constructor(
                 queueSize = databaseProvider.getCurrentDatabase().dataValueDraftDao().getAllDrafts().size,
                 lastSuccessfulSync = if (allSuccessfulDrafts.isNotEmpty()) System.currentTimeMillis() else _syncState.value.lastSuccessfulSync,
                 failedAttempts = if (allSuccessfulDrafts.isNotEmpty()) 0 else _syncState.value.failedAttempts + 1,
-                error = if (allSuccessfulDrafts.isEmpty()) "Upload failed for dataset instance" else null
+                error = if (allSuccessfulDrafts.isEmpty()) "Upload failed for dataset instance" else null,
+                lastSyncStatus = if (allSuccessfulDrafts.isNotEmpty()) "Success" else "Failed",
+                totalSuccessCount = if (allSuccessfulDrafts.isNotEmpty()) _syncState.value.totalSuccessCount + 1 else _syncState.value.totalSuccessCount,
+                totalFailureCount = if (allSuccessfulDrafts.isEmpty()) _syncState.value.totalFailureCount + 1 else _syncState.value.totalFailureCount
             )
+            if (allSuccessfulDrafts.isNotEmpty()) {
+                addSyncLog("INFO", "Instance sync completed successfully.")
+            } else {
+                addSyncLog("ERROR", "Upload failed for dataset instance.")
+            }
 
             Log.d(tag, "Sync completed for instance - ${allSuccessfulDrafts.size} values uploaded successfully")
 
@@ -807,8 +866,11 @@ class SyncQueueManager @Inject constructor(
             _syncState.value = _syncState.value.copy(
                 isRunning = false,
                 failedAttempts = _syncState.value.failedAttempts + 1,
-                error = userFriendlyError
+                error = userFriendlyError,
+                lastSyncStatus = "Failed",
+                totalFailureCount = _syncState.value.totalFailureCount + 1
             )
+            addSyncLog("ERROR", userFriendlyError)
             // CRITICAL: Always clear detailed progress on instance sync failure
             clearDetailedProgress()
         }
@@ -819,8 +881,10 @@ class SyncQueueManager @Inject constructor(
         autoRetryJob?.cancel()
         _syncState.value = _syncState.value.copy(
             isRunning = false,
-            error = "Sync cancelled by user"
+            error = "Sync cancelled by user",
+            lastSyncStatus = "Cancelled"
         )
+        addSyncLog("WARN", "Sync cancelled by user.")
         clearDetailedProgress()
     }
     
@@ -899,8 +963,11 @@ class SyncQueueManager @Inject constructor(
                 is SyncError.ServerError -> error.message
                 is SyncError.UnknownError -> error.message
             },
-            failedAttempts = _syncState.value.failedAttempts + 1
+            failedAttempts = _syncState.value.failedAttempts + 1,
+            lastSyncStatus = "Failed",
+            totalFailureCount = _syncState.value.totalFailureCount + 1
         )
+        addSyncLog("ERROR", _syncState.value.error ?: "Sync failed")
     }
 
     /**
@@ -937,7 +1004,7 @@ class SyncQueueManager @Inject constructor(
             val networkState = networkStateManager.networkState.value
             if (!networkState.isConnected || !networkState.hasInternet) {
                 Log.w(tag, "Network not available for sync")
-                setErrorState(SyncError.NetworkError("No internet connection available"))
+                setErrorState(SyncError.NetworkError("No internet connection. Please check internet connectivity and try again."))
                 return false
             }
 
@@ -1015,7 +1082,15 @@ class SyncQueueManager @Inject constructor(
                 Log.w(tag, "D2Error detected - DHIS2 SDK specific error")
 
                 // Extract the actual error message from nested D2Error
-                val actualMessage = exception.message ?: exception.cause?.message ?: "Unknown D2Error"
+                val rawMessage = exception.message ?: exception.cause?.message ?: "Unknown D2Error"
+                val actualMessage = if (
+                    rawMessage.contains("AutoValue_D2Error", ignoreCase = true) ||
+                    rawMessage.contains("org.hisp.dhis.android.core.maintenance", ignoreCase = true)
+                ) {
+                    "Server connection issue"
+                } else {
+                    rawMessage
+                }
 
                 // Check if it's a network/timeout-related D2Error that can be retried
                 val canRetry = actualMessage.let { msg ->
@@ -1207,7 +1282,16 @@ class SyncQueueManager @Inject constructor(
             }
             // Default message
             else -> {
-                exception.message ?: "Sync failed. Please try again."
+                val raw = exception.message
+                if (
+                    raw.isNullOrBlank() ||
+                    raw.contains("AutoValue_D2Error", ignoreCase = true) ||
+                    raw.contains("org.hisp.dhis.android.core.maintenance", ignoreCase = true)
+                ) {
+                    "Sync failed due to a server or connection issue. Please try again."
+                } else {
+                    raw
+                }
             }
         }
     }
@@ -1353,20 +1437,22 @@ class SyncQueueManager @Inject constructor(
                     // Set chunk data values in DHIS2
                     for (draft in chunk) {
                         val d2 = sessionManager.getD2() ?: throw Exception("DHIS2 session not available")
-                        d2.dataValueModule().dataValues()
-                            .value(
-                                period = draft.period,
-                                organisationUnit = draft.orgUnit,
-                                dataElement = draft.dataElement,
-                                categoryOptionCombo = draft.categoryOptionCombo,
-                                attributeOptionCombo = draft.attributeOptionCombo
-                            )
-                            .blockingSet(draft.value)
+                        D2SdkOperationLocks.dataValueAndAggregateMutex.withLock {
+                            d2.dataValueModule().dataValues()
+                                .value(
+                                    period = draft.period,
+                                    organisationUnit = draft.orgUnit,
+                                    dataElement = draft.dataElement,
+                                    categoryOptionCombo = draft.categoryOptionCombo,
+                                    attributeOptionCombo = draft.attributeOptionCombo
+                                )
+                                .blockingSet(draft.value)
+                        }
                     }
 
-                    // Upload chunk with timeout
-                    withTimeout(chunkUploadTimeoutMs) {
-                        val d2 = sessionManager.getD2() ?: throw Exception("DHIS2 session not available")
+                    // See note above: avoid coroutine timeout around non-cancellable SDK upload.
+                    val d2 = sessionManager.getD2() ?: throw Exception("DHIS2 session not available")
+                    D2SdkOperationLocks.dataValueAndAggregateMutex.withLock {
                         d2.dataValueModule().dataValues().blockingUpload()
                     }
 
@@ -1388,7 +1474,7 @@ class SyncQueueManager @Inject constructor(
 
                     if (chunkAttempt >= maxRetryAttempts) {
                         Log.e(tag, "Failed to upload chunk ${chunkIndex + 1} after $maxRetryAttempts attempts")
-                        return Result.failure(Exception("Chunk upload failed: ${e.message}"))
+                        return Result.failure(e)
                     }
 
                     // Progressive retry delay for chunks

@@ -25,6 +25,7 @@ import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.MenuAnchorType
 import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.OutlinedTextFieldDefaults
 import androidx.compose.material3.PlainTooltip
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
@@ -47,7 +48,6 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
@@ -57,9 +57,6 @@ import com.ash.simpledataentry.domain.model.OrganisationUnit
 import com.ash.simpledataentry.domain.model.Period
 import com.ash.simpledataentry.presentation.core.BaseScreen
 import com.ash.simpledataentry.presentation.core.OrgUnitTreePickerDialog
-import com.ash.simpledataentry.ui.theme.DHIS2Blue
-import com.ash.simpledataentry.ui.theme.DHIS2BlueDark
-import com.ash.simpledataentry.ui.theme.DHIS2BlueLight
 import java.net.URLDecoder
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
@@ -84,10 +81,12 @@ fun CreateNewEntryScreen(
     var showOrgUnitPicker by remember { mutableStateOf(false) }
     var isLoading by remember { mutableStateOf(true) }
     var error by remember { mutableStateOf<String?>(null) }
+    var allAttributeOptionCombos by remember { mutableStateOf<List<Pair<String, String>>>(emptyList()) }
     var attributeOptionCombos by remember { mutableStateOf<List<Pair<String, String>>>(emptyList()) }
     var selectedAttributeOptionCombo by remember { mutableStateOf("") }
     var expandedAttributeOptionCombo by remember { mutableStateOf(false) }
     var showAllPeriods by remember { mutableStateOf(false) }
+    var isFetchingExistingData by remember { mutableStateOf(false) }
     val state by viewModel.state.collectAsState()
     val decodedDatasetName = remember(datasetName) { URLDecoder.decode(datasetName, "UTF-8") }
     val snackbarHostState = remember { SnackbarHostState() }
@@ -101,7 +100,8 @@ fun CreateNewEntryScreen(
             orgUnits = viewModel.getUserOrgUnits(datasetId) // Get multiple org units
             selectedOrgUnit = orgUnits.firstOrNull() // Select first org unit by default
             defaultAttributeOptionCombo = viewModel.getDefaultAttributeOptionCombo()
-            attributeOptionCombos = viewModel.getAttributeOptionCombos(datasetId)
+            allAttributeOptionCombos = viewModel.getAttributeOptionCombos(datasetId)
+            attributeOptionCombos = allAttributeOptionCombos
             selectedAttributeOptionCombo = attributeOptionCombos.firstOrNull()?.first
                 ?: defaultAttributeOptionCombo
             isLoading = false
@@ -111,19 +111,42 @@ fun CreateNewEntryScreen(
         }
     }
 
+    LaunchedEffect(selectedOrgUnit?.id, selectedPeriod) {
+        val orgUnitId = selectedOrgUnit?.id.orEmpty()
+        if (orgUnitId.isBlank() || selectedPeriod.isBlank()) {
+            return@LaunchedEffect
+        }
+        try {
+            val filtered = viewModel.getAssignableAttributeOptionCombos(
+                datasetId = datasetId,
+                period = selectedPeriod,
+                orgUnitId = orgUnitId
+            )
+            attributeOptionCombos = filtered
+            selectedAttributeOptionCombo = filtered.firstOrNull()?.first
+                ?: defaultAttributeOptionCombo
+        } catch (e: Exception) {
+            attributeOptionCombos = allAttributeOptionCombos
+            selectedAttributeOptionCombo = allAttributeOptionCombos.firstOrNull()?.first
+                ?: defaultAttributeOptionCombo
+            coroutineScope.launch {
+                snackbarHostState.showSnackbar(
+                    e.message ?: "Failed to load attribute option combos"
+                )
+            }
+        }
+    }
+
     BaseScreen(
         title = "Create New Entry",
         subtitle = decodedDatasetName,
-        navController = navController
+        navController = navController,
+        usePrimaryTopBar = false
     ) {
-        val gradientBrush = Brush.verticalGradient(
-            colors = listOf(DHIS2Blue, DHIS2BlueDark)
-        )
-
         Box(
             modifier = Modifier
                 .fillMaxSize()
-                .background(gradientBrush)
+                .background(MaterialTheme.colorScheme.background)
         ) {
             if (isLoading) {
                 Box(
@@ -143,9 +166,11 @@ fun CreateNewEntryScreen(
                 val resolvedAttributeOptionCombo = selectedAttributeOptionCombo.ifBlank {
                     defaultAttributeOptionCombo
                 }
+                val hasAssignableAttributeCombo = attributeOptionCombos.isNotEmpty()
                 val canContinue = selectedOrgUnit != null &&
                     selectedPeriod.isNotEmpty() &&
-                    resolvedAttributeOptionCombo.isNotEmpty()
+                    resolvedAttributeOptionCombo.isNotEmpty() &&
+                    hasAssignableAttributeCombo
                 val selectedAttrComboName = attributeOptionCombos
                     .find { it.first == resolvedAttributeOptionCombo }
                     ?.second
@@ -164,7 +189,7 @@ fun CreateNewEntryScreen(
                     Card(
                         modifier = Modifier.fillMaxWidth(),
                         shape = RoundedCornerShape(24.dp),
-                        colors = CardDefaults.cardColors(containerColor = Color.White),
+                        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
                         elevation = CardDefaults.cardElevation(defaultElevation = 8.dp)
                     ) {
                         Column(
@@ -173,6 +198,30 @@ fun CreateNewEntryScreen(
                                 .padding(20.dp),
                             verticalArrangement = Arrangement.spacedBy(16.dp)
                         ) {
+                            if (selectedOrgUnit != null && selectedPeriod.isNotEmpty() && attributeOptionCombos.isEmpty()) {
+                                Surface(
+                                    color = MaterialTheme.colorScheme.errorContainer,
+                                    shape = RoundedCornerShape(12.dp)
+                                ) {
+                                    Column(
+                                        modifier = Modifier
+                                            .fillMaxWidth()
+                                            .padding(12.dp),
+                                        verticalArrangement = Arrangement.spacedBy(4.dp)
+                                    ) {
+                                        Text(
+                                            text = "Editing locked",
+                                            style = MaterialTheme.typography.titleSmall,
+                                            color = MaterialTheme.colorScheme.onErrorContainer
+                                        )
+                                        Text(
+                                            text = "Attribute option combo is not assigned to this organisation unit. Please choose another org unit or contact your administrator.",
+                                            style = MaterialTheme.typography.bodySmall,
+                                            color = MaterialTheme.colorScheme.onErrorContainer
+                                        )
+                                    }
+                                }
+                            }
                             Row(
                                 verticalAlignment = Alignment.CenterVertically,
                                 horizontalArrangement = Arrangement.spacedBy(12.dp)
@@ -180,14 +229,14 @@ fun CreateNewEntryScreen(
                                 Box(
                                     modifier = Modifier
                                         .size(56.dp)
-                                        .background(DHIS2BlueLight, CircleShape),
+                                        .background(MaterialTheme.colorScheme.primaryContainer, CircleShape),
                                     contentAlignment = Alignment.Center
                                 ) {
                                     Icon(
                                         painter = painterResource(id = R.drawable.ic_menu_edit),
                                         contentDescription = "New Entry",
                                         modifier = Modifier.size(28.dp),
-                                        tint = DHIS2Blue
+                                        tint = MaterialTheme.colorScheme.primary
                                     )
                                 }
                                 Column {
@@ -205,13 +254,13 @@ fun CreateNewEntryScreen(
                             }
 
                             Surface(
-                                color = DHIS2BlueLight.copy(alpha = 0.35f),
+                                color = MaterialTheme.colorScheme.secondaryContainer,
                                 shape = RoundedCornerShape(12.dp)
                             ) {
                                 Text(
                                     text = "Offline mode supported. Entries will sync when connected.",
                                     style = MaterialTheme.typography.bodySmall,
-                                    color = MaterialTheme.colorScheme.onSurface,
+                                    color = MaterialTheme.colorScheme.onSecondaryContainer,
                                     modifier = Modifier.padding(12.dp)
                                 )
                             }
@@ -237,7 +286,6 @@ fun CreateNewEntryScreen(
                                     value = selectedOrgUnit?.name ?: "Select Organization Unit",
                                     onValueChange = {},
                                     readOnly = true,
-                                    enabled = false,
                                     label = { Text("Organization Unit") },
                                     trailingIcon = {
                                         Icon(
@@ -245,7 +293,20 @@ fun CreateNewEntryScreen(
                                             contentDescription = null
                                         )
                                     },
-                                    modifier = Modifier.fillMaxWidth()
+                                    modifier = Modifier.fillMaxWidth(),
+                                    colors = OutlinedTextFieldDefaults.colors(
+                                        focusedTextColor = MaterialTheme.colorScheme.onSurface,
+                                        unfocusedTextColor = MaterialTheme.colorScheme.onSurface,
+                                        disabledTextColor = MaterialTheme.colorScheme.onSurfaceVariant,
+                                        focusedBorderColor = MaterialTheme.colorScheme.outline,
+                                        unfocusedBorderColor = MaterialTheme.colorScheme.outline,
+                                        disabledBorderColor = MaterialTheme.colorScheme.outline,
+                                        focusedLabelColor = MaterialTheme.colorScheme.onSurfaceVariant,
+                                        unfocusedLabelColor = MaterialTheme.colorScheme.onSurfaceVariant,
+                                        disabledLabelColor = MaterialTheme.colorScheme.onSurfaceVariant,
+                                        focusedTrailingIconColor = MaterialTheme.colorScheme.onSurfaceVariant,
+                                        unfocusedTrailingIconColor = MaterialTheme.colorScheme.onSurfaceVariant
+                                    )
                                 )
                             }
 
@@ -261,7 +322,20 @@ fun CreateNewEntryScreen(
                                     trailingIcon = { ExposedDropdownMenuDefaults.TrailingIcon(expanded = expandedPeriod) },
                                     modifier = Modifier
                                         .fillMaxWidth()
-                                        .menuAnchor(MenuAnchorType.PrimaryNotEditable, enabled = true)
+                                        .menuAnchor(MenuAnchorType.PrimaryNotEditable, enabled = true),
+                                    colors = OutlinedTextFieldDefaults.colors(
+                                        focusedTextColor = MaterialTheme.colorScheme.onSurface,
+                                        unfocusedTextColor = MaterialTheme.colorScheme.onSurface,
+                                        disabledTextColor = MaterialTheme.colorScheme.onSurfaceVariant,
+                                        focusedBorderColor = MaterialTheme.colorScheme.outline,
+                                        unfocusedBorderColor = MaterialTheme.colorScheme.outline,
+                                        disabledBorderColor = MaterialTheme.colorScheme.outline,
+                                        focusedLabelColor = MaterialTheme.colorScheme.onSurfaceVariant,
+                                        unfocusedLabelColor = MaterialTheme.colorScheme.onSurfaceVariant,
+                                        disabledLabelColor = MaterialTheme.colorScheme.onSurfaceVariant,
+                                        focusedTrailingIconColor = MaterialTheme.colorScheme.onSurfaceVariant,
+                                        unfocusedTrailingIconColor = MaterialTheme.colorScheme.onSurfaceVariant
+                                    )
                                 )
                                 ExposedDropdownMenu(
                                     expanded = expandedPeriod,
@@ -294,48 +368,51 @@ fun CreateNewEntryScreen(
                                 }
                             }
 
-                            // Attribute Option Combo Dropdown
-                            ExposedDropdownMenuBox(
-                                expanded = expandedAttributeOptionCombo && !isDefaultOnlyAttrCombo,
-                                onExpandedChange = {
-                                    if (!isDefaultOnlyAttrCombo) {
+                            if (!isDefaultOnlyAttrCombo) {
+                                ExposedDropdownMenuBox(
+                                    expanded = expandedAttributeOptionCombo,
+                                    onExpandedChange = {
                                         expandedAttributeOptionCombo = !expandedAttributeOptionCombo
                                     }
-                                }
-                            ) {
-                                OutlinedTextField(
-                                    value = selectedAttrComboName.ifBlank {
-                                        if (isDefaultOnlyAttrCombo) {
-                                            "Default"
-                                        } else {
-                                            "Select Attribute Option Combo"
-                                        }
-                                    },
-                                    onValueChange = {},
-                                    readOnly = true,
-                                    enabled = !isDefaultOnlyAttrCombo,
-                                    label = { Text("Attribute Option Combo") },
-                                    trailingIcon = {
-                                        if (!isDefaultOnlyAttrCombo) {
-                                            ExposedDropdownMenuDefaults.TrailingIcon(expanded = expandedAttributeOptionCombo)
-                                        }
-                                    },
-                                    modifier = Modifier
-                                        .fillMaxWidth()
-                                        .menuAnchor(MenuAnchorType.PrimaryNotEditable, enabled = !isDefaultOnlyAttrCombo)
-                                )
-                                ExposedDropdownMenu(
-                                    expanded = expandedAttributeOptionCombo && !isDefaultOnlyAttrCombo,
-                                    onDismissRequest = { expandedAttributeOptionCombo = false }
                                 ) {
-                                    attributeOptionCombos.forEach { (uid, displayName) ->
-                                        DropdownMenuItem(
-                                            text = { Text(displayName) },
-                                            onClick = {
-                                                selectedAttributeOptionCombo = uid
-                                                expandedAttributeOptionCombo = false
-                                            }
+                                    OutlinedTextField(
+                                        value = selectedAttrComboName.ifBlank { "Select Attribute Option Combo" },
+                                        onValueChange = {},
+                                        readOnly = true,
+                                        label = { Text("Attribute Option Combo") },
+                                        trailingIcon = {
+                                            ExposedDropdownMenuDefaults.TrailingIcon(expanded = expandedAttributeOptionCombo)
+                                        },
+                                        modifier = Modifier
+                                            .fillMaxWidth()
+                                            .menuAnchor(MenuAnchorType.PrimaryNotEditable, enabled = true),
+                                        colors = OutlinedTextFieldDefaults.colors(
+                                            focusedTextColor = MaterialTheme.colorScheme.onSurface,
+                                            unfocusedTextColor = MaterialTheme.colorScheme.onSurface,
+                                            disabledTextColor = MaterialTheme.colorScheme.onSurfaceVariant,
+                                            focusedBorderColor = MaterialTheme.colorScheme.outline,
+                                            unfocusedBorderColor = MaterialTheme.colorScheme.outline,
+                                            disabledBorderColor = MaterialTheme.colorScheme.outline,
+                                            focusedLabelColor = MaterialTheme.colorScheme.onSurfaceVariant,
+                                            unfocusedLabelColor = MaterialTheme.colorScheme.onSurfaceVariant,
+                                            disabledLabelColor = MaterialTheme.colorScheme.onSurfaceVariant,
+                                            focusedTrailingIconColor = MaterialTheme.colorScheme.onSurfaceVariant,
+                                            unfocusedTrailingIconColor = MaterialTheme.colorScheme.onSurfaceVariant
                                         )
+                                    )
+                                    ExposedDropdownMenu(
+                                        expanded = expandedAttributeOptionCombo,
+                                        onDismissRequest = { expandedAttributeOptionCombo = false }
+                                    ) {
+                                        attributeOptionCombos.forEach { (uid, displayName) ->
+                                            DropdownMenuItem(
+                                                text = { Text(displayName) },
+                                                onClick = {
+                                                    selectedAttributeOptionCombo = uid
+                                                    expandedAttributeOptionCombo = false
+                                                }
+                                            )
+                                        }
                                     }
                                 }
                             }
@@ -354,29 +431,71 @@ fun CreateNewEntryScreen(
                                 Box(
                                     modifier = Modifier
                                         .fillMaxWidth()
-                                        .height(48.dp)
                                         .clickable(enabled = !canContinue) {
                                             coroutineScope.launch { tooltipState.show() }
                                         }
                                 ) {
-                                    Button(
-                                        onClick = {
-                                            val encodedDatasetName = java.net.URLEncoder.encode(datasetName, "UTF-8")
-                                            val encodedPeriod = java.net.URLEncoder.encode(selectedPeriod, "UTF-8")
-                                            val encodedOrgUnit = java.net.URLEncoder.encode(selectedOrgUnit!!.id, "UTF-8")
-                                            val encodedAttributeOptionCombo = java.net.URLEncoder.encode(resolvedAttributeOptionCombo, "UTF-8")
-                                            navController.navigate(
-                                                "EditEntry/$datasetId/$encodedPeriod/$encodedOrgUnit/$encodedAttributeOptionCombo/$encodedDatasetName"
-                                            ) {
-                                                popUpTo("CreateDataEntry/$datasetId/$datasetName") { inclusive = true }
-                                            }
-                                        },
-                                        enabled = canContinue,
-                                        modifier = Modifier
-                                            .fillMaxWidth()
-                                            .height(48.dp)
-                                    ) {
-                                        Text("Continue")
+                                    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                                        Button(
+                                            onClick = {
+                                                val encodedDatasetName = java.net.URLEncoder.encode(datasetName, "UTF-8")
+                                                val encodedPeriod = java.net.URLEncoder.encode(selectedPeriod, "UTF-8")
+                                                val encodedOrgUnit = java.net.URLEncoder.encode(selectedOrgUnit!!.id, "UTF-8")
+                                                val encodedAttributeOptionCombo = java.net.URLEncoder.encode(resolvedAttributeOptionCombo, "UTF-8")
+                                                navController.navigate(
+                                                    "EditEntry/$datasetId/$encodedPeriod/$encodedOrgUnit/$encodedAttributeOptionCombo/$encodedDatasetName"
+                                                ) {
+                                                    popUpTo("CreateDataEntry/$datasetId/$datasetName") { inclusive = true }
+                                                }
+                                            },
+                                            enabled = canContinue,
+                                            modifier = Modifier
+                                                .fillMaxWidth()
+                                                .height(48.dp)
+                                        ) {
+                                            Text("Continue")
+                                        }
+
+                                        Button(
+                                            onClick = {
+                                                coroutineScope.launch {
+                                                    isFetchingExistingData = true
+                                                    val result = viewModel.fetchExistingDataForInstance(
+                                                        datasetId = datasetId,
+                                                        period = selectedPeriod,
+                                                        orgUnit = selectedOrgUnit!!.id,
+                                                        attributeOptionCombo = resolvedAttributeOptionCombo
+                                                    )
+                                                    isFetchingExistingData = false
+                                                    result.fold(
+                                                        onSuccess = { count ->
+                                                            if (count > 0) {
+                                                                val encodedDatasetName = java.net.URLEncoder.encode(datasetName, "UTF-8")
+                                                                val encodedPeriod = java.net.URLEncoder.encode(selectedPeriod, "UTF-8")
+                                                                val encodedOrgUnit = java.net.URLEncoder.encode(selectedOrgUnit!!.id, "UTF-8")
+                                                                val encodedAttributeOptionCombo = java.net.URLEncoder.encode(resolvedAttributeOptionCombo, "UTF-8")
+                                                                navController.navigate(
+                                                                    "EditEntry/$datasetId/$encodedPeriod/$encodedOrgUnit/$encodedAttributeOptionCombo/$encodedDatasetName"
+                                                                ) {
+                                                                    popUpTo("CreateDataEntry/$datasetId/$datasetName") { inclusive = true }
+                                                                }
+                                                            } else {
+                                                                snackbarHostState.showSnackbar("No existing data found for this period and org unit.")
+                                                            }
+                                                        },
+                                                        onFailure = { error ->
+                                                            snackbarHostState.showSnackbar(error.message ?: "Failed to fetch existing data.")
+                                                        }
+                                                    )
+                                                }
+                                            },
+                                            enabled = canContinue && !isFetchingExistingData,
+                                            modifier = Modifier
+                                                .fillMaxWidth()
+                                                .height(48.dp)
+                                        ) {
+                                            Text(if (isFetchingExistingData) "Loading..." else "Load existing data")
+                                        }
                                     }
                                 }
                             }

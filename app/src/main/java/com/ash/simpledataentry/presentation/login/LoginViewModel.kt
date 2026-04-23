@@ -1,6 +1,7 @@
 package com.ash.simpledataentry.presentation.login
 
 import android.content.Context
+import androidx.lifecycle.SavedStateHandle
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.ash.simpledataentry.domain.useCase.LoginUseCase
@@ -8,7 +9,9 @@ import com.ash.simpledataentry.data.local.CachedUrlEntity
 import com.ash.simpledataentry.data.repositoryImpl.LoginUrlCacheRepository
 import com.ash.simpledataentry.data.repositoryImpl.SavedAccountRepository
 import com.ash.simpledataentry.data.repositoryImpl.AuthRepositoryImpl
+import com.ash.simpledataentry.data.sync.BackgroundSyncManager
 import com.ash.simpledataentry.presentation.core.NavigationProgress
+import com.ash.simpledataentry.presentation.core.UiError
 import com.ash.simpledataentry.presentation.core.UiState
 import com.ash.simpledataentry.presentation.core.LoadingOperation
 import com.ash.simpledataentry.presentation.core.BackgroundOperation
@@ -18,6 +21,8 @@ import dagger.hilt.android.lifecycle.HiltViewModel
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.launch
 import javax.inject.Inject
 
@@ -72,12 +77,17 @@ data class LoginData(
  */
 @HiltViewModel
 class LoginViewModel @Inject constructor(
+    private val savedStateHandle: SavedStateHandle,
     private val loginUseCase: LoginUseCase,
     private val urlCacheRepository: LoginUrlCacheRepository,
     private val savedAccountRepository: SavedAccountRepository,
     private val authRepository: AuthRepositoryImpl,
-    private val sessionManager: com.ash.simpledataentry.data.SessionManager
+    private val sessionManager: com.ash.simpledataentry.data.SessionManager,
+    private val backgroundSyncManager: BackgroundSyncManager
 ) : ViewModel() {
+    // Keeps business data stable while UiState is Loading.
+    private var lastKnownData: LoginData = LoginData()
+    private var autoSessionCheckJob: Job? = null
 
     /**
      * Primary state flow using UiState pattern.
@@ -96,41 +106,44 @@ class LoginViewModel @Inject constructor(
      */
     private fun getCurrentData(): LoginData {
         return when (val current = _uiState.value) {
-            is UiState.Success -> current.data
-            is UiState.Error -> current.previousData ?: LoginData()
-            is UiState.Loading -> LoginData()
+            is UiState.Success -> current.data.also { lastKnownData = it }
+            is UiState.Error -> (current.previousData ?: lastKnownData).also { lastKnownData = it }
+            is UiState.Loading -> lastKnownData
         }
     }
 
     init {
         loadCachedUrls()
         loadSavedAccounts()
-        checkExistingSession()
+        val skipAutoLogin = savedStateHandle.get<Boolean>("skipAutoLogin") ?: false
+        if (!skipAutoLogin) {
+            autoSessionCheckJob = checkExistingSession()
+        }
     }
 
     /**
      * Check if there's an existing active session and auto-redirect if so.
      * This handles the case where the app restarts with an active D2 session.
      */
-    private fun checkExistingSession() {
-        viewModelScope.launch {
-            // Wait for D2 to initialize (MainActivity initializes it in onCreate)
-            // D2 initialization typically takes 2-4 seconds
-            kotlinx.coroutines.delay(4000)
+    private fun checkExistingSession(): Job {
+        return viewModelScope.launch {
+            // Try immediately, then retry while D2/session restoration finishes.
+            repeat(40) { attempt ->
+                val hasActiveSession = try {
+                    sessionManager.isSessionActive()
+                } catch (e: Exception) {
+                    android.util.Log.w("LoginViewModel", "Error checking session (attempt $attempt): ${e.message}")
+                    false
+                }
 
-            // Check if D2 has an active session
-            val hasActiveSession = try {
-                sessionManager.isSessionActive()
-            } catch (e: Exception) {
-                android.util.Log.w("LoginViewModel", "Error checking session: ${e.message}")
-                false
-            }
+                if (hasActiveSession) {
+                    android.util.Log.d("LoginViewModel", "Active session detected - auto-navigating to datasets")
+                    val currentData = getCurrentData()
+                    _uiState.value = UiState.Success(currentData.copy(isLoggedIn = true))
+                    return@launch
+                }
 
-            if (hasActiveSession) {
-                android.util.Log.d("LoginViewModel", "Active session detected - auto-navigating to datasets")
-                // Set isLoggedIn to trigger navigation to datasets
-                val currentData = getCurrentData()
-                _uiState.value = UiState.Success(currentData.copy(isLoggedIn = true))
+                kotlinx.coroutines.delay(250)
             }
         }
     }
@@ -148,6 +161,7 @@ class LoginViewModel @Inject constructor(
      */
     fun login(serverUrl: String, username: String, password: String, context: Context) {
         viewModelScope.launch {
+            autoSessionCheckJob?.cancel()
             try {
                 // Show splash screen immediately with loading state
                 val currentData = getCurrentData()
@@ -159,21 +173,32 @@ class LoginViewModel @Inject constructor(
                     // Cache the successful URL
                     urlCacheRepository.addOrUpdateUrl(serverUrl)
 
-                    // Check if we should offer to save the account
+                    // Persist account automatically to avoid extra post-login save flow.
                     val existingAccount = savedAccountRepository.getAccountByCredentials(serverUrl, username)
-                    android.util.Log.d("LoginDebug", "Existing account found: ${existingAccount != null}, saveAccountOffered will be: ${existingAccount == null}")
+                    android.util.Log.d("LoginDebug", "Existing account found: ${existingAccount != null}")
 
                     if (existingAccount != null) {
                         // Update last used timestamp for existing account
                         savedAccountRepository.updateLastUsed(existingAccount.id)
                         savedAccountRepository.switchToAccount(existingAccount.id)
+                    } else {
+                        runCatching {
+                            savedAccountRepository.saveAccount(
+                                displayName = username,
+                                serverUrl = serverUrl,
+                                username = username,
+                                password = password
+                            )
+                        }.onFailure {
+                            android.util.Log.w("LoginViewModel", "Auto-save account failed: ${it.message}")
+                        }
                     }
 
                     val successData = loadingData.copy(
                         isLoggedIn = true,
                         showSplash = true,
-                        saveAccountOffered = existingAccount == null,
-                        pendingCredentials = if (existingAccount == null) Triple(serverUrl, username, password) else null
+                        saveAccountOffered = false,
+                        pendingCredentials = null
                     )
                     _uiState.value = UiState.Success(successData)
                 } else {
@@ -182,6 +207,7 @@ class LoginViewModel @Inject constructor(
                     _uiState.value = UiState.Error(uiError, failureData)
                 }
             } catch (e: Exception) {
+                if (e is CancellationException) throw e
                 val failureData = getCurrentData().copy(showSplash = false)
                 val uiError = e.toUiError()
                 _uiState.value = UiState.Error(uiError, failureData)
@@ -202,6 +228,7 @@ class LoginViewModel @Inject constructor(
      */
     fun loginWithProgress(serverUrl: String, username: String, password: String, context: Context) {
         viewModelScope.launch {
+            autoSessionCheckJob?.cancel()
             try {
                 // Show splash screen immediately with NavigationProgress
                 val currentData = getCurrentData()
@@ -245,7 +272,7 @@ class LoginViewModel @Inject constructor(
                     // Cache the successful URL
                     urlCacheRepository.addOrUpdateUrl(serverUrl)
 
-                    // Check if we should offer to save the account
+                    // Persist account automatically to avoid extra post-login save flow.
                     val existingAccount = savedAccountRepository.getAccountByCredentials(serverUrl, username)
                     android.util.Log.d("LoginDebug", "Enhanced login - Existing account found: ${existingAccount != null}")
 
@@ -253,13 +280,24 @@ class LoginViewModel @Inject constructor(
                         // Update last used timestamp for existing account
                         savedAccountRepository.updateLastUsed(existingAccount.id)
                         savedAccountRepository.switchToAccount(existingAccount.id)
+                    } else {
+                        runCatching {
+                            savedAccountRepository.saveAccount(
+                                displayName = username,
+                                serverUrl = serverUrl,
+                                username = username,
+                                password = password
+                            )
+                        }.onFailure {
+                            android.util.Log.w("LoginViewModel", "Auto-save account failed: ${it.message}")
+                        }
                     }
 
                     val successData = loadingData.copy(
                         isLoggedIn = true,
                         showSplash = true,
-                        saveAccountOffered = existingAccount == null,
-                        pendingCredentials = if (existingAccount == null) Triple(serverUrl, username, password) else null
+                        saveAccountOffered = false,
+                        pendingCredentials = null
                     )
                     _uiState.value = UiState.Success(successData)
                 } else {
@@ -273,10 +311,35 @@ class LoginViewModel @Inject constructor(
                     _uiState.value = UiState.Error(uiError, failureData)
                 }
             } catch (e: Exception) {
+                if (e is CancellationException) throw e
                 val failureData = getCurrentData().copy(showSplash = false)
                 val uiError = e.toUiError()
                 _uiState.value = UiState.Error(uiError, failureData)
             }
+        }
+    }
+
+    fun abortLogin(context: Context, message: String) {
+        viewModelScope.launch {
+            try {
+                // Cancel should stop in-flight session work without clearing saved login credentials.
+                sessionManager.logout(context)
+            } catch (e: Exception) {
+                android.util.Log.w("LoginViewModel", "Abort login logout failed: ${e.message}")
+            }
+
+            // Reload saved accounts from shared database so cancel never "hides" them in UI state.
+            val accounts = runCatching { savedAccountRepository.getAllSavedAccounts() }
+                .getOrDefault(emptyList())
+
+            val currentData = getCurrentData().copy(
+                isLoggedIn = false,
+                showSplash = false,
+                savedAccounts = accounts,
+                showAccountSelection = accounts.isNotEmpty()
+            )
+            val uiError = Exception(message).toUiError()
+            _uiState.value = UiState.Error(uiError, currentData)
         }
     }
 
@@ -394,6 +457,22 @@ class LoginViewModel @Inject constructor(
         }
     }
 
+    fun savePendingAccount(displayName: String) {
+        val pending = getCurrentData().pendingCredentials
+        if (pending == null) {
+            val currentData = getCurrentData().copy(
+                saveAccountOffered = false,
+                pendingCredentials = null
+            )
+            _uiState.value = UiState.Error(
+                UiError.Local("No pending credentials to save"),
+                currentData
+            )
+            return
+        }
+        saveAccount(displayName, pending.first, pending.second, pending.third)
+    }
+
     /**
      * Logs in using a saved account with encrypted credentials.
      * Supports both offline login (using cached session) and online login with progress tracking.
@@ -404,6 +483,7 @@ class LoginViewModel @Inject constructor(
      */
     fun loginWithSavedAccount(account: SavedAccount, context: Context) {
         viewModelScope.launch {
+            autoSessionCheckJob?.cancel()
             try {
                 val currentData = getCurrentData()
                 val loadingData = currentData.copy(showSplash = true)
@@ -437,19 +517,24 @@ class LoginViewModel @Inject constructor(
                         context = context
                     )
                 } else {
-                    // Fall back to online login with progress tracking
-                    android.util.Log.d("LoginViewModel", "Offline login not possible, attempting online login")
-                    val initialProgress = NavigationProgress.initial()
+                    // Fall back to online auth + background metadata bootstrap
+                    android.util.Log.d("LoginViewModel", "Offline login not possible, attempting online auth")
+                    val initialProgress = NavigationProgress.initial().copy(
+                        phaseTitle = "Authenticating",
+                        phaseDetail = "Signing in..."
+                    )
                     _uiState.value = UiState.Loading(LoadingOperation.Navigation(initialProgress))
 
-                    authRepository.loginWithProgress(
+                    val authOk = authRepository.loginAuthOnly(
                         username = account.username,
                         password = decryptedPassword,
                         serverUrl = account.serverUrl,
                         context = context
-                    ) { progress ->
-                        _uiState.value = UiState.Loading(LoadingOperation.Navigation(progress))
+                    )
+                    if (authOk) {
+                        backgroundSyncManager.triggerImmediateMetadataSync()
                     }
+                    authOk
                 }
 
                 if (loginResult) {
@@ -472,9 +557,81 @@ class LoginViewModel @Inject constructor(
                     _uiState.value = UiState.Error(uiError, failureData)
                 }
             } catch (e: Exception) {
+                if (e is CancellationException) throw e
                 val failureData = getCurrentData().copy(showSplash = false)
                 val uiError = e.toUiError()
                 _uiState.value = UiState.Error(uiError, failureData)
+            }
+        }
+    }
+
+    /**
+     * Authenticate quickly, then bootstrap metadata in background worker (with notification).
+     */
+    fun loginWithBackgroundBootstrap(
+        serverUrl: String,
+        username: String,
+        password: String,
+        context: Context
+    ) {
+        viewModelScope.launch {
+            autoSessionCheckJob?.cancel()
+            try {
+                val loadingProgress = NavigationProgress.initial().copy(
+                    phaseTitle = "Authenticating",
+                    phaseDetail = "Signing in..."
+                )
+                _uiState.value = UiState.Loading(LoadingOperation.Navigation(loadingProgress))
+
+                val loginResult = authRepository.loginAuthOnly(
+                    serverUrl = serverUrl,
+                    username = username,
+                    password = password,
+                    context = context
+                )
+
+                if (!loginResult) {
+                    _uiState.value = UiState.Error(
+                        Exception("Login failed: Invalid credentials or server error").toUiError(),
+                        getCurrentData().copy(showSplash = false)
+                    )
+                    return@launch
+                }
+
+                urlCacheRepository.addOrUpdateUrl(serverUrl)
+
+                val existingAccount = savedAccountRepository.getAccountByCredentials(serverUrl, username)
+                if (existingAccount != null) {
+                    savedAccountRepository.updateLastUsed(existingAccount.id)
+                    savedAccountRepository.switchToAccount(existingAccount.id)
+                } else {
+                    runCatching {
+                        savedAccountRepository.saveAccount(
+                            displayName = username,
+                            serverUrl = serverUrl,
+                            username = username,
+                            password = password
+                        )
+                    }
+                }
+
+                // Continue bootstrap while app is in background.
+                backgroundSyncManager.triggerImmediateMetadataSync()
+
+                _uiState.value = UiState.Success(
+                    getCurrentData().copy(
+                        isLoggedIn = true,
+                        showSplash = false,
+                        saveAccountOffered = false,
+                        pendingCredentials = null
+                    )
+                )
+            } catch (e: Exception) {
+                if (e is CancellationException) throw e
+                _uiState.value = UiState.Error(
+                    e.toUiError(),
+                    getCurrentData().copy(showSplash = false)
+                )
             }
         }
     }

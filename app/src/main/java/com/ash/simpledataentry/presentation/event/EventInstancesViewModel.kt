@@ -7,6 +7,7 @@ import androidx.lifecycle.viewModelScope
 import com.ash.simpledataentry.domain.model.ProgramInstance
 import com.ash.simpledataentry.domain.repository.DatasetInstancesRepository
 import com.ash.simpledataentry.data.SessionManager
+import com.ash.simpledataentry.domain.model.OrganisationUnit
 import com.ash.simpledataentry.presentation.core.UiState
 import com.ash.simpledataentry.presentation.core.LoadingOperation
 import com.ash.simpledataentry.presentation.core.LoadingPhase
@@ -22,6 +23,8 @@ import kotlinx.coroutines.flow.catch
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
+import kotlinx.coroutines.rx2.await
+import org.hisp.dhis.android.core.organisationunit.OrganisationUnit as SdkOrganisationUnit
 import javax.inject.Inject
 
 data class EventTableColumn(
@@ -38,6 +41,7 @@ data class EventTableRow(
 // Pure data model (no UI state like isLoading)
 data class EventInstancesData(
     val events: List<ProgramInstance.EventInstance> = emptyList(),
+    val availableOrgUnits: List<OrganisationUnit> = emptyList(),
     val program: com.ash.simpledataentry.domain.model.Program? = null,
     val syncMessage: String? = null,
     val lineListColumns: List<EventTableColumn> = emptyList(),
@@ -117,6 +121,7 @@ class EventInstancesViewModel @Inject constructor(
         viewModelScope.launch {
             try {
                 _uiState.value = UiState.Loading(LoadingOperation.Initial)
+                val accessibleOrgUnits = loadAccessibleEventOrgUnits()
 
                 // Load event instances directly
                 datasetInstancesRepository.getEventInstances(programId)
@@ -132,6 +137,7 @@ class EventInstancesViewModel @Inject constructor(
                         val currentData = getCurrentData()
                         val data = currentData.copy(
                             events = events,
+                            availableOrgUnits = accessibleOrgUnits,
                             syncMessage = null,
                             lineListColumns = emptyList(),
                             lineListRows = emptyList(),
@@ -146,6 +152,32 @@ class EventInstancesViewModel @Inject constructor(
                 _uiState.value = UiState.Error(uiError, getCurrentData())
             }
         }
+    }
+
+    private suspend fun loadAccessibleEventOrgUnits(): List<OrganisationUnit> {
+        val d2Instance = d2 ?: return emptyList()
+        val userOrgUnits = d2Instance.organisationUnitModule().organisationUnits()
+            .byOrganisationUnitScope(SdkOrganisationUnit.Scope.SCOPE_DATA_CAPTURE)
+            .get().await()
+
+        val allAccessible = mutableMapOf<String, OrganisationUnit>()
+        userOrgUnits.forEach { userOrgUnit ->
+            allAccessible[userOrgUnit.uid()] = OrganisationUnit(
+                id = userOrgUnit.uid(),
+                name = userOrgUnit.displayName() ?: userOrgUnit.name() ?: userOrgUnit.uid()
+            )
+            val descendants = d2Instance.organisationUnitModule().organisationUnits()
+                .byPath().like("${userOrgUnit.path()}/%")
+                .get().await()
+            descendants.forEach { descendant ->
+                allAccessible[descendant.uid()] = OrganisationUnit(
+                    id = descendant.uid(),
+                    name = descendant.displayName() ?: descendant.name() ?: descendant.uid()
+                )
+            }
+        }
+        Log.d(TAG, "Event list accessible org unit options: ${allAccessible.size}")
+        return allAccessible.values.sortedBy { it.name.lowercase() }
     }
 
     fun syncEvents() {

@@ -2,6 +2,7 @@
 
 package com.ash.simpledataentry.presentation.tracker
 
+import android.app.Activity
 import androidx.activity.compose.BackHandler
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.foundation.background
@@ -19,6 +20,7 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.Check
+import androidx.compose.material.icons.filled.DateRange
 import androidx.compose.material.icons.filled.Event
 import androidx.compose.material.icons.filled.KeyboardArrowDown
 import androidx.compose.material.icons.filled.Sync
@@ -29,16 +31,19 @@ import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.rotate
-import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalView
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.toArgb
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.focus.onFocusChanged
+import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.navigation.NavController
+import androidx.core.view.WindowInsetsControllerCompat
 import com.ash.simpledataentry.presentation.core.AdaptiveLoadingOverlay
 import com.ash.simpledataentry.presentation.core.DatePickerDialog
 import com.ash.simpledataentry.presentation.core.LoadingOperation
@@ -49,8 +54,6 @@ import org.hisp.dhis.mobile.ui.designsystem.component.InputText
 import org.hisp.dhis.mobile.ui.designsystem.component.InputNumber
 import org.hisp.dhis.mobile.ui.designsystem.component.InputShellState
 import androidx.compose.ui.text.input.TextFieldValue
-import com.ash.simpledataentry.presentation.datasetInstances.SyncConfirmationDialog
-import com.ash.simpledataentry.presentation.datasetInstances.SyncOptions
 import com.ash.simpledataentry.presentation.dataEntry.components.OptionSetDropdown
 import com.ash.simpledataentry.presentation.dataEntry.components.OptionSetRadioGroup
 import com.ash.simpledataentry.domain.model.computeRenderType
@@ -58,9 +61,6 @@ import com.ash.simpledataentry.domain.model.RenderType
 import com.ash.simpledataentry.presentation.core.Section
 import com.ash.simpledataentry.presentation.core.SectionNavigationBar
 import com.ash.simpledataentry.presentation.core.StepLoadingType
-import com.ash.simpledataentry.ui.theme.DHIS2Blue
-import com.ash.simpledataentry.ui.theme.DHIS2BlueDark
-import com.ash.simpledataentry.ui.theme.DHIS2BlueLight
 import kotlinx.coroutines.launch
 import java.text.SimpleDateFormat
 import java.util.*
@@ -86,15 +86,45 @@ fun EventCaptureScreen(
     }
     val snackbarHostState = remember { SnackbarHostState() }
     val coroutineScope = rememberCoroutineScope()
-    val context = LocalContext.current
+    val view = LocalView.current
+    val isDarkTheme = isSystemInDarkTheme()
     val listState = rememberLazyListState()
+    val colorScheme = MaterialTheme.colorScheme
+    val screenBackgroundBrush = remember(colorScheme, isDarkTheme) {
+        Brush.verticalGradient(
+            colors = listOf(
+                colorScheme.surface,
+                if (isDarkTheme) colorScheme.surfaceVariant.copy(alpha = 0.35f) else colorScheme.primary.copy(alpha = 0.08f),
+                if (isDarkTheme) colorScheme.background else colorScheme.surface
+            )
+        )
+    }
+    val topGlowBrush = remember(colorScheme, isDarkTheme) {
+        Brush.verticalGradient(
+            colors = listOf(
+                colorScheme.primary.copy(alpha = if (isDarkTheme) 0.20f else 0.12f),
+                Color.Transparent
+            )
+        )
+    }
+
+    SideEffect {
+        val window = (view.context as? Activity)?.window ?: return@SideEffect
+        val barColor = if (isDarkTheme) Color.Black.toArgb() else Color.White.toArgb()
+        window.statusBarColor = barColor
+        window.navigationBarColor = barColor
+        WindowInsetsControllerCompat(window, window.decorView).apply {
+            val useDarkIcons = !isDarkTheme
+            isAppearanceLightStatusBars = useDarkIcons
+            isAppearanceLightNavigationBars = useDarkIcons
+        }
+    }
     val syncInProgress = overlayState is UiState.Loading &&
         (overlayState.operation is LoadingOperation.Syncing ||
             (overlayState.operation is LoadingOperation.Navigation &&
                 overlayState.operation.progress.loadingType == StepLoadingType.SYNC))
 
     var showSaveDialog by remember { mutableStateOf(false) }
-    var showSyncDialog by remember { mutableStateOf(false) }
     var showDatePicker by remember { mutableStateOf(false) }
     var showOrgUnitPicker by remember { mutableStateOf(false) }
     var showPostSaveDialog by remember { mutableStateOf(false) }
@@ -159,24 +189,6 @@ fun EventCaptureScreen(
         )
     }
 
-    // Sync confirmation dialog (reuse EditEntry pattern)
-    if (showSyncDialog) {
-        SyncConfirmationDialog(
-            syncOptions = SyncOptions(
-                uploadLocalData = true,
-                localInstanceCount = 1,
-                isEditEntryContext = false
-            ),
-            onConfirm = { _ ->
-                viewModel.syncEvent()
-                showSyncDialog = false
-            },
-            onDismiss = {
-                showSyncDialog = false
-            }
-        )
-    }
-
     // Date picker dialog
     if (showDatePicker) {
         DatePickerDialog(
@@ -223,7 +235,9 @@ fun EventCaptureScreen(
         if (result != null && result != lastHandledSaveResult) {
             lastHandledSaveResult = result
             if (result.isSuccess) {
-                showPostSaveDialog = true
+                if (!state.isCompleted) {
+                    showPostSaveDialog = true
+                }
             }
         }
     }
@@ -300,49 +314,52 @@ fun EventCaptureScreen(
 
     // Main screen with Material 3 Scaffold (reuse TrackerEnrollment pattern)
     Scaffold(
+        containerColor = MaterialTheme.colorScheme.surface,
         topBar = {
-            Column {
-                TopAppBar(
-                    title = {
-                        Column {
+            TopAppBar(
+                colors = TopAppBarDefaults.topAppBarColors(
+                    containerColor = MaterialTheme.colorScheme.surface,
+                    scrolledContainerColor = MaterialTheme.colorScheme.surface,
+                    titleContentColor = MaterialTheme.colorScheme.onSurface,
+                    navigationIconContentColor = MaterialTheme.colorScheme.onSurface,
+                    actionIconContentColor = MaterialTheme.colorScheme.onSurface
+                ),
+                title = {
+                    Column {
+                        Text(
+                            text = state.programName.ifBlank { "Event Capture" },
+                            style = MaterialTheme.typography.titleMedium
+                        )
+                        if (state.programStageName.isNotBlank()) {
                             Text(
-                                text = state.programName.ifBlank { "Event Capture" },
-                                style = MaterialTheme.typography.titleMedium
+                                text = state.programStageName,
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
                             )
-                            if (state.programStageName.isNotBlank()) {
-                                Text(
-                                    text = state.programStageName,
-                                    style = MaterialTheme.typography.bodySmall,
-                                    color = MaterialTheme.colorScheme.onSurfaceVariant
-                                )
-                            }
-                        }
-                    },
-                    navigationIcon = navigationIcon,
-                    actions = {
-                        // Sync button
-                        IconButton(
-                            onClick = { showSyncDialog = true },
-                            enabled = !syncInProgress
-                        ) {
-                            if (syncInProgress) {
-                                CircularProgressIndicator(
-                                    modifier = Modifier.size(24.dp),
-                                    strokeWidth = 2.dp,
-                                    color = MaterialTheme.colorScheme.primary
-                                )
-                            } else {
-                                Icon(
-                                    imageVector = Icons.Default.Sync,
-                                    contentDescription = "Sync",
-                                    tint = MaterialTheme.colorScheme.onSurface
-                                )
-                            }
                         }
                     }
-                )
-
-            }
+                },
+                navigationIcon = navigationIcon,
+                actions = {
+                    IconButton(
+                        onClick = { viewModel.syncEvent() },
+                        enabled = !syncInProgress
+                    ) {
+                        if (syncInProgress) {
+                            CircularProgressIndicator(
+                                modifier = Modifier.size(24.dp),
+                                strokeWidth = 2.dp,
+                                color = MaterialTheme.colorScheme.primary
+                            )
+                        } else {
+                            Icon(
+                                imageVector = Icons.Default.Sync,
+                                contentDescription = "Sync"
+                            )
+                        }
+                    }
+                }
+            )
         },
         floatingActionButton = {
             FloatingActionButton(
@@ -374,67 +391,90 @@ fun EventCaptureScreen(
             uiState = adaptiveUiState,
             modifier = Modifier.fillMaxSize()
         ) {
-            when {
-                state.isLoading -> {
-                    Box(
-                        modifier = Modifier
-                            .fillMaxSize()
-                            .padding(paddingValues)
-                            .background(
-                                Brush.verticalGradient(
-                                    colors = listOf(DHIS2Blue, DHIS2BlueDark)
-                                )
-                            )
-                    )
-                }
+            Box(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .padding(paddingValues)
+                    .background(screenBackgroundBrush)
+            ) {
+                Box(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .height(220.dp)
+                        .background(topGlowBrush)
+                )
+
+                when {
+                    state.isLoading -> {
+                        Box(
+                            modifier = Modifier.fillMaxSize(),
+                            contentAlignment = Alignment.Center
+                        ) {
+                            CircularProgressIndicator()
+                        }
+                    }
                 state.error != null -> {
                     Column(
                         modifier = Modifier
                             .fillMaxSize()
-                            .padding(paddingValues)
-                            .background(
-                                Brush.verticalGradient(
-                                    colors = listOf(DHIS2Blue, DHIS2BlueDark)
-                                )
-                            )
-                            .padding(16.dp),
+                            .padding(20.dp),
                         horizontalAlignment = Alignment.CenterHorizontally,
                         verticalArrangement = Arrangement.Center
                     ) {
-                        Text(
-                            text = "Error loading event",
-                            style = MaterialTheme.typography.headlineSmall,
-                            color = MaterialTheme.colorScheme.error
-                        )
-                        Text(
-                            text = state.error ?: "Unknown error",
-                            style = MaterialTheme.typography.bodyMedium,
-                            color = MaterialTheme.colorScheme.onSurface
-                        )
+                        Card(
+                            modifier = Modifier.fillMaxWidth(),
+                            shape = RoundedCornerShape(20.dp),
+                            colors = CardDefaults.cardColors(
+                                containerColor = MaterialTheme.colorScheme.surface
+                            ),
+                            border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.6f)),
+                            elevation = CardDefaults.cardElevation(defaultElevation = 6.dp)
+                        ) {
+                            Column(
+                                modifier = Modifier.padding(20.dp),
+                                verticalArrangement = Arrangement.spacedBy(10.dp)
+                            ) {
+                                Text(
+                                    text = if (state.saveResult?.isFailure == true) "Error saving event" else "Error loading event",
+                                    style = MaterialTheme.typography.titleLarge,
+                                    color = MaterialTheme.colorScheme.error,
+                                    fontWeight = FontWeight.SemiBold
+                                )
+                                Text(
+                                    text = state.error ?: "Unknown error",
+                                    style = MaterialTheme.typography.bodyMedium,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                                )
+                                if (state.saveResult?.isFailure == true) {
+                                    Text(
+                                        text = "Check required fields and try saving again.",
+                                        style = MaterialTheme.typography.bodySmall,
+                                        color = MaterialTheme.colorScheme.onSurface
+                                    )
+                                }
+                            }
+                        }
                     }
                 }
                 else -> {
-                    val gradientBrush = Brush.verticalGradient(
-                        colors = listOf(DHIS2Blue, DHIS2BlueDark)
-                    )
-
                     Column(
                         modifier = Modifier
                             .fillMaxSize()
-                            .padding(paddingValues)
-                            .background(gradientBrush)
-                            .padding(horizontal = 20.dp, vertical = 24.dp)
+                            .padding(horizontal = 14.dp, vertical = 12.dp)
                     ) {
                         Card(
                             modifier = Modifier.fillMaxSize(),
-                            shape = RoundedCornerShape(24.dp),
-                            colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
-                            elevation = CardDefaults.cardElevation(defaultElevation = 8.dp)
+                            shape = RoundedCornerShape(22.dp),
+                            colors = CardDefaults.cardColors(
+                                containerColor = MaterialTheme.colorScheme.surface
+                            ),
+                            border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.5f)),
+                            elevation = CardDefaults.cardElevation(defaultElevation = 10.dp)
                         ) {
                             Column(
                                 modifier = Modifier
                                     .fillMaxSize()
-                                    .padding(16.dp)
+                                    .padding(14.dp)
                             ) {
                                 // Show warning banner if rule evaluation had issues
                                 if (state.ruleEvaluationWarning != null) {
@@ -487,52 +527,95 @@ fun EventCaptureScreen(
                                 LazyColumn(
                                     state = listState,
                                     modifier = Modifier.weight(1f),
-                                    contentPadding = PaddingValues(8.dp),
-                                    verticalArrangement = Arrangement.spacedBy(16.dp)
+                                    contentPadding = PaddingValues(6.dp),
+                                    verticalArrangement = Arrangement.spacedBy(14.dp)
                                 ) {
                                     // Event metadata section
                                     item {
-                                        Column(
-                                            verticalArrangement = Arrangement.spacedBy(12.dp)
+                                        Card(
+                                            modifier = Modifier.fillMaxWidth(),
+                                            colors = CardDefaults.cardColors(
+                                                containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = if (isDarkTheme) 0.18f else 0.45f)
+                                            ),
+                                            border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.4f)),
+                                            shape = RoundedCornerShape(16.dp)
                                         ) {
-                                            Text(
-                                                text = "Event Details",
-                                                style = MaterialTheme.typography.titleMedium,
-                                                fontWeight = FontWeight.Bold
-                                            )
-
-                                            // Event date picker
-                                            OutlinedTextField(
-                                                value = state.eventDate?.let {
-                                                    SimpleDateFormat("dd/MM/yyyy", Locale.getDefault()).format(it)
-                                                } ?: "",
-                                                onValueChange = { },
-                                                label = { Text("Event Date *") },
-                                                readOnly = true,
-                                                modifier = Modifier.fillMaxWidth(),
-                                                trailingIcon = {
-                                                    TextButton(onClick = { showDatePicker = true }) {
-                                                        Text("Select")
+                                            Column(
+                                                modifier = Modifier.padding(14.dp),
+                                                verticalArrangement = Arrangement.spacedBy(12.dp)
+                                            ) {
+                                                Row(
+                                                    modifier = Modifier.fillMaxWidth(),
+                                                    horizontalArrangement = Arrangement.SpaceBetween,
+                                                    verticalAlignment = Alignment.CenterVertically
+                                                ) {
+                                                    Column(modifier = Modifier.weight(1f)) {
+                                                        Text(
+                                                            text = "Event Details",
+                                                            style = MaterialTheme.typography.titleMedium,
+                                                            fontWeight = FontWeight.SemiBold
+                                                        )
+                                                        Text(
+                                                            text = if (state.isEditMode) "Editing existing event" else "Create and save event data",
+                                                            style = MaterialTheme.typography.bodySmall,
+                                                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                                                        )
                                                     }
+                                                    AssistChip(
+                                                        onClick = {},
+                                                        enabled = true,
+                                                        label = {
+                                                            Text(if (state.isCompleted) "Completed" else "Active")
+                                                        },
+                                                        leadingIcon = {
+                                                            Icon(
+                                                                imageVector = Icons.Default.Event,
+                                                                contentDescription = null,
+                                                                modifier = Modifier.size(16.dp)
+                                                            )
+                                                        }
+                                                    )
                                                 }
-                                            )
 
-                                            // Organization unit picker (for standalone events)
-                                            if (state.enrollmentId == null && state.availableOrganisationUnits.isNotEmpty()) {
                                                 OutlinedTextField(
-                                                    value = state.availableOrganisationUnits.find {
-                                                        it.id == state.selectedOrganisationUnitId
-                                                    }?.name ?: "",
+                                                    value = state.eventDate?.let {
+                                                        SimpleDateFormat("dd/MM/yyyy", Locale.getDefault()).format(it)
+                                                    } ?: "",
                                                     onValueChange = { },
-                                                    label = { Text("Organisation Unit *") },
+                                                    label = { Text("Event Date *") },
                                                     readOnly = true,
+                                                    singleLine = true,
                                                     modifier = Modifier.fillMaxWidth(),
                                                     trailingIcon = {
-                                                        TextButton(onClick = { showOrgUnitPicker = true }) {
-                                                            Text("Select")
+                                                        TextButton(onClick = { showDatePicker = true }) {
+                                                            Text("Change")
                                                         }
                                                     }
                                                 )
+
+                                                if (state.enrollmentId == null && state.availableOrganisationUnits.isNotEmpty()) {
+                                                    OutlinedTextField(
+                                                        value = state.availableOrganisationUnits.find {
+                                                            it.id == state.selectedOrganisationUnitId
+                                                        }?.name ?: "",
+                                                        onValueChange = { },
+                                                        label = { Text("Organisation Unit *") },
+                                                        readOnly = true,
+                                                        singleLine = true,
+                                                        modifier = Modifier.fillMaxWidth(),
+                                                        trailingIcon = {
+                                                            TextButton(onClick = { showOrgUnitPicker = true }) {
+                                                                Text("Change")
+                                                            }
+                                                        }
+                                                    )
+                                                } else if (state.enrollmentId != null && !state.selectedOrganisationUnitId.isNullOrBlank()) {
+                                                    Text(
+                                                        text = "Organisation Unit is inherited from the enrollment.",
+                                                        style = MaterialTheme.typography.bodySmall,
+                                                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                                                    )
+                                                }
                                             }
                                         }
                                     }
@@ -543,18 +626,26 @@ fun EventCaptureScreen(
                                     // Leaf: Data value fields
                                     if (state.dataValues.isEmpty()) {
                                         item {
-                                            Column {
-                                                Text(
-                                                    text = "Event Data",
-                                                    style = MaterialTheme.typography.titleMedium,
-                                                    fontWeight = FontWeight.Bold
-                                                )
-                                                Text(
-                                                    text = "No data elements found for this event",
-                                                    style = MaterialTheme.typography.bodyMedium,
-                                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                                    modifier = Modifier.padding(top = 8.dp)
-                                                )
+                                            Card(
+                                                modifier = Modifier.fillMaxWidth(),
+                                                colors = CardDefaults.cardColors(
+                                                    containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = if (isDarkTheme) 0.12f else 0.30f)
+                                                ),
+                                                shape = RoundedCornerShape(14.dp)
+                                            ) {
+                                                Column(modifier = Modifier.padding(16.dp)) {
+                                                    Text(
+                                                        text = "Event Data",
+                                                        style = MaterialTheme.typography.titleMedium,
+                                                        fontWeight = FontWeight.SemiBold
+                                                    )
+                                                    Text(
+                                                        text = "No data elements found for this event",
+                                                        style = MaterialTheme.typography.bodyMedium,
+                                                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                                        modifier = Modifier.padding(top = 8.dp)
+                                                    )
+                                                }
                                             }
                                         }
                                     } else {
@@ -640,6 +731,7 @@ fun EventCaptureScreen(
                         }
                     }
                 }
+            }
             }
         }
     }
@@ -1037,6 +1129,7 @@ private fun EventDataValueField(
         mutableStateOf(TextFieldValue(value))
     }
     var isFocused by remember { mutableStateOf(false) }
+    var showFieldDatePicker by remember { mutableStateOf(false) }
     val focusModifier = modifier.onFocusChanged { focusState ->
         if (isFocused && !focusState.isFocused) {
             onValueCommitted()
@@ -1105,7 +1198,12 @@ private fun EventDataValueField(
                 }
             }
         } else when (dataValue.dataEntryType) {
-        DataEntryType.NUMBER -> {
+        DataEntryType.NUMBER,
+        DataEntryType.INTEGER,
+        DataEntryType.POSITIVE_INTEGER,
+        DataEntryType.NEGATIVE_INTEGER,
+        DataEntryType.POSITIVE_NUMBER,
+        DataEntryType.NEGATIVE_NUMBER -> {
             InputNumber(
                 title = label,
                 state = InputShellState.UNFOCUSED,
@@ -1132,6 +1230,48 @@ private fun EventDataValueField(
                 },
                 modifier = focusModifier.padding(vertical = 4.dp)
             )
+        }
+        DataEntryType.DATE -> {
+            val isoFormat = remember { SimpleDateFormat("yyyy-MM-dd", Locale.US).apply { isLenient = false } }
+            val displayFormat = remember { SimpleDateFormat("dd/MM/yyyy", Locale.getDefault()).apply { isLenient = false } }
+            val parsedDate = remember(value) {
+                listOf(isoFormat, displayFormat)
+                    .firstNotNullOfOrNull { formatter -> runCatching { formatter.parse(value) }.getOrNull() }
+            }
+            val displayText = if (value.isBlank()) "" else parsedDate?.let(displayFormat::format) ?: value
+
+            OutlinedTextField(
+                value = displayText,
+                onValueChange = { },
+                readOnly = true,
+                singleLine = true,
+                label = { Text(label) },
+                trailingIcon = {
+                    IconButton(onClick = { showFieldDatePicker = true }) {
+                        Icon(
+                            imageVector = Icons.Default.DateRange,
+                            contentDescription = "Pick date"
+                        )
+                    }
+                },
+                modifier = modifier
+                    .fillMaxWidth()
+                    .clickable { showFieldDatePicker = true }
+                    .padding(vertical = 4.dp)
+            )
+
+            if (showFieldDatePicker) {
+                DatePickerDialog(
+                    onDateSelected = { date ->
+                        onValueChange(isoFormat.format(date))
+                        onValueCommitted()
+                        showFieldDatePicker = false
+                    },
+                    onDismissRequest = { showFieldDatePicker = false },
+                    initialDate = parsedDate ?: Date(),
+                    title = label
+                )
+            }
         }
         DataEntryType.YES_NO -> {
             // Use a simple dropdown for Yes/No since YesNoField is not available

@@ -5,6 +5,8 @@ import com.ash.simpledataentry.data.cache.MetadataCacheService
 import com.ash.simpledataentry.data.local.DatasetDao
 import com.ash.simpledataentry.data.SessionManager
 import kotlinx.coroutines.*
+import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.sync.withLock
 import javax.inject.Inject
 import javax.inject.Singleton
 
@@ -21,30 +23,65 @@ class BackgroundDataPrefetcher @Inject constructor(
     
     private val d2 get() = sessionManager.getD2()
     private var prefetchJob: Job? = null
+    private var lastPrefetchedDatasetIds: List<String> = emptyList()
+    private var lastPrefetchTimeMs: Long = 0L
     
     /**
      * Start background prefetching after successful login
      */
-    fun startPrefetching() {
+    fun startPrefetching(topDatasetCount: Int = 3) {
         prefetchJob?.cancel()
         prefetchJob = CoroutineScope(Dispatchers.IO + SupervisorJob()).launch {
             try {
-                Log.d("BackgroundDataPrefetcher", "Starting background data prefetching...")
+                Log.d("BackgroundDataPrefetcher", "Starting background metadata prefetching...")
 
-                // 1. Pre-warm metadata caches for all available datasets
-                datasetDao.getAll().collect { datasets ->
-                    val datasetIds = datasets.map { it.id }
+                val datasets = datasetDao.getAll().first()
+                val datasetIds = datasets.map { it.id }.take(topDatasetCount)
 
-                    Log.d("BackgroundDataPrefetcher", "Pre-warming caches for ${datasetIds.size} datasets")
-                    metadataCacheService.preWarmCaches(datasetIds)
-
-                    // 2. Pre-fetch recent data values for commonly used datasets (optional)
-                    prefetchRecentDataValues(datasetIds.take(5)) // Limit to top 5 datasets to avoid excessive API calls
-
-                    Log.d("BackgroundDataPrefetcher", "Background prefetching completed successfully")
+                if (datasetIds.isEmpty()) {
+                    Log.d("BackgroundDataPrefetcher", "No datasets available for prefetching")
+                    return@launch
                 }
+
+                val now = System.currentTimeMillis()
+                val withinCooldown = now - lastPrefetchTimeMs < 15 * 60 * 1000
+                if (withinCooldown && datasetIds == lastPrefetchedDatasetIds) {
+                    Log.d("BackgroundDataPrefetcher", "Skipping prefetch (recently completed)")
+                    return@launch
+                }
+
+                Log.d("BackgroundDataPrefetcher", "Pre-warming caches for ${datasetIds.size} datasets")
+                metadataCacheService.preWarmCaches(datasetIds)
+
+                lastPrefetchedDatasetIds = datasetIds
+                lastPrefetchTimeMs = now
+
+                Log.d("BackgroundDataPrefetcher", "Background prefetching completed successfully")
             } catch (e: Exception) {
                 Log.w("BackgroundDataPrefetcher", "Background prefetching failed", e)
+            }
+        }
+    }
+
+    /**
+     * Preload metadata (and a small slice of data values) for a selected dataset.
+     * Used to speed up form preparation after user selection.
+     */
+    fun prefetchForDataset(datasetId: String) {
+        CoroutineScope(Dispatchers.IO + SupervisorJob()).launch {
+            try {
+                val now = System.currentTimeMillis()
+                if (lastPrefetchedDatasetIds == listOf(datasetId) && now - lastPrefetchTimeMs < 5 * 60 * 1000) {
+                    Log.d("BackgroundDataPrefetcher", "Skipping dataset prefetch (recently completed)")
+                    return@launch
+                }
+                Log.d("BackgroundDataPrefetcher", "Prefetching data for dataset $datasetId")
+                metadataCacheService.preWarmCaches(listOf(datasetId))
+                prefetchRecentDataValues(listOf(datasetId))
+                lastPrefetchedDatasetIds = listOf(datasetId)
+                lastPrefetchTimeMs = now
+            } catch (e: Exception) {
+                Log.w("BackgroundDataPrefetcher", "Dataset prefetch failed for $datasetId", e)
             }
         }
     }
@@ -86,20 +123,20 @@ class BackgroundDataPrefetcher @Inject constructor(
             }
 
             prefetchJobs.chunked(10).forEach { batch ->
-                coroutineScope {
-                    batch.map { (datasetId, period, orgUnit) ->
-                        async(Dispatchers.IO) {
-                            try {
-                                d2Instance.dataValueModule().dataValues()
-                                    .byDataSetUid(datasetId)
-                                    .byPeriod().eq(period.periodId())
-                                    .byOrganisationUnitUid().eq(orgUnit.uid())
-                                    .blockingGet()
-                            } catch (e: Exception) {
-                                Log.w("BackgroundDataPrefetcher", "Failed to prefetch data for dataset $datasetId, period ${period.periodId()}", e)
-                            }
+                // Run sequentially under the shared SDK lock to avoid nested SQLite transactions
+                // while foreground sync/upload is active.
+                for ((datasetId, period, orgUnit) in batch) {
+                    try {
+                        D2SdkOperationLocks.dataValueAndAggregateMutex.withLock {
+                            d2Instance.dataValueModule().dataValues()
+                                .byDataSetUid(datasetId)
+                                .byPeriod().eq(period.periodId())
+                                .byOrganisationUnitUid().eq(orgUnit.uid())
+                                .blockingGet()
                         }
-                    }.awaitAll()
+                    } catch (e: Exception) {
+                        Log.w("BackgroundDataPrefetcher", "Failed to prefetch data for dataset $datasetId, period ${period.periodId()}", e)
+                    }
                 }
                 delay(50)
             }

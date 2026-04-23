@@ -4,6 +4,7 @@ import android.content.Context
 import android.util.Log
 import com.ash.simpledataentry.domain.model.Dhis2Config
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.async
@@ -20,6 +21,7 @@ import javax.inject.Singleton
 import androidx.core.content.edit
 import com.ash.simpledataentry.data.local.AppDatabase
 import com.ash.simpledataentry.data.sync.BackgroundSyncManager
+import com.ash.simpledataentry.data.sync.D2SdkOperationLocks
 import com.ash.simpledataentry.presentation.core.NavigationProgress
 import com.ash.simpledataentry.presentation.core.LoadingPhase
 import okhttp3.OkHttpClient
@@ -32,6 +34,7 @@ import java.security.MessageDigest
 import java.nio.charset.StandardCharsets
 import org.hisp.dhis.android.core.maintenance.D2Error
 import org.hisp.dhis.android.core.maintenance.D2ErrorCode
+import java.util.concurrent.TimeUnit
 
 /**
  * Result of downloading a single metadata type
@@ -56,6 +59,11 @@ data class MetadataDownloadResult(
     val hasAnyFailures: Boolean get() = failed > 0
     val hasCriticalFailures: Boolean get() = criticalFailures.isNotEmpty()
     val canProceed: Boolean get() = !hasCriticalFailures
+}
+
+enum class RoomHydrationMode {
+    MINIMAL,
+    FULL
 }
 
 @Singleton
@@ -87,6 +95,13 @@ class SessionManager @Inject constructor(
             throwable is RuntimeException && throwable.cause is D2Error -> throwable.cause as D2Error
             else -> null
         }
+    }
+
+    private fun isOptionalUseCasesMissing(error: Throwable?): Boolean {
+        val message = error?.message ?: return false
+        return message.contains("stockUseCases", ignoreCase = true) ||
+            message.contains("USE_CASES", ignoreCase = true) ||
+            message.contains("E1005", ignoreCase = true)
     }
 
     /**
@@ -203,14 +218,50 @@ class SessionManager @Inject constructor(
 
             // Use resilient metadata download that handles JSON errors gracefully
             downloadMetadataResilient { _ -> /* No progress UI in simple login */ }
-            downloadAggregateData()
-            hydrateRoomFromSdk(context, accountDb)
+            hydrateRoomFromSdk(context, accountDb, RoomHydrationMode.MINIMAL)
 
             Log.i("SessionManager", "Login successful for ${dhis2Config.username}")
         } catch (e: Exception) {
             Log.e("SessionManager", "Login failed", e)
             throw e
         }
+    }
+
+    /**
+     * Authenticate and bind account/database without blocking on metadata/data bootstrap.
+     * Intended for foreground-worker based bootstrap flows.
+     */
+    suspend fun authenticateOnly(context: Context, dhis2Config: Dhis2Config) = withContext(Dispatchers.IO) {
+        val accountInfo = accountManager.getOrCreateAccount(context, dhis2Config.username, dhis2Config.serverUrl)
+        databaseManager.getDatabaseForAccount(context, accountInfo)
+
+        if (d2 == null) {
+            initD2(context)
+        }
+
+        if (d2?.userModule()?.isLogged()?.blockingGet() == true) {
+            runCatching { d2?.userModule()?.blockingLogOut() }
+        }
+
+        d2?.userModule()?.blockingLogIn(
+            dhis2Config.username,
+            dhis2Config.password,
+            dhis2Config.serverUrl
+        ) ?: throw IllegalStateException("D2 not initialized")
+
+        accountManager.setActiveAccountId(context, accountInfo.accountId)
+        _currentAccountId.value = accountInfo.accountId
+
+        val passwordHash = hashPassword(dhis2Config.password, dhis2Config.username + dhis2Config.serverUrl)
+        val prefs = context.getSharedPreferences("session_prefs", Context.MODE_PRIVATE)
+        prefs.edit {
+            putString("username", dhis2Config.username)
+            putString("serverUrl", dhis2Config.serverUrl)
+            putString("password_hash", passwordHash)
+            putLong("hash_created", System.currentTimeMillis())
+        }
+
+        Log.i("SessionManager", "Authentication successful (bootstrap deferred) for ${dhis2Config.username}")
     }
 
     /**
@@ -223,6 +274,7 @@ class SessionManager @Inject constructor(
     ) = withContext(Dispatchers.IO) {
         try {
             Log.d("SessionManager", "Starting background data sync...")
+            val syncStart = System.currentTimeMillis()
 
             // Get current account's database
             val activeAccountId = accountManager.getActiveAccountId(context)
@@ -240,10 +292,11 @@ class SessionManager @Inject constructor(
             Log.d("SessionManager", "Background: Tracker data downloaded")
 
             // Hydrate Room database
-            hydrateRoomFromSdk(context, accountDb)
+            hydrateRoomFromSdk(context, accountDb, RoomHydrationMode.FULL)
             Log.d("SessionManager", "Background: Room database hydrated")
 
             Log.i("SessionManager", "Background data sync completed successfully")
+            Log.d("SessionManager", "Background data sync duration: ${System.currentTimeMillis() - syncStart}ms")
             onComplete?.invoke(true, "Data sync complete")
 
         } catch (e: Exception) {
@@ -361,8 +414,6 @@ class SessionManager @Inject constructor(
             ))
 
             // Set this as the active account
-            accountManager.setActiveAccountId(context, accountInfo.accountId)
-
             // SECURITY ENHANCEMENT: Store password hash for secure offline validation
             val passwordHash = hashPassword(dhis2Config.password, dhis2Config.username + dhis2Config.serverUrl)
             val prefs = context.getSharedPreferences("session_prefs", Context.MODE_PRIVATE)
@@ -372,10 +423,6 @@ class SessionManager @Inject constructor(
                 putString("password_hash", passwordHash)
                 putLong("hash_created", System.currentTimeMillis())
             }
-
-            // Emit account change event for ViewModels (using accountId, not username@serverUrl)
-            _currentAccountId.value = accountInfo.accountId
-            Log.d("SessionManager", "Account changed, notifying observers: ${accountInfo.accountId}")
 
             // Step 3: Download Metadata (30-80%) - RESILIENT, UI LOCKED
             // Use resilient metadata download with granular progress feedback
@@ -410,6 +457,24 @@ class SessionManager @Inject constructor(
                     Log.w("SessionManager", "Non-critical metadata '${failure.type}' failed but continuing: ${failure.error}")
                 }
             }
+
+            onProgress(NavigationProgress(
+                phase = LoadingPhase.DOWNLOADING_METADATA,
+                overallPercentage = 78,
+                phaseTitle = "Preparing forms",
+                phaseDetail = "Hydrating essential metadata..."
+            ))
+
+            val hydrateStart = System.currentTimeMillis()
+            hydrateRoomFromSdk(context, accountDb, RoomHydrationMode.MINIMAL)
+            Log.d("SessionManager", "Minimal Room hydration completed in ${System.currentTimeMillis() - hydrateStart}ms")
+
+            // Now that metadata is available, mark account as active
+            accountManager.setActiveAccountId(context, accountInfo.accountId)
+
+            // Emit account change event for ViewModels (using accountId, not username@serverUrl)
+            _currentAccountId.value = accountInfo.accountId
+            Log.d("SessionManager", "Account changed, notifying observers: ${accountInfo.accountId}")
 
             onProgress(NavigationProgress(
                 phase = LoadingPhase.DOWNLOADING_METADATA,
@@ -453,19 +518,15 @@ class SessionManager @Inject constructor(
                 phaseDetail = "Welcome! Data is syncing in background..."
             ))
 
-            // CRITICAL CHANGE: Data downloads moved to async background task
-            // UI is now unlocked, user can start working immediately
-            // Background sync will show notification when complete
-            Log.d("SessionManager", "Metadata sync complete - triggering background data sync...")
-            try {
-                val workName = backgroundSyncManager.triggerImmediateSync()
-                Log.d("SessionManager", "Background data sync triggered: $workName")
-            } catch (syncError: Exception) {
-                // Log but don't fail login - data sync can be retried later
-                Log.w("SessionManager", "Failed to trigger background sync: ${syncError.message}", syncError)
-            }
+            // Keep login deterministic: do not start full data sync in background here.
+            // Full data sync remains user-triggered from Settings.
+            Log.d("SessionManager", "Metadata sync complete - background full sync is deferred")
 
         } catch (e: Exception) {
+            if (e is CancellationException) {
+                Log.w("SessionManager", "loginWithProgress cancelled")
+                throw e
+            }
             // Extract D2Error for detailed diagnostics and user-friendly messages
             val d2Error = extractD2Error(e)
             val errorCode = d2Error?.errorCode()
@@ -489,9 +550,46 @@ class SessionManager @Inject constructor(
                 else -> d2Error?.errorDescription() ?: e.message ?: "Login failed"
             }
 
-            Log.e("SessionManager", "Enhanced login failed: errorCode=$errorCode, description=${d2Error?.errorDescription()}", e)
+            if (errorCode == D2ErrorCode.BAD_CREDENTIALS) {
+                Log.w("SessionManager", "Enhanced login failed: BAD_CREDENTIALS")
+            } else {
+                Log.e(
+                    "SessionManager",
+                    "Enhanced login failed: errorCode=$errorCode, description=${d2Error?.errorDescription()}",
+                    e
+                )
+            }
             onProgress(NavigationProgress.error(userMessage))
-            throw e
+
+            // IMPORTANT: Do not clear secure saved-login material on ordinary login failures.
+            // Otherwise users lose offline capability and it looks like saved logins disappeared.
+            if (errorCode != D2ErrorCode.BAD_CREDENTIALS) {
+                try {
+                    d2?.userModule()?.blockingLogOut()
+                } catch (logoutError: Exception) {
+                    Log.w("SessionManager", "Best-effort logout after failed login: ${logoutError.message}")
+                }
+            }
+
+            // Only clear active account binding for hard session conflicts.
+            if (errorCode == D2ErrorCode.ALREADY_AUTHENTICATED) {
+                accountManager.clearActiveAccountId(context)
+                _currentAccountId.value = null
+            }
+
+            val mappedException = when (errorCode) {
+                D2ErrorCode.SERVER_CONNECTION_ERROR,
+                D2ErrorCode.UNKNOWN_HOST,
+                D2ErrorCode.SOCKET_TIMEOUT,
+                D2ErrorCode.SSL_ERROR,
+                D2ErrorCode.URL_NOT_FOUND,
+                D2ErrorCode.SERVER_URL_MALFORMED -> java.io.IOException(userMessage)
+                D2ErrorCode.BAD_CREDENTIALS,
+                D2ErrorCode.USER_ACCOUNT_DISABLED,
+                D2ErrorCode.USER_ACCOUNT_LOCKED -> SecurityException(userMessage)
+                else -> Exception(userMessage)
+            }
+            throw mappedException
         }
     }
 
@@ -736,7 +834,7 @@ class SessionManager @Inject constructor(
                 Log.d("SessionManager", "Offline account restored, notifying observers: ${accountInfo.accountId}")
 
                 // Hydrate Room database from existing SDK data
-                hydrateRoomFromSdk(context, accountDb)
+                hydrateRoomFromSdk(context, accountDb, RoomHydrationMode.MINIMAL)
 
                 Log.i("SessionManager", "SECURE offline login successful for ${dhis2Config.username}")
                 true
@@ -788,10 +886,44 @@ class SessionManager @Inject constructor(
     }
 
     fun logout() {
+        // Backward-compatible logout entrypoint for callers without Context.
+        // Keep local runtime clean to prevent stale in-app session state.
         try {
             d2?.userModule()?.blockingLogOut()
         } catch (e: Exception) {
             Log.e("SessionManager", "Logout error: ${e.message}", e)
+        } finally {
+            _currentAccountId.value = null
+            d2 = null
+            Log.d("SessionManager", "Logout complete (runtime session cleared)")
+        }
+    }
+
+    fun logout(context: Context) {
+        try {
+            d2?.userModule()?.blockingLogOut()
+        } catch (e: Exception) {
+            Log.e("SessionManager", "Logout error: ${e.message}", e)
+        } finally {
+            runCatching {
+                accountManager.clearActiveAccountId(context)
+            }.onFailure {
+                Log.w("SessionManager", "Failed to clear active account binding: ${it.message}")
+            }
+
+            val prefs = context.getSharedPreferences("session_prefs", Context.MODE_PRIVATE)
+            prefs.edit {
+                remove("username")
+                remove("serverUrl")
+                remove("password_hash")
+                remove("hash_created")
+                remove("last_validated")
+                putBoolean("offline_mode", false)
+            }
+
+            _currentAccountId.value = null
+            d2 = null
+            Log.d("SessionManager", "Logout complete (active account + session state cleared)")
         }
     }
 
@@ -842,9 +974,13 @@ class SessionManager @Inject constructor(
 
         var lastError: String? = null
         val maxRetries = 3
+        // 60s is too aggressive for slow networks/devices and was causing false timeout + late Rx errors.
+        val progressTimeoutSeconds = 180L
+        val overallStart = System.currentTimeMillis()
 
         for (attempt in 1..maxRetries) {
             Log.d("SessionManager", "Metadata download attempt $attempt of $maxRetries")
+            val attemptStart = System.currentTimeMillis()
 
             onProgress(NavigationProgress(
                 phase = LoadingPhase.DOWNLOADING_METADATA,
@@ -858,25 +994,38 @@ class SessionManager @Inject constructor(
             try {
                 // Following official DHIS2 Capture app pattern:
                 // Use non-blocking download() with onErrorComplete() to swallow errors
-                io.reactivex.Completable.fromObservable(
-                    d2Instance.metadataModule().download()
-                        .doOnNext { progress ->
-                            val percent = progress.percentage() ?: 0.0
-                            Log.d("SessionManager", "Metadata progress: ${percent.toInt()}%")
+                val downloadObservable = d2Instance.metadataModule().download()
+                    .doOnNext { progress ->
+                        val rawPercent = progress.percentage() ?: 0.0
+                        val clampedPercent = rawPercent.coerceIn(0.0, 100.0)
+                        Log.d("SessionManager", "Metadata progress: ${clampedPercent.toInt()}%")
+                        onProgress(NavigationProgress(
+                            phase = LoadingPhase.DOWNLOADING_METADATA,
+                            overallPercentage = (30 + (clampedPercent * 0.5).toInt()).coerceAtMost(80),
+                            phaseTitle = "Downloading Metadata",
+                            phaseDetail = "Progress: ${clampedPercent.toInt()}%"
+                        ))
+                    }
+                    .timeout(progressTimeoutSeconds, TimeUnit.SECONDS)
+
+                io.reactivex.Completable.fromObservable(downloadObservable)
+                    .doOnError { error ->
+                        if (isOptionalUseCasesMissing(error)) {
+                            Log.w("SessionManager", "Optional server config missing: USE_CASES/stockUseCases (continuing)")
                             onProgress(NavigationProgress(
                                 phase = LoadingPhase.DOWNLOADING_METADATA,
-                                overallPercentage = 30 + (percent * 0.5).toInt(),
+                                overallPercentage = 35,
                                 phaseTitle = "Downloading Metadata",
-                                phaseDetail = "Progress: ${percent.toInt()}%"
+                                phaseDetail = "Optional server config missing (USE_CASES/stockUseCases). Ask admin to add it."
                             ))
+                            downloadError = null
+                        } else {
+                            Log.w("SessionManager", "Metadata download error: ${error.message}")
+                            downloadError = error.message
                         }
-                )
-                .doOnError { error ->
-                    Log.w("SessionManager", "Metadata download error: ${error.message}")
-                    downloadError = error.message
-                }
-                .onErrorComplete() // Swallow errors like official app
-                .blockingAwait()
+                    }
+                    .onErrorComplete { error -> isOptionalUseCasesMissing(error) }
+                    .blockingAwait()
 
                 Log.d("SessionManager", "Metadata download stream completed for attempt $attempt")
             } catch (e: Exception) {
@@ -913,7 +1062,10 @@ class SessionManager @Inject constructor(
             val hasAnyData = hasOrgUnits || hasPrograms || hasDatasets
 
             if (hasAnyData) {
-                Log.d("SessionManager", "✓ Metadata download successful on attempt $attempt")
+                Log.d(
+                    "SessionManager",
+                    "✓ Metadata download successful on attempt $attempt in ${System.currentTimeMillis() - attemptStart}ms (total ${System.currentTimeMillis() - overallStart}ms)"
+                )
                 return@withContext MetadataDownloadResult(
                     successful = 1,
                     failed = 0,
@@ -951,19 +1103,28 @@ class SessionManager @Inject constructor(
 
         try {
             Log.d("SessionManager", "Downloading aggregate data...")
-            d2Instance.aggregatedModule().data().blockingDownload()
+            runBlocking {
+                D2SdkOperationLocks.dataValueAndAggregateMutex.withLock {
+                    d2Instance.aggregatedModule().data().blockingDownload()
+                }
+            }
             Log.d("SessionManager", "Aggregate data download complete")
         } catch (e: Exception) {
             Log.e("SessionManager", "AGGREGATE: Data download failed", e)
         }
     }
 
-    suspend fun hydrateRoomFromSdk(context: Context, db: AppDatabase) = withContext(Dispatchers.IO) {
+    suspend fun hydrateRoomFromSdk(
+        context: Context,
+        db: AppDatabase,
+        mode: RoomHydrationMode = RoomHydrationMode.FULL
+    ) = withContext(Dispatchers.IO) {
         val d2Instance = d2 ?: return@withContext
 
         // Note: Cache validation no longer needed - DatabaseProvider ensures account isolation
 
         val startTime = System.currentTimeMillis()
+        Log.d("SessionManager", "Hydrating Room from SDK (mode=$mode)")
 
         // PERFORMANCE OPTIMIZATION: Fetch all metadata in parallel using async
         val datasetsDeferred = async {
@@ -1003,7 +1164,11 @@ class SessionManager @Inject constructor(
         }
 
         val categoryOptionCombosDeferred = async {
-            d2Instance.categoryModule().categoryOptionCombos().blockingGet().map {
+            d2Instance.categoryModule()
+                .categoryOptionCombos()
+                .withCategoryOptions()
+                .blockingGet()
+                .map {
                 com.ash.simpledataentry.data.local.CategoryOptionComboEntity(
                     id = it.uid(),
                     name = it.displayName() ?: it.uid(),
@@ -1023,7 +1188,7 @@ class SessionManager @Inject constructor(
             }
         }
 
-        // PHASE 2 FIX: Add tracker and event program hydration
+        // Tracker & event program hydration (keep for MINIMAL to render program lists)
         val trackerProgramsDeferred = async {
             d2Instance.programModule().programs()
                 .byProgramType().eq(org.hisp.dhis.android.core.program.ProgramType.WITH_REGISTRATION)
@@ -1067,8 +1232,9 @@ class SessionManager @Inject constructor(
                 }
         }
 
-        // PHASE 2 FIX: Add tracker enrollment and event instance hydration
+        // Tracker enrollment and event instance hydration (FULL only)
         val trackerEnrollmentsDeferred = async {
+            if (mode != RoomHydrationMode.FULL) return@async emptyList()
             val orgUnitMap = d2Instance.organisationUnitModule().organisationUnits()
                 .blockingGet()
                 .associateBy({ it.uid() }, { it.displayName() ?: it.name() ?: "Unknown" })
@@ -1093,6 +1259,7 @@ class SessionManager @Inject constructor(
         }
 
         val eventInstancesDeferred = async {
+            if (mode != RoomHydrationMode.FULL) return@async emptyList()
             val orgUnitMap = d2Instance.organisationUnitModule().organisationUnits()
                 .blockingGet()
                 .associateBy({ it.uid() }, { it.displayName() ?: it.name() ?: "Unknown" })
@@ -1128,6 +1295,7 @@ class SessionManager @Inject constructor(
         val eventInstances = eventInstancesDeferred.await()
 
         val fetchTime = System.currentTimeMillis() - startTime
+        Log.d("SessionManager", "Metadata fetch from SDK completed in ${fetchTime}ms (mode=$mode)")
 
         // Insert all data sequentially (Room doesn't handle parallel writes well)
         // CRITICAL: Log what SDK returns to diagnose empty Room issues
@@ -1171,7 +1339,7 @@ class SessionManager @Inject constructor(
             Log.w("SessionManager", "SDK returned 0 orgUnits - preserving existing Room data")
         }
 
-        // PHASE 2 FIX: Insert tracker and event programs into Room
+        // Insert tracker and event programs into Room
         db.trackerProgramDao().clearAll()
         db.trackerProgramDao().insertAll(trackerPrograms)
         Log.d("SessionManager", "Hydrated ${trackerPrograms.size} tracker programs")
@@ -1180,63 +1348,63 @@ class SessionManager @Inject constructor(
         db.eventProgramDao().insertAll(eventPrograms)
         Log.d("SessionManager", "Hydrated ${eventPrograms.size} event programs")
 
-        // PHASE 2 FIX: Insert tracker enrollments and event instances into Room
-        db.trackerEnrollmentDao().clearAll()
-        db.trackerEnrollmentDao().insertAll(trackerEnrollments)
-        Log.d("SessionManager", "Hydrated ${trackerEnrollments.size} tracker enrollments")
+        if (mode == RoomHydrationMode.FULL) {
+            db.trackerEnrollmentDao().clearAll()
+            db.trackerEnrollmentDao().insertAll(trackerEnrollments)
+            Log.d("SessionManager", "Hydrated ${trackerEnrollments.size} tracker enrollments")
 
-        db.eventInstanceDao().clearAll()
-        db.eventInstanceDao().insertAll(eventInstances)
-        Log.d("SessionManager", "Hydrated ${eventInstances.size} event instances")
+            db.eventInstanceDao().clearAll()
+            db.eventInstanceDao().insertAll(eventInstances)
+            Log.d("SessionManager", "Hydrated ${eventInstances.size} event instances")
+        }
 
         val totalTime = System.currentTimeMillis() - startTime
+        Log.d("SessionManager", "Room hydration completed in ${totalTime}ms (mode=$mode)")
 
 
-        // Hydrate data values from DHIS2 SDK to Room database
-        Log.d("SessionManager", "Loading data values from DHIS2 SDK...")
-        try {
-            // First, create a mapping of data element UIDs to dataset UIDs
-            val dataElementToDatasetMap = mutableMapOf<String, String>()
-            d2Instance.dataSetModule().dataSets().blockingGet().forEach { dataset ->
-                dataset.dataSetElements()?.forEach { dataSetElement ->
-                    dataElementToDatasetMap[dataSetElement.dataElement().uid()] = dataset.uid()
+        if (mode == RoomHydrationMode.FULL) {
+            Log.d("SessionManager", "Loading data values from DHIS2 SDK...")
+            try {
+                val dataElementToDatasetMap = mutableMapOf<String, String>()
+                d2Instance.dataSetModule().dataSets().blockingGet().forEach { dataset ->
+                    dataset.dataSetElements()?.forEach { dataSetElement ->
+                        dataElementToDatasetMap[dataSetElement.dataElement().uid()] = dataset.uid()
+                    }
                 }
+                Log.d("SessionManager", "Created mapping for ${dataElementToDatasetMap.size} data elements to datasets")
+
+                val regularDataValues = d2Instance.dataValueModule().dataValues().blockingGet()
+                Log.d("SessionManager", "Using regular data values (${regularDataValues.size})")
+
+                val dataValues = regularDataValues.map { dataValue ->
+                    val dataElementUid = dataValue.dataElement() ?: ""
+                    val datasetId = dataElementToDatasetMap[dataElementUid] ?: ""
+                    val period = dataValue.period() ?: ""
+                    val orgUnit = dataValue.organisationUnit() ?: ""
+                    val attributeOptionCombo = dataValue.attributeOptionCombo() ?: ""
+                    val categoryOptionCombo = dataValue.categoryOptionCombo() ?: ""
+                    val value = dataValue.value()
+
+                    com.ash.simpledataentry.data.local.DataValueEntity(
+                        datasetId = datasetId,
+                        period = period,
+                        orgUnit = orgUnit,
+                        attributeOptionCombo = attributeOptionCombo,
+                        dataElement = dataElementUid,
+                        categoryOptionCombo = categoryOptionCombo,
+                        value = value,
+                        comment = dataValue.comment(),
+                        lastModified = dataValue.lastUpdated()?.time ?: System.currentTimeMillis()
+                    )
+                }
+                db.dataValueDao().deleteAllDataValues()
+                db.dataValueDao().insertAll(dataValues)
+                Log.d("SessionManager", "Loaded ${dataValues.size} data values into Room database")
+            } catch (e: Exception) {
+                Log.e("SessionManager", "Failed to load data values: ${e.message}", e)
             }
-            Log.d("SessionManager", "Created mapping for ${dataElementToDatasetMap.size} data elements to datasets")
-
-            // Use regular data values for now until we understand the aggregated module interface
-            val regularDataValues = d2Instance.dataValueModule().dataValues().blockingGet()
-            Log.d("SessionManager", "Using regular data values (${regularDataValues.size})")
-
-            val dataValuesToUse = regularDataValues
-
-            val dataValues = dataValuesToUse.mapIndexed { index, dataValue ->
-                val dataElementUid = dataValue.dataElement() ?: ""
-                val datasetId = dataElementToDatasetMap[dataElementUid] ?: ""
-                val period = dataValue.period() ?: ""
-                val orgUnit = dataValue.organisationUnit() ?: ""
-                val attributeOptionCombo = dataValue.attributeOptionCombo() ?: ""
-                val categoryOptionCombo = dataValue.categoryOptionCombo() ?: ""
-                val value = dataValue.value()
-
-
-                com.ash.simpledataentry.data.local.DataValueEntity(
-                    datasetId = datasetId,
-                    period = period,
-                    orgUnit = orgUnit,
-                    attributeOptionCombo = attributeOptionCombo,
-                    dataElement = dataElementUid,
-                    categoryOptionCombo = categoryOptionCombo,
-                    value = value,
-                    comment = dataValue.comment(),
-                    lastModified = dataValue.lastUpdated()?.time ?: System.currentTimeMillis()
-                )
-            }
-            db.dataValueDao().deleteAllDataValues()
-            db.dataValueDao().insertAll(dataValues)
-            Log.d("SessionManager", "Loaded ${dataValues.size} data values into Room database")
-        } catch (e: Exception) {
-            Log.e("SessionManager", "Failed to load data values: ${e.message}", e)
+        } else {
+            Log.d("SessionManager", "Skipping data value hydration for minimal mode")
         }
     }
 
@@ -1339,7 +1507,7 @@ class SessionManager @Inject constructor(
                     if (!hasFullMetadata) {
                         Log.w("SessionManager", "Room database is empty - triggering re-hydration from SDK cache")
                         try {
-                            hydrateRoomFromSdk(context, db)
+                            hydrateRoomFromSdk(context, db, RoomHydrationMode.MINIMAL)
                             Log.d("SessionManager", "Room re-hydration completed successfully")
                         } catch (e: Exception) {
                             Log.e("SessionManager", "Failed to re-hydrate Room: ${e.message}")
@@ -1353,7 +1521,37 @@ class SessionManager @Inject constructor(
                     _currentAccountId.value = activeAccountInfo.accountId
                     Log.d("SessionManager", "Emitted currentAccountId: ${activeAccountInfo.accountId}")
                 } else {
-                    Log.w("SessionManager", "User is logged in but no active account found - database may be stale")
+                    Log.w("SessionManager", "User is logged in but no active account found - attempting recovery from stored credentials")
+
+                    // Recovery path: app/process can restart while login/sync was in progress,
+                    // leaving D2 logged-in state without active-account binding.
+                    val prefs = context.getSharedPreferences("session_prefs", Context.MODE_PRIVATE)
+                    val storedUsername = prefs.getString("username", null)
+                    val storedServerUrl = prefs.getString("serverUrl", null)
+
+                    if (!storedUsername.isNullOrBlank() && !storedServerUrl.isNullOrBlank()) {
+                        runCatching {
+                            val recovered = accountManager.getOrCreateAccount(context, storedUsername, storedServerUrl)
+                            accountManager.setActiveAccountId(context, recovered.accountId)
+                            val db = databaseManager.getDatabaseForAccount(context, recovered)
+                            Log.d("SessionManager", "Recovered active account and switched DB: ${recovered.roomDatabaseName}")
+
+                            // Ensure minimal metadata exists for immediate screen usage.
+                            val hasMetadata = db.dataElementDao().getAll().isNotEmpty() &&
+                                db.categoryOptionComboDao().getAll().isNotEmpty()
+                            if (!hasMetadata) {
+                                Log.w("SessionManager", "Recovered account DB missing metadata, hydrating from SDK")
+                                hydrateRoomFromSdk(context, db, RoomHydrationMode.MINIMAL)
+                            }
+
+                            _currentAccountId.value = recovered.accountId
+                            Log.d("SessionManager", "Recovery emitted currentAccountId: ${recovered.accountId}")
+                        }.onFailure {
+                            Log.e("SessionManager", "Failed to recover active account binding", it)
+                        }
+                    } else {
+                        Log.w("SessionManager", "Recovery skipped: no stored username/serverUrl")
+                    }
                 }
 
                 return@withContext
@@ -1419,9 +1617,13 @@ class SessionManager @Inject constructor(
             val programUid = program.uid()
             Log.d("SessionManager", "Downloading tracker data for: ${program.displayName()}")
             try {
-                d2Instance.trackedEntityModule().trackedEntityInstanceDownloader()
-                    .byProgramUid(programUid)
-                    .blockingDownload()
+                runBlocking {
+                    D2SdkOperationLocks.dataValueAndAggregateMutex.withLock {
+                        d2Instance.trackedEntityModule().trackedEntityInstanceDownloader()
+                            .byProgramUid(programUid)
+                            .blockingDownload()
+                    }
+                }
             } catch (e: Exception) {
                 Log.e("SessionManager", "Failed to download tracker data for ${program.displayName()}: ${e.message}")
             }
@@ -1438,9 +1640,13 @@ class SessionManager @Inject constructor(
             val programUid = program.uid()
             Log.d("SessionManager", "Downloading event data for: ${program.displayName()}")
             try {
-                d2Instance.eventModule().eventDownloader()
-                    .byProgramUid(programUid)
-                    .blockingDownload()
+                runBlocking {
+                    D2SdkOperationLocks.dataValueAndAggregateMutex.withLock {
+                        d2Instance.eventModule().eventDownloader()
+                            .byProgramUid(programUid)
+                            .blockingDownload()
+                    }
+                }
             } catch (e: Exception) {
                 Log.e("SessionManager", "Failed to download event data for ${program.displayName()}: ${e.message}")
             }
@@ -1449,7 +1655,11 @@ class SessionManager @Inject constructor(
         // 3. Download Standalone Events (no program)
         try {
             Log.d("SessionManager", "Downloading standalone events...")
-            d2Instance.eventModule().eventDownloader().download()
+            runBlocking {
+                D2SdkOperationLocks.dataValueAndAggregateMutex.withLock {
+                    d2Instance.eventModule().eventDownloader().download()
+                }
+            }
         } catch (e: Exception) {
             Log.e("SessionManager", "Failed to download standalone events: ${e.message}")
         }
