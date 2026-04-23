@@ -15,13 +15,18 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.TopAppBarColors
+import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.SideEffect
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.toArgb
+import androidx.compose.ui.platform.LocalView
 import androidx.navigation.NavController
 import com.ash.simpledataentry.data.sync.SyncStatusController
 import org.hisp.dhis.mobile.ui.designsystem.component.Title
@@ -29,6 +34,8 @@ import org.hisp.dhis.mobile.ui.designsystem.component.TopBar
 import org.hisp.dhis.mobile.ui.designsystem.component.TopBarType
 import org.hisp.dhis.mobile.ui.designsystem.theme.SurfaceColor
 import org.hisp.dhis.mobile.ui.designsystem.theme.TextColor
+import androidx.core.view.WindowInsetsControllerCompat
+import android.app.Activity
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -36,6 +43,7 @@ fun BaseScreen(
     title: String,
     subtitle: String? = null,
     navController: NavController,
+    usePrimaryTopBar: Boolean = true,
     navigationIcon: @Composable (() -> Unit)? = {
         IconButton(onClick = { navController.popBackStack() }) {
             Icon(
@@ -60,8 +68,24 @@ fun BaseScreen(
 
     val effectiveShowProgress = showProgress || syncShowProgress
     val effectiveProgress = progress ?: syncProgressValue
-    val titleContentColor = MaterialTheme.colorScheme.onPrimary
-    val subtitleColor = titleContentColor.copy(alpha = 0.75f)
+    val titleTextColor = if (usePrimaryTopBar) TextColor.OnPrimary else TextColor.OnSurface
+    val subtitleColor = if (usePrimaryTopBar) {
+        MaterialTheme.colorScheme.onPrimary.copy(alpha = 0.7f)
+    } else {
+        MaterialTheme.colorScheme.onSurface.copy(alpha = 0.7f)
+    }
+    val isDarkTheme = isSystemInDarkTheme()
+    val view = LocalView.current
+    val statusBarColor = if (isDarkTheme) Color.Black else Color.White
+    val navigationBarColor = if (isDarkTheme) Color.Black else Color.White
+    SideEffect {
+        val window = (view.context as? Activity)?.window ?: return@SideEffect
+        window.statusBarColor = statusBarColor.toArgb()
+        window.navigationBarColor = navigationBarColor.toArgb()
+        val insetsController = WindowInsetsControllerCompat(window, window.decorView)
+        insetsController.isAppearanceLightStatusBars = !isDarkTheme
+        insetsController.isAppearanceLightNavigationBars = !isDarkTheme
+    }
 
     Scaffold(
         topBar = {
@@ -69,7 +93,7 @@ fun BaseScreen(
                 TopBar(
                     title = {
                         Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                            Title(text = title, textColor = TextColor.OnPrimary)
+                            Title(text = title, textColor = titleTextColor)
                             if (!subtitle.isNullOrBlank()) {
                                 Text(
                                     text = subtitle,
@@ -86,11 +110,11 @@ fun BaseScreen(
                         actions()
                     },
                     colors = TopAppBarColors(
-                        containerColor = SurfaceColor.Primary,
-                        titleContentColor = TextColor.OnSurface,
+                        containerColor = if (usePrimaryTopBar) SurfaceColor.Primary else SurfaceColor.Surface,
+                        titleContentColor = if (usePrimaryTopBar) TextColor.OnSurface else TextColor.OnSurface,
                         navigationIconContentColor = TextColor.OnSurface,
                         actionIconContentColor = TextColor.OnSurface,
-                        scrolledContainerColor = SurfaceColor.Container,
+                        scrolledContainerColor = if (usePrimaryTopBar) SurfaceColor.Container else SurfaceColor.Surface,
                     ),
                 )
                 // PHASE 4: Progress indicator beneath top bar

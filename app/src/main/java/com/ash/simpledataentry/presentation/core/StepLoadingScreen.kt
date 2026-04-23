@@ -5,17 +5,18 @@ import androidx.compose.animation.core.animateFloat
 import androidx.compose.animation.core.infiniteRepeatable
 import androidx.compose.animation.core.rememberInfiniteTransition
 import androidx.compose.animation.core.tween
+import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
-import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
@@ -25,22 +26,29 @@ import androidx.compose.material.icons.filled.DynamicForm
 import androidx.compose.material.icons.filled.Storage
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
+import androidx.compose.material3.Button
 import androidx.compose.material3.Icon
 import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.SideEffect
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.shadow
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.toArgb
+import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.platform.LocalView
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import com.ash.simpledataentry.ui.theme.DHIS2Blue
 import com.ash.simpledataentry.ui.theme.DHIS2BlueDark
 import com.ash.simpledataentry.ui.theme.DatasetAccent
+import androidx.core.view.WindowInsetsControllerCompat
+import android.app.Activity
 
 enum class StepLoadingType {
     LOGIN,
@@ -57,8 +65,22 @@ fun StepLoadingScreen(
     currentStep: Int,
     progressPercent: Int,
     currentLabel: String? = null,
+    actionLabel: String? = null,
+    onAction: (() -> Unit)? = null,
     modifier: Modifier = Modifier
 ) {
+    val view = LocalView.current
+    val isDarkTheme = isSystemInDarkTheme()
+    val statusBarColor = if (isDarkTheme) Color.Black else Color.White
+    SideEffect {
+        val window = (view.context as? Activity)?.window ?: return@SideEffect
+        val colorInt = statusBarColor.toArgb()
+        window.statusBarColor = colorInt
+        window.navigationBarColor = colorInt
+        val insetsController = WindowInsetsControllerCompat(window, window.decorView)
+        insetsController.isAppearanceLightStatusBars = !isDarkTheme
+        insetsController.isAppearanceLightNavigationBars = !isDarkTheme
+    }
     val steps = when (type) {
         StepLoadingType.LOGIN -> listOf(
             StepLoadingStep("Initializing"),
@@ -88,15 +110,19 @@ fun StepLoadingScreen(
 
     val safeStep = currentStep.coerceIn(0, steps.lastIndex)
     val isComplete = safeStep >= steps.lastIndex && progressPercent >= 100
+    val sanitizedLabel = currentLabel
+        ?.takeIf { it.isNotBlank() }
+        ?.takeUnless { it.trim().matches(Regex("^Progress:\\s*\\d+%$")) }
+    val displayLabel = sanitizedLabel ?: steps[safeStep].label
     val pulseTransition = rememberInfiniteTransition(label = "step_pulse")
-    val pulseAlpha by pulseTransition.animateFloat(
-        initialValue = 0.6f,
-        targetValue = 1f,
+    val iconScale by pulseTransition.animateFloat(
+        initialValue = 0.95f,
+        targetValue = 1.05f,
         animationSpec = infiniteRepeatable(
-            animation = tween(durationMillis = 900),
+            animation = tween(durationMillis = 850),
             repeatMode = RepeatMode.Reverse
         ),
-        label = "pulse_alpha"
+        label = "icon_scale"
     )
 
     Box(
@@ -112,14 +138,15 @@ fun StepLoadingScreen(
         Column(
             modifier = Modifier
                 .fillMaxWidth()
+                .widthIn(max = 760.dp)
                 .padding(horizontal = 24.dp),
             horizontalAlignment = Alignment.CenterHorizontally
         ) {
             Box(
                 modifier = Modifier
-                    .size(96.dp)
+                    .size(84.dp)
                     .shadow(12.dp, CircleShape)
-                    .background(Color.White, CircleShape),
+                    .background(Color.White.copy(alpha = 0.95f), CircleShape),
                 contentAlignment = Alignment.Center
             ) {
                 val icon = when {
@@ -133,7 +160,13 @@ fun StepLoadingScreen(
                     imageVector = icon,
                     contentDescription = null,
                     tint = if (isComplete) DHIS2Blue else DatasetAccent,
-                    modifier = Modifier.size(56.dp)
+                    modifier = Modifier
+                        .size(50.dp)
+                        .graphicsLayer {
+                            scaleX = iconScale
+                            scaleY = iconScale
+                        }
+                        .background(Color.Transparent, CircleShape)
                 )
             }
 
@@ -151,7 +184,7 @@ fun StepLoadingScreen(
             )
             Spacer(modifier = Modifier.height(8.dp))
             Text(
-                text = currentLabel?.takeIf { it.isNotBlank() } ?: steps[safeStep].label,
+                text = displayLabel,
                 style = MaterialTheme.typography.bodyMedium,
                 color = Color.White.copy(alpha = 0.9f),
                 textAlign = TextAlign.Center
@@ -160,75 +193,53 @@ fun StepLoadingScreen(
             Spacer(modifier = Modifier.height(24.dp))
 
             Card(
-                modifier = Modifier.fillMaxWidth(),
+                modifier = Modifier.fillMaxWidth().widthIn(max = 520.dp),
                 shape = RoundedCornerShape(16.dp),
                 colors = CardDefaults.cardColors(
-                    containerColor = Color.White
+                    containerColor = Color(0xFF0A1B2D).copy(alpha = 0.92f)
                 ),
                 elevation = CardDefaults.cardElevation(defaultElevation = 8.dp)
             ) {
                 Column(
                     modifier = Modifier.padding(20.dp),
+                    horizontalAlignment = Alignment.CenterHorizontally,
                     verticalArrangement = Arrangement.spacedBy(12.dp)
                 ) {
+                    Text(
+                        text = "${safeStep + 1} / ${steps.size}",
+                        style = MaterialTheme.typography.titleSmall,
+                        color = Color.White,
+                        textAlign = TextAlign.Center
+                    )
+
+                    Text(
+                        text = "${progressPercent.coerceIn(0, 100)}%",
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = Color.White
+                    )
+
                     LinearProgressIndicator(
                         progress = { progressPercent.coerceIn(0, 100) / 100f },
                         modifier = Modifier
                             .fillMaxWidth()
                             .height(6.dp),
                         color = DHIS2Blue,
-                        trackColor = Color(0xFFE5E7EB)
+                        trackColor = Color.White.copy(alpha = 0.2f)
                     )
-
-                    steps.forEachIndexed { index, step ->
-                        val stepColor = when {
-                            index < safeStep -> DHIS2Blue
-                            index == safeStep -> DatasetAccent
-                            else -> Color(0xFFD1D5DB)
-                        }
-                        Row(
-                            verticalAlignment = Alignment.CenterVertically,
-                            horizontalArrangement = Arrangement.spacedBy(8.dp)
-                        ) {
-                            Box(
-                                modifier = Modifier
-                                    .size(16.dp)
-                                    .background(stepColor, CircleShape),
-                                contentAlignment = Alignment.Center
-                            ) {
-                                if (index < safeStep) {
-                                    Icon(
-                                        imageVector = Icons.Default.CheckCircle,
-                                        contentDescription = null,
-                                        tint = Color.White,
-                                        modifier = Modifier.size(12.dp)
-                                    )
-                                } else if (index == safeStep && !isComplete) {
-                                    Box(
-                                        modifier = Modifier
-                                            .size(10.dp)
-                                            .background(
-                                                Color.White.copy(alpha = pulseAlpha),
-                                                CircleShape
-                                            )
-                                    )
-                                }
-                            }
-                            Text(
-                                text = step.label,
-                                style = MaterialTheme.typography.bodySmall,
-                                color = if (index <= safeStep) {
-                                    MaterialTheme.colorScheme.onSurface
-                                } else {
-                                    MaterialTheme.colorScheme.onSurface.copy(alpha = 0.4f)
-                                }
-                            )
-                        }
-                    }
                 }
             }
 
             Spacer(modifier = Modifier.height(20.dp))
+
+            if (actionLabel != null && onAction != null) {
+                Button(
+                    onClick = onAction,
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Text(text = actionLabel)
+                }
+                Spacer(modifier = Modifier.height(8.dp))
+            }
 
             Text(
                 text = "Please do not close the app",

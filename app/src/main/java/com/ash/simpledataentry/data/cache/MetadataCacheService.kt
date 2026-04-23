@@ -1,15 +1,26 @@
 package com.ash.simpledataentry.data.cache
 
+import android.content.Context
+import android.util.Base64
 import android.util.Log
 import com.ash.simpledataentry.data.DatabaseProvider
 import com.ash.simpledataentry.data.SessionManager
 import com.ash.simpledataentry.data.local.*
+import com.ash.simpledataentry.data.repositoryImpl.SavedAccountRepository
+import com.ash.simpledataentry.data.sync.D2SdkOperationLocks
 import com.ash.simpledataentry.domain.model.GroupingStrategy
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
+import kotlinx.coroutines.sync.withLock
 import org.hisp.dhis.android.core.D2
 import javax.inject.Inject
 import javax.inject.Singleton
+import org.json.JSONArray
+import org.json.JSONObject
+import java.net.HttpURLConnection
+import java.net.URL
+import java.net.URLEncoder
+import java.nio.charset.StandardCharsets
 
 /**
  * Service for caching and optimizing metadata access across feature stacks.
@@ -21,7 +32,9 @@ import javax.inject.Singleton
 @Singleton
 class MetadataCacheService @Inject constructor(
     private val sessionManager: SessionManager,
-    private val databaseProvider: DatabaseProvider
+    private val databaseProvider: DatabaseProvider,
+    private val savedAccountRepository: SavedAccountRepository,
+    private val context: Context
 ) {
     // Dynamic DAO accessors - always get from current database
     private val dataElementDao: DataElementDao get() = databaseProvider.getCurrentDatabase().dataElementDao()
@@ -55,6 +68,57 @@ class MetadataCacheService @Inject constructor(
         val name: String,
         val dataElementUids: List<String>
     )
+
+    private val prefs by lazy {
+        context.getSharedPreferences("metadata_cache", Context.MODE_PRIVATE)
+    }
+
+    private fun sectionsCacheKey(datasetId: String) = "sections_$datasetId"
+
+    private fun loadSectionsFromDisk(datasetId: String): List<SectionInfo>? {
+        val raw = prefs.getString(sectionsCacheKey(datasetId), null) ?: return null
+        return try {
+            val json = JSONArray(raw)
+            buildList {
+                for (i in 0 until json.length()) {
+                    val item = json.getJSONObject(i)
+                    val name = item.optString("name")
+                    val uids = item.optJSONArray("uids")
+                    val list = buildList {
+                        if (uids != null) {
+                            for (j in 0 until uids.length()) {
+                                add(uids.getString(j))
+                            }
+                        }
+                    }
+                    if (name.isNotBlank() && list.isNotEmpty()) {
+                        add(SectionInfo(name, list))
+                    }
+                }
+            }.takeIf { it.isNotEmpty() }
+        } catch (e: Exception) {
+            Log.w("MetadataCacheService", "Failed to parse cached sections for $datasetId", e)
+            null
+        }
+    }
+
+    private fun persistSectionsToDisk(datasetId: String, sections: List<SectionInfo>) {
+        if (sections.isEmpty()) return
+        try {
+            val json = JSONArray()
+            sections.forEach { section ->
+                val obj = JSONObject()
+                obj.put("name", section.name)
+                val uids = JSONArray()
+                section.dataElementUids.forEach { uids.put(it) }
+                obj.put("uids", uids)
+                json.put(obj)
+            }
+            prefs.edit().putString(sectionsCacheKey(datasetId), json.toString()).apply()
+        } catch (e: Exception) {
+            Log.w("MetadataCacheService", "Failed to persist sections for $datasetId", e)
+        }
+    }
     
     /**
      * Get optimized data for EditEntryScreen with pre-fetched and pre-mapped data values
@@ -139,33 +203,376 @@ class MetadataCacheService @Inject constructor(
     ): OptimizedEntryData = withContext(Dispatchers.IO) {
         
         Log.d("MetadataCacheService", "Getting optimized data with fresh values for dataset: $datasetId")
-        
-        // Get cached metadata (fast)
-        val baseData = getOptimizedDataForEntry(datasetId, period, orgUnit, attributeOptionCombo)
-        
-        // Get fresh data values from SDK (slower, only when needed)
-        val sdkDataValues = d2.dataValueModule().dataValues()
+        val refreshedCount = refreshDataValues(datasetId, period, orgUnit, attributeOptionCombo)
+        Log.d("MetadataCacheService", "Fresh data refresh finished with $refreshedCount values")
+        getOptimizedDataForEntry(datasetId, period, orgUnit, attributeOptionCombo)
+    }
+
+    /**
+     * Force-refresh data values for a specific dataset instance and cache them in Room.
+     * Returns the number of values fetched from the server.
+     */
+    suspend fun refreshDataValues(
+        datasetId: String,
+        period: String,
+        orgUnit: String,
+        attributeOptionCombo: String
+    ): Int = withContext(Dispatchers.IO) {
+        Log.d(
+            "MetadataCacheService",
+            "DVTRACE refreshDataValues start dataset=$datasetId period=$period orgUnit=$orgUnit requestedAOC=$attributeOptionCombo"
+        )
+        val defaultCombo = d2.categoryModule().categoryOptionCombos()
+            .byDisplayName().eq("default")
+            .one()
+            .blockingGet()
+            ?.uid()
+            .orEmpty()
+
+        val resolvedAttr = if (attributeOptionCombo.isBlank()) defaultCombo else attributeOptionCombo
+        Log.d(
+            "MetadataCacheService",
+            "DVTRACE refreshDataValues resolvedAOC=$resolvedAttr defaultAOC=$defaultCombo"
+        )
+
+        fun logSdkInstanceDiagnostics(stage: String) {
+            try {
+                val dataSet = d2.dataSetModule().dataSets()
+                    .uid(datasetId)
+                    .blockingGet()
+                val periodType = dataSet?.periodType()?.name ?: "unknown"
+
+                val dataSetInstance = d2.dataSetModule()
+                    .dataSetInstances()
+                    .dataSetInstance(datasetId, period, orgUnit, resolvedAttr)
+                    .blockingGet()
+
+                val localPeriods = d2.dataValueModule().dataValues()
+                    .byDataSetUid(datasetId)
+                    .byOrganisationUnitUid().eq(orgUnit)
+                    .blockingGet()
+                    .mapNotNull { it.period() }
+                    .distinct()
+                    .sorted()
+
+                val exactKeyCount = d2.dataValueModule().dataValues()
+                    .byDataSetUid(datasetId)
+                    .byPeriod().eq(period)
+                    .byOrganisationUnitUid().eq(orgUnit)
+                    .byAttributeOptionComboUid().eq(resolvedAttr)
+                    .blockingCount()
+
+                Log.d(
+                    "MetadataCacheService",
+                    "DVTRACE sdkDiag[$stage] dataset=$datasetId periodType=$periodType exactInstanceExists=${dataSetInstance != null} exactInstanceCompleted=${dataSetInstance?.completed()} exactKeyCount=$exactKeyCount"
+                )
+                Log.d(
+                    "MetadataCacheService",
+                    "DVTRACE sdkDiag[$stage] localPeriodsForDatasetOrgUnit count=${localPeriods.size} values=${localPeriods.take(20)}"
+                )
+            } catch (e: Exception) {
+                Log.w(
+                    "MetadataCacheService",
+                    "DVTRACE sdkDiag[$stage] failed: ${e.message}"
+                )
+            }
+        }
+
+        logSdkInstanceDiagnostics("beforeFetch")
+
+        fun fetchValues(attr: String) = d2.dataValueModule().dataValues()
             .byDataSetUid(datasetId)
             .byPeriod().eq(period)
             .byOrganisationUnitUid().eq(orgUnit)
-            .byAttributeOptionComboUid().eq(attributeOptionCombo)
+            .byAttributeOptionComboUid().eq(attr)
             .blockingGet()
-            .associateBy { (it.dataElement() ?: "") to (it.categoryOptionCombo() ?: "") }
-        
-        Log.d("MetadataCacheService", "Fresh data loaded: ${sdkDataValues.size} data values from server")
-            
-        baseData.copy(sdkDataValues = sdkDataValues)
+
+        var rawSdkDataValues = D2SdkOperationLocks.dataValueAndAggregateMutex.withLock {
+            try {
+                // android-core:1.13.1 does not expose a data-value scoped downloader.
+                // Aggregated downloader is the supported server fetch path.
+                d2.aggregatedModule().data().blockingDownload()
+                fetchValues(resolvedAttr)
+            } catch (e: Exception) {
+                Log.w(
+                    "MetadataCacheService",
+                    "Data-value download failed for requested AOC=$resolvedAttr, falling back to local cache",
+                    e
+                )
+                fetchValues(resolvedAttr)
+            }
+        }
+        Log.d(
+            "MetadataCacheService",
+            "DVTRACE fetch requestedAOC=$resolvedAttr returned=${rawSdkDataValues.size}"
+        )
+        logSdkInstanceDiagnostics("afterFetch")
+
+        if (rawSdkDataValues.isEmpty() && resolvedAttr != defaultCombo && defaultCombo.isNotBlank()) {
+            val fallbackValues = D2SdkOperationLocks.dataValueAndAggregateMutex.withLock {
+                fetchValues(defaultCombo)
+            }
+            Log.d(
+                "MetadataCacheService",
+                "DVTRACE fetch defaultAOC=$defaultCombo returned=${fallbackValues.size}"
+            )
+            if (fallbackValues.isNotEmpty()) {
+                storeDataValuesInRoom(datasetId, period, orgUnit, defaultCombo, fallbackValues)
+                return@withContext fallbackValues.size
+            }
+        }
+
+        if (rawSdkDataValues.isEmpty()) {
+            val directApiFallback = fetchDataValuesFromApiDirect(
+                datasetId = datasetId,
+                period = period,
+                orgUnit = orgUnit,
+                attributeOptionCombo = resolvedAttr
+            )
+            if (directApiFallback.isNotEmpty()) {
+                Log.d(
+                    "MetadataCacheService",
+                    "DVTRACE directApi fallback returned=${directApiFallback.size} for requestedAOC=$resolvedAttr"
+                )
+                storeDirectApiDataValuesInRoom(
+                    datasetId = datasetId,
+                    period = period,
+                    orgUnit = orgUnit,
+                    attributeOptionCombo = resolvedAttr,
+                    apiDataValues = directApiFallback
+                )
+                return@withContext directApiFallback.size
+            }
+
+            // Last resort: probe all attribute option combos on the dataset category combo
+            // and pick the first one containing values for this instance.
+            try {
+                val dataSet = d2.dataSetModule().dataSets()
+                    .uid(datasetId)
+                    .blockingGet()
+                val dataSetCategoryComboUid = dataSet?.categoryCombo()?.uid().orEmpty()
+                if (dataSetCategoryComboUid.isNotBlank()) {
+                    val datasetAocs = d2.categoryModule().categoryOptionCombos()
+                        .byCategoryComboUid().eq(dataSetCategoryComboUid)
+                        .blockingGet()
+                        .map { it.uid() }
+                        .distinct()
+                    for (candidateAoc in datasetAocs) {
+                        if (candidateAoc == resolvedAttr || candidateAoc == defaultCombo) continue
+                        val candidateValues = D2SdkOperationLocks.dataValueAndAggregateMutex.withLock {
+                            fetchValues(candidateAoc)
+                        }
+                        Log.d(
+                            "MetadataCacheService",
+                            "DVTRACE probeAOC candidate=$candidateAoc returned=${candidateValues.size}"
+                        )
+                        if (candidateValues.isNotEmpty()) {
+                            Log.d(
+                                "MetadataCacheService",
+                                "Resolved instance values via alternate AOC $candidateAoc (requested=$resolvedAttr)"
+                            )
+                            storeDataValuesInRoom(datasetId, period, orgUnit, candidateAoc, candidateValues)
+                            return@withContext candidateValues.size
+                        }
+                    }
+                }
+            } catch (e: Exception) {
+                Log.w("MetadataCacheService", "AOC probing failed while refreshing data values", e)
+            }
+        }
+
+        storeDataValuesInRoom(datasetId, period, orgUnit, resolvedAttr, rawSdkDataValues)
+        Log.d(
+            "MetadataCacheService",
+            "DVTRACE refreshDataValues end dataset=$datasetId period=$period orgUnit=$orgUnit storedAOC=$resolvedAttr count=${rawSdkDataValues.size}"
+        )
+        rawSdkDataValues.size
+    }
+
+    private data class DirectApiDataValue(
+        val dataElement: String,
+        val categoryOptionCombo: String,
+        val attributeOptionCombo: String,
+        val value: String?,
+        val comment: String?
+    )
+
+    private suspend fun fetchDataValuesFromApiDirect(
+        datasetId: String,
+        period: String,
+        orgUnit: String,
+        attributeOptionCombo: String
+    ): List<DirectApiDataValue> = withContext(Dispatchers.IO) {
+        val sessionPrefs = context.getSharedPreferences("session_prefs", Context.MODE_PRIVATE)
+        val sessionUsername = sessionPrefs.getString("username", null)
+        val sessionServerUrl = sessionPrefs.getString("serverUrl", null)
+
+        val activeAccount = savedAccountRepository.getActiveAccount()
+            ?: if (!sessionUsername.isNullOrBlank() && !sessionServerUrl.isNullOrBlank()) {
+                savedAccountRepository.getAccountByCredentials(
+                    serverUrl = sessionServerUrl,
+                    username = sessionUsername
+                )
+            } else {
+                null
+            }
+
+        if (activeAccount == null) {
+            Log.w(
+                "MetadataCacheService",
+                "DVTRACE directApi skipped: no saved account credentials for current session (sessionUser=$sessionUsername, sessionServer=$sessionServerUrl)"
+            )
+            return@withContext emptyList()
+        }
+        val password = savedAccountRepository.getDecryptedPassword(activeAccount.id)
+        if (password.isNullOrBlank()) {
+            Log.w("MetadataCacheService", "DVTRACE directApi skipped: no decrypted password for active account")
+            return@withContext emptyList()
+        }
+
+        val encodedDataset = URLEncoder.encode(datasetId, "UTF-8")
+        val encodedPeriod = URLEncoder.encode(period, "UTF-8")
+        val encodedOrgUnit = URLEncoder.encode(orgUnit, "UTF-8")
+        val encodedAoc = URLEncoder.encode(attributeOptionCombo, "UTF-8")
+        val fields = URLEncoder.encode(
+            "dataSet,period,orgUnit,dataValues[dataElement,period,orgUnit,categoryOptionCombo,attributeOptionCombo,value,comment]",
+            "UTF-8"
+        )
+
+        val serverBase = activeAccount.serverUrl.trimEnd('/')
+        val url = URL(
+            "$serverBase/api/dataValueSets.json" +
+                "?dataSet=$encodedDataset" +
+                "&period=$encodedPeriod" +
+                "&orgUnit=$encodedOrgUnit" +
+                "&attributeOptionCombo=$encodedAoc" +
+                "&fields=$fields"
+        )
+
+        var connection: HttpURLConnection? = null
+        try {
+            connection = (url.openConnection() as HttpURLConnection).apply {
+                requestMethod = "GET"
+                connectTimeout = 30000
+                readTimeout = 60000
+                setRequestProperty("Accept", "application/json")
+                val credentials = "${activeAccount.username}:$password"
+                val authHeader = Base64.encodeToString(
+                    credentials.toByteArray(StandardCharsets.UTF_8),
+                    Base64.NO_WRAP
+                )
+                setRequestProperty("Authorization", "Basic $authHeader")
+            }
+
+            val code = connection.responseCode
+            val body = try {
+                val stream = if (code in 200..299) connection.inputStream else connection.errorStream
+                stream?.bufferedReader()?.use { it.readText() }.orEmpty()
+            } catch (e: Exception) {
+                ""
+            }
+
+            Log.d(
+                "MetadataCacheService",
+                "DVTRACE directApi GET dataValueSets code=$code dataset=$datasetId period=$period orgUnit=$orgUnit aoc=$attributeOptionCombo bodyLen=${body.length}"
+            )
+
+            if (code !in 200..299 || body.isBlank()) {
+                return@withContext emptyList()
+            }
+
+            val json = JSONObject(body)
+            val dataValues = json.optJSONArray("dataValues") ?: JSONArray()
+            val parsed = buildList {
+                for (i in 0 until dataValues.length()) {
+                    val item = dataValues.optJSONObject(i) ?: continue
+                    val itemAoc = item.optString("attributeOptionCombo")
+                    if (itemAoc.isNotBlank() && itemAoc != attributeOptionCombo) continue
+                    add(
+                        DirectApiDataValue(
+                            dataElement = item.optString("dataElement"),
+                            categoryOptionCombo = item.optString("categoryOptionCombo"),
+                            attributeOptionCombo = itemAoc,
+                            value = item.optString("value").takeIf { item.has("value") },
+                            comment = item.optString("comment").takeIf { item.has("comment") && !item.isNull("comment") }
+                        )
+                    )
+                }
+            }
+
+            Log.d(
+                "MetadataCacheService",
+                "DVTRACE directApi parsed dataValues=${parsed.size} dataset=$datasetId period=$period orgUnit=$orgUnit aoc=$attributeOptionCombo"
+            )
+            parsed.take(5).forEach { value ->
+                Log.d(
+                    "MetadataCacheService",
+                    "DVTRACE directApiSample de=${value.dataElement} coc=${value.categoryOptionCombo} value=${value.value}"
+                )
+            }
+            parsed
+        } catch (e: Exception) {
+            Log.w(
+                "MetadataCacheService",
+                "DVTRACE directApi fallback failed for dataset=$datasetId period=$period orgUnit=$orgUnit aoc=$attributeOptionCombo: ${e.message}",
+                e
+            )
+            emptyList()
+        } finally {
+            connection?.disconnect()
+        }
+    }
+
+    private suspend fun storeDirectApiDataValuesInRoom(
+        datasetId: String,
+        period: String,
+        orgUnit: String,
+        attributeOptionCombo: String,
+        apiDataValues: List<DirectApiDataValue>
+    ) {
+        Log.d(
+            "MetadataCacheService",
+            "DVTRACE storeDirectApiDataValuesInRoom start dataset=$datasetId period=$period orgUnit=$orgUnit aoc=$attributeOptionCombo incoming=${apiDataValues.size}"
+        )
+        dataValueDao.deleteValuesForInstance(datasetId, period, orgUnit, attributeOptionCombo)
+        val entities = apiDataValues.map { item ->
+            DataValueEntity(
+                datasetId = datasetId,
+                period = period,
+                orgUnit = orgUnit,
+                attributeOptionCombo = attributeOptionCombo,
+                dataElement = item.dataElement,
+                categoryOptionCombo = item.categoryOptionCombo,
+                value = item.value,
+                comment = item.comment
+            )
+        }
+        dataValueDao.insertAll(entities)
+        Log.d(
+            "MetadataCacheService",
+            "DVTRACE storeDirectApiDataValuesInRoom done dataset=$datasetId period=$period orgUnit=$orgUnit aoc=$attributeOptionCombo rows=${entities.size}"
+        )
     }
     
     /**
      * Get sections for a dataset with caching
      */
     private suspend fun getSectionsForDataset(datasetId: String): List<SectionInfo> {
+        sectionsCache[datasetId]?.let { return it }
+        loadSectionsFromDisk(datasetId)?.let { cached ->
+            sectionsCache[datasetId] = cached
+            return cached
+        }
+
         return sectionsCache.getOrPut(datasetId) {
             val sections = d2.dataSetModule().sections()
                 .withDataElements()
                 .byDataSetUid().eq(datasetId)
                 .blockingGet()
+                .sortedWith(
+                    compareBy<org.hisp.dhis.android.core.dataset.Section> { it.sortOrder() ?: Int.MAX_VALUE }
+                        .thenBy { it.displayName() ?: "" }
+                )
 
             if (sections.isEmpty()) {
                 val dataSet = d2.dataSetModule().dataSets()
@@ -189,12 +596,14 @@ class MetadataCacheService @Inject constructor(
                     )
                 }
             } else {
-                sections.map { section ->
+                val mapped = sections.map { section ->
                     SectionInfo(
                         name = section.displayName() ?: "Unassigned",
                         dataElementUids = section.dataElements()?.map { it.uid() } ?: emptyList()
                     )
                 }
+                persistSectionsToDisk(datasetId, mapped)
+                mapped
             }
         }
     }
@@ -207,12 +616,17 @@ class MetadataCacheService @Inject constructor(
     suspend fun getCategoryComboStructure(categoryComboUid: String): List<Pair<String, List<Pair<String, String>>>> {
         return categoryComboStructureCache.getOrPut(categoryComboUid) {
             try {
+                Log.d("MetadataCacheService", "Category combo structure request for comboUid=$categoryComboUid")
                 // Get the category option combo to find its category combo
                 val categoryOptionCombo = d2.categoryModule().categoryOptionCombos()
                     .uid(categoryComboUid)
                     .blockingGet() ?: return@getOrPut emptyList()
 
                 val actualCategoryComboUid = categoryOptionCombo.categoryCombo()
+                Log.d(
+                    "MetadataCacheService",
+                    "Resolved categoryComboUid=${actualCategoryComboUid?.uid()} from categoryOptionCombo=${categoryOptionCombo.uid()}"
+                )
 
                 // Get the category combo with its categories
                 val categoryCombo = d2.categoryModule().categoryCombos()
@@ -221,6 +635,10 @@ class MetadataCacheService @Inject constructor(
                     .blockingGet() ?: return@getOrPut emptyList()
 
                 val categories = categoryCombo.categories() ?: emptyList()
+                Log.d(
+                    "MetadataCacheService",
+                    "CategoryCombo ${categoryCombo.displayName() ?: categoryCombo.uid()} has ${categories.size} categories"
+                )
                 if (categories.isEmpty()) return@getOrPut emptyList()
 
                 // Process categories in the order returned by SDK (maintains metadata order)
@@ -239,6 +657,12 @@ class MetadataCacheService @Inject constructor(
                     }
 
                     Log.d("MetadataCacheService", "Category $catIndex: ${category.displayName()} with ${optionPairs.size} options")
+                    if (optionPairs.isNotEmpty()) {
+                        Log.d(
+                            "MetadataCacheService",
+                            "Category ${category.displayName()} options: ${optionPairs.joinToString { it.second }}"
+                        )
+                    }
 
                     (category.displayName() ?: category.uid()) to optionPairs
                 }
@@ -246,6 +670,74 @@ class MetadataCacheService @Inject constructor(
                 Log.e("MetadataCacheService", "Error getting category combo structure", e)
                 emptyList()
             }
+        }
+    }
+
+    /**
+     * Get category combo structure using a categoryCombo uid directly (no COC indirection).
+     */
+    suspend fun getCategoryComboStructureByComboUid(
+        categoryComboUid: String
+    ): List<Pair<String, List<Pair<String, String>>>> = withContext(Dispatchers.IO) {
+        try {
+            Log.d("MetadataCacheService", "Loading category combo structure by combo uid: $categoryComboUid")
+            val categoryCombo = d2.categoryModule().categoryCombos()
+                .withCategories()
+                .uid(categoryComboUid)
+                .blockingGet() ?: return@withContext emptyList()
+
+            val categories = categoryCombo.categories() ?: emptyList()
+            Log.d(
+                "MetadataCacheService",
+                "Combo ${categoryCombo.displayName() ?: categoryCombo.uid()} has ${categories.size} categories"
+            )
+            if (categories.isEmpty()) return@withContext emptyList()
+
+            categories.mapNotNull { catRef ->
+                val category = d2.categoryModule().categories()
+                    .withCategoryOptions()
+                    .uid(catRef.uid())
+                    .blockingGet() ?: return@mapNotNull null
+
+                val options = category.categoryOptions() ?: emptyList()
+                val optionPairs = options.map { optRef ->
+                    optRef.uid() to (optRef.displayName() ?: optRef.uid())
+                }
+                Log.d(
+                    "MetadataCacheService",
+                    "Category ${category.displayName() ?: category.uid()} has ${optionPairs.size} options"
+                )
+                (category.displayName() ?: category.uid()) to optionPairs
+            }
+        } catch (e: Exception) {
+            Log.e("MetadataCacheService", "Error getting category combo structure by combo uid", e)
+            emptyList()
+        }
+    }
+
+    /**
+     * Fetch category option combos directly from SDK by category combo uid.
+     */
+    suspend fun fetchCategoryOptionCombosByComboUid(
+        categoryComboUid: String
+    ): List<com.ash.simpledataentry.data.local.CategoryOptionComboEntity> = withContext(Dispatchers.IO) {
+        try {
+            val combos = d2.categoryModule().categoryOptionCombos()
+                .byCategoryComboUid().eq(categoryComboUid)
+                .withCategoryOptions()
+                .blockingGet()
+
+            combos.map { coc ->
+                com.ash.simpledataentry.data.local.CategoryOptionComboEntity(
+                    id = coc.uid(),
+                    name = coc.displayName() ?: coc.uid(),
+                    categoryComboId = coc.categoryCombo()?.uid() ?: categoryComboUid,
+                    optionUids = coc.categoryOptions()?.joinToString(",") { opt -> opt.uid() } ?: ""
+                )
+            }
+        } catch (e: Exception) {
+            Log.e("MetadataCacheService", "Error fetching category option combos by combo uid", e)
+            emptyList()
         }
     }
     
@@ -327,6 +819,7 @@ class MetadataCacheService @Inject constructor(
         categoryOptionCombosCache.clear()
         groupingStrategyCache.clear()
         impliedCategoryCache.clear()
+        prefs.edit().clear().apply()
         Log.d("MetadataCacheService", "All metadata caches cleared")
     }
     
@@ -343,18 +836,11 @@ class MetadataCacheService @Inject constructor(
 
         Log.d("MetadataCacheService", "Pre-fetching data values for dataset: $datasetId")
 
-        // First check if we have cached data in Room
+        // Keep a snapshot of Room cache as fallback only.
         val cachedDataValues = dataValueDao.getValuesForInstance(datasetId, period, orgUnit, attributeOptionCombo)
 
-        if (cachedDataValues.isNotEmpty()) {
-            Log.d("MetadataCacheService", "Using cached data values from Room: ${cachedDataValues.size} entries")
-
-            // For cached data, we'll return empty map and let the DataEntryRepositoryImpl
-            // handle retrieving data from Room cache directly - this avoids complex SDK mocking
-            return emptyMap()
-        }
-
-        // If no cached data, fetch fresh data values from SDK
+        // Always read from SDK local store first. This reflects latest downloaded server values
+        // and avoids stale/partial Room snapshots masking existing web data.
         val rawSdkDataValues = d2.dataValueModule().dataValues()
             .byDataSetUid(datasetId)
             .byPeriod().eq(period)
@@ -364,12 +850,20 @@ class MetadataCacheService @Inject constructor(
 
         Log.d("MetadataCacheService", "Raw SDK data values retrieved: ${rawSdkDataValues.size}")
 
+        if (rawSdkDataValues.isEmpty()) {
+            Log.d(
+                "MetadataCacheService",
+                "No SDK values for instance; using Room fallback entries=${cachedDataValues.size}"
+            )
+            return emptyMap()
+        }
+
         // Map using the actual keys from SDK data - this fixes the key mismatch issue
         val mappedDataValues = rawSdkDataValues.associateBy {
             (it.dataElement() ?: "") to (it.categoryOptionCombo() ?: "")
         }
 
-        // Store in Room for quick subsequent loading
+        // Keep app Room mirror aligned with SDK local storage.
         storeDataValuesInRoom(datasetId, period, orgUnit, attributeOptionCombo, rawSdkDataValues)
 
         Log.d("MetadataCacheService", "Data values mapped and cached: ${mappedDataValues.size} entries")
@@ -387,6 +881,10 @@ class MetadataCacheService @Inject constructor(
         attributeOptionCombo: String,
         sdkDataValues: List<org.hisp.dhis.android.core.datavalue.DataValue>
     ) {
+        Log.d(
+            "MetadataCacheService",
+            "DVTRACE storeDataValuesInRoom start dataset=$datasetId period=$period orgUnit=$orgUnit aoc=$attributeOptionCombo incoming=${sdkDataValues.size}"
+        )
         // Clear existing data for this instance
         dataValueDao.deleteValuesForInstance(datasetId, period, orgUnit, attributeOptionCombo)
 
@@ -406,7 +904,17 @@ class MetadataCacheService @Inject constructor(
 
         // Store in Room
         dataValueDao.insertAll(entities)
-        Log.d("MetadataCacheService", "Stored ${entities.size} data values in Room database")
+        val nonEmptyCount = entities.count { !it.value.isNullOrBlank() }
+        Log.d(
+            "MetadataCacheService",
+            "DVTRACE storeDataValuesInRoom done dataset=$datasetId period=$period orgUnit=$orgUnit aoc=$attributeOptionCombo rows=${entities.size} nonEmpty=$nonEmptyCount"
+        )
+        entities.take(5).forEach { entity ->
+            Log.d(
+                "MetadataCacheService",
+                "DVTRACE roomSample de=${entity.dataElement} coc=${entity.categoryOptionCombo} value=${entity.value}"
+            )
+        }
     }
 
 

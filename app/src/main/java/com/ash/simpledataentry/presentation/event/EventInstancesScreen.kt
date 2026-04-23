@@ -73,6 +73,8 @@ fun EventInstancesScreen(
     var searchQuery by remember { mutableStateOf("") }
     var useCardView by rememberSaveable { mutableStateOf(true) }
     var filterState by remember { mutableStateOf(EventInstanceFilterState()) }
+    var selectedOrgUnitId by rememberSaveable { mutableStateOf<String?>(null) }
+    var orgUnitMenuExpanded by remember { mutableStateOf(false) }
     val periodHelper = remember { PeriodHelper() }
 
     // Initialize with program ID
@@ -98,9 +100,30 @@ fun EventInstancesScreen(
     val hasBlockingOverlay = currentUiState is UiState.Loading &&
         currentUiState.operation !is LoadingOperation.Initial &&
         data != null
-    val filteredEvents = data?.events.orEmpty().filter { event ->
-        matchesEventFilter(event, filterState, periodHelper)
+    val orgUnitOptions = remember(data?.availableOrgUnits, data?.events) {
+        val explicitOptions = data?.availableOrgUnits.orEmpty()
+        if (explicitOptions.isNotEmpty()) {
+            explicitOptions.sortedBy { it.name.lowercase(Locale.getDefault()) }
+        } else {
+            data?.events
+                .orEmpty()
+                .map { it.organisationUnit }
+                .distinctBy { it.id }
+                .sortedBy { it.name.lowercase(Locale.getDefault()) }
+        }
     }
+    LaunchedEffect(orgUnitOptions, selectedOrgUnitId) {
+        if (selectedOrgUnitId != null && orgUnitOptions.none { it.id == selectedOrgUnitId }) {
+            selectedOrgUnitId = null
+        }
+    }
+    val filteredEvents = data?.events.orEmpty()
+        .filter { event ->
+            selectedOrgUnitId == null || event.organisationUnit.id == selectedOrgUnitId
+        }
+        .filter { event ->
+            matchesEventFilter(event, filterState, periodHelper)
+        }
     val subtitle = if (filteredEvents.size == 1) "1 event" else "${filteredEvents.size} events"
 
     // Show success messages via snackbar
@@ -227,6 +250,54 @@ fun EventInstancesScreen(
                                 contentDescription = "Toggle list view",
                                 tint = MaterialTheme.colorScheme.onSurfaceVariant
                             )
+                        }
+                    }
+                    if (orgUnitOptions.size > 1) {
+                        ExposedDropdownMenuBox(
+                            expanded = orgUnitMenuExpanded,
+                            onExpandedChange = { orgUnitMenuExpanded = !orgUnitMenuExpanded },
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(horizontal = 16.dp)
+                        ) {
+                            val selectedOrgUnitName = orgUnitOptions
+                                .firstOrNull { it.id == selectedOrgUnitId }
+                                ?.name
+                                ?: "All accessible org units"
+                            OutlinedTextField(
+                                value = selectedOrgUnitName,
+                                onValueChange = { },
+                                readOnly = true,
+                                singleLine = true,
+                                label = { Text("Organisation Unit") },
+                                trailingIcon = {
+                                    ExposedDropdownMenuDefaults.TrailingIcon(expanded = orgUnitMenuExpanded)
+                                },
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .menuAnchor(MenuAnchorType.PrimaryNotEditable, enabled = true)
+                            )
+                            ExposedDropdownMenu(
+                                expanded = orgUnitMenuExpanded,
+                                onDismissRequest = { orgUnitMenuExpanded = false }
+                            ) {
+                                DropdownMenuItem(
+                                    text = { Text("All accessible org units") },
+                                    onClick = {
+                                        selectedOrgUnitId = null
+                                        orgUnitMenuExpanded = false
+                                    }
+                                )
+                                orgUnitOptions.forEach { orgUnit ->
+                                    DropdownMenuItem(
+                                        text = { Text(orgUnit.name) },
+                                        onClick = {
+                                            selectedOrgUnitId = orgUnit.id
+                                            orgUnitMenuExpanded = false
+                                        }
+                                    )
+                                }
+                            }
                         }
                     }
                     // Content with data

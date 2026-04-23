@@ -1,13 +1,24 @@
 package com.ash.simpledataentry.data.sync
 
 import android.content.Context
+import android.app.NotificationChannel
+import android.app.NotificationManager
+import android.content.pm.ServiceInfo
+import android.os.Build
 import android.util.Log
 import androidx.hilt.work.HiltWorker
 import androidx.work.CoroutineWorker
+import androidx.work.ForegroundInfo
 import androidx.work.WorkerParameters
 import androidx.work.workDataOf
+import com.ash.simpledataentry.data.AccountManager
+import com.ash.simpledataentry.data.DatabaseManager
 import com.ash.simpledataentry.data.SessionManager
-import com.ash.simpledataentry.presentation.core.NavigationProgress
+import com.ash.simpledataentry.data.RoomHydrationMode
+import androidx.core.app.NotificationCompat
+import com.ash.simpledataentry.presentation.MainActivity
+import android.app.PendingIntent
+import android.content.Intent
 import dagger.assisted.Assisted
 import dagger.assisted.AssistedInject
 import kotlinx.coroutines.Dispatchers
@@ -28,12 +39,16 @@ class MetadataSyncWorker @AssistedInject constructor(
     @Assisted context: Context,
     @Assisted workerParams: WorkerParameters,
     private val sessionManager: SessionManager,
-    private val networkStateManager: NetworkStateManager
+    private val networkStateManager: NetworkStateManager,
+    private val accountManager: AccountManager,
+    private val databaseManager: DatabaseManager
 ) : CoroutineWorker(context, workerParams) {
 
     companion object {
         const val TAG = "MetadataSyncWorker"
         const val WORK_NAME = "metadata_sync_work"
+        private const val NOTIFICATION_ID = 1201
+        private const val CHANNEL_ID = "metadata_sync_channel"
     }
 
     private suspend fun updateProgress(step: String, progress: Int) {
@@ -41,6 +56,51 @@ class MetadataSyncWorker @AssistedInject constructor(
             "step" to step,
             "progress" to progress
         ))
+        setForeground(createForegroundInfo(step, progress))
+    }
+
+    private fun ensureChannel() {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            val manager = applicationContext.getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
+            val channel = NotificationChannel(
+                CHANNEL_ID,
+                "Metadata Sync",
+                NotificationManager.IMPORTANCE_LOW
+            ).apply {
+                description = "Shows metadata bootstrap progress"
+            }
+            manager.createNotificationChannel(channel)
+        }
+    }
+
+    private fun createForegroundInfo(step: String, progress: Int): ForegroundInfo {
+        ensureChannel()
+        val intent = Intent(applicationContext, MainActivity::class.java).apply {
+            flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP
+        }
+        val pendingIntent = PendingIntent.getActivity(
+            applicationContext,
+            0,
+            intent,
+            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
+        )
+        val notification = NotificationCompat.Builder(applicationContext, CHANNEL_ID)
+            .setSmallIcon(android.R.drawable.stat_notify_sync)
+            .setContentTitle("Syncing metadata")
+            .setContentText("$step (${progress.coerceIn(0,100)}%)")
+            .setProgress(100, progress.coerceIn(0,100), false)
+            .setOngoing(true)
+            .setContentIntent(pendingIntent)
+            .build()
+        return if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+            ForegroundInfo(
+                NOTIFICATION_ID,
+                notification,
+                ServiceInfo.FOREGROUND_SERVICE_TYPE_DATA_SYNC
+            )
+        } else {
+            ForegroundInfo(NOTIFICATION_ID, notification)
+        }
     }
 
     override suspend fun doWork(): Result = withContext(Dispatchers.IO) {
@@ -95,6 +155,17 @@ class MetadataSyncWorker @AssistedInject constructor(
                     "⚠ ${metadataResult.successful} of ${metadataResult.successful + metadataResult.failed} metadata types synced"
                 } else {
                     "✓ All metadata synced successfully"
+                }
+
+                // Refresh active account Room cache after metadata update.
+                val activeAccount = accountManager.getActiveAccount(applicationContext)
+                if (activeAccount != null) {
+                    val db = databaseManager.getDatabaseForAccount(applicationContext, activeAccount)
+                    sessionManager.hydrateRoomFromSdk(
+                        context = applicationContext,
+                        db = db,
+                        mode = RoomHydrationMode.MINIMAL
+                    )
                 }
 
                 updateProgress(successMessage, 100)

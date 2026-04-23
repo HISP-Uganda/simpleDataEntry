@@ -5,6 +5,7 @@ import com.ash.simpledataentry.domain.model.DatasetInstance
 import com.ash.simpledataentry.domain.model.DatasetInstanceState
 import com.ash.simpledataentry.domain.model.Period
 import com.ash.simpledataentry.domain.repository.DatasetInstancesRepository
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.flow.flowOn
@@ -13,9 +14,11 @@ import kotlinx.coroutines.rx2.await
 import com.ash.simpledataentry.data.SessionManager
 import com.ash.simpledataentry.data.DatabaseProvider
 import com.ash.simpledataentry.data.local.DraftInstanceSummary
+import com.ash.simpledataentry.data.sync.D2SdkOperationLocks
 import org.hisp.dhis.android.core.D2
 import org.hisp.dhis.android.core.organisationunit.OrganisationUnit
 import javax.inject.Inject
+import kotlinx.coroutines.sync.withLock
 
 private const val TAG = "DatasetInstancesRepo"
 
@@ -29,6 +32,7 @@ class DatasetInstancesRepositoryImpl @Inject constructor(
     // Lazy DAO accessors - always get from current account's database
     private val trackerEnrollmentDao get() = databaseProvider.getCurrentDatabase().trackerEnrollmentDao()
     private val eventInstanceDao get() = databaseProvider.getCurrentDatabase().eventInstanceDao()
+    private val dataValueDao get() = databaseProvider.getCurrentDatabase().dataValueDao()
 
     override suspend fun getDatasetInstances(datasetId: String): List<DatasetInstance> {
         Log.d(TAG, "Fetching dataset instances for dataset: $datasetId")
@@ -49,9 +53,14 @@ class DatasetInstancesRepositoryImpl @Inject constructor(
                     .byDataSetUids(listOf(datasetId))
                     .get().await()
 
-                val scopedIds = scopedOrgUnits.map { it.uid() }.toSet()
-                val attachedIds = attachedOrgUnits.map { it.uid() }.toSet()
+                val scopedIds = scopedOrgUnits.mapNotNull { it.uid() }.filter { it.isNotBlank() }.toSet()
+                val attachedIds = attachedOrgUnits.mapNotNull { it.uid() }.filter { it.isNotBlank() }.toSet()
                 val relevantOrgUnitIds = scopedIds.intersect(attachedIds).ifEmpty { scopedIds }
+
+                if (relevantOrgUnitIds.isEmpty()) {
+                    Log.e(TAG, "No relevant org unit ids available for dataset $datasetId")
+                    return@withContext emptyList()
+                }
 
                 Log.d(
                     TAG,
@@ -59,26 +68,25 @@ class DatasetInstancesRepositoryImpl @Inject constructor(
                 )
 
                 // Get dataset instances across all relevant org units
-                val instanceCount = d2.dataSetModule()
-                    .dataSetInstances()
-                    .byDataSetUid().eq(datasetId)
-                    .byOrganisationUnitUid().`in`(relevantOrgUnitIds.toList())
-                    .blockingCount()
-
                 val instances = d2.dataSetModule()
                     .dataSetInstances()
                     .byDataSetUid().eq(datasetId)
                     .byOrganisationUnitUid().`in`(relevantOrgUnitIds.toList())
                     .get().await()
 
-                Log.d(TAG, "Found $instanceCount instances for dataset")
                 Log.d(TAG, "Loaded ${instances.size} instances for dataset")
 
 
                 val sdkInstances = instances.map { instance ->
-                    Log.d(TAG, "Processing SDK instance: ${instance.id()} | datasetId: ${instance.dataSetUid()} | period: ${instance.period()} | orgUnit: ${instance.organisationUnitUid()} | attributeOptionComboUid: ${instance.attributeOptionComboUid()} | attributeOptionComboDisplayName: ${instance.attributeOptionComboDisplayName()}")
+                    val instanceId = listOf(
+                        instance.dataSetUid(),
+                        instance.period(),
+                        instance.organisationUnitUid(),
+                        instance.attributeOptionComboUid()
+                    ).joinToString("|")
+                    Log.d(TAG, "Processing SDK instance: $instanceId | datasetId: ${instance.dataSetUid()} | period: ${instance.period()} | orgUnit: ${instance.organisationUnitUid()} | attributeOptionComboUid: ${instance.attributeOptionComboUid()} | attributeOptionComboDisplayName: ${instance.attributeOptionComboDisplayName()}")
                     DatasetInstance(
-                        id = instance.id().toString(),
+                        id = instanceId,
                         datasetId = instance.dataSetUid(),
                         period = Period(id = instance.period()),
                         organisationUnit = com.ash.simpledataentry.domain.model.OrganisationUnit(
@@ -197,16 +205,64 @@ class DatasetInstancesRepositoryImpl @Inject constructor(
 
     override suspend fun completeDatasetInstance(datasetId: String, period: String, orgUnit: String, attributeOptionCombo: String): Result<Unit> {
         return withContext(Dispatchers.IO) {
-            try {
-                Log.d(TAG, "Marking dataset as complete: $datasetId, $period, $orgUnit, $attributeOptionCombo")
-                d2.dataSetModule().dataSetCompleteRegistrations().value(period,orgUnit,datasetId,attributeOptionCombo).blockingSet()
-                d2.dataSetModule().dataSetCompleteRegistrations().blockingUpload()
-                Log.d(TAG, "Dataset marked as complete successfully.")
-                Result.success(Unit)
-            } catch (e: Exception) {
-                Log.e(TAG, "Failed to complete dataset instance", e)
-                Result.failure(e)
+            val attemptId = "repo-cmp-${System.currentTimeMillis()}"
+            val startMs = android.os.SystemClock.elapsedRealtime()
+            val maxAttempts = 3
+            var lastError: Exception? = null
+            for (attempt in 1..maxAttempts) {
+                try {
+                    Log.d(
+                        TAG,
+                        "[$attemptId] completeDatasetInstance attempt=$attempt/$maxAttempts dataset=$datasetId period=$period orgUnit=$orgUnit attrCombo=$attributeOptionCombo thread=${Thread.currentThread().name}"
+                    )
+                    val setStartMs = android.os.SystemClock.elapsedRealtime()
+                    Log.d(TAG, "[$attemptId] calling dataSetCompleteRegistrations.value(...).blockingSet()")
+                    D2SdkOperationLocks.dataValueAndAggregateMutex.withLock {
+                        d2.dataSetModule().dataSetCompleteRegistrations()
+                            .value(period, orgUnit, datasetId, attributeOptionCombo)
+                            .blockingSet()
+                    }
+                    Log.d(
+                        TAG,
+                        "[$attemptId] blockingSet success in ${android.os.SystemClock.elapsedRealtime() - setStartMs}ms"
+                    )
+
+                    val uploadStartMs = android.os.SystemClock.elapsedRealtime()
+                    Log.d(TAG, "[$attemptId] calling dataSetCompleteRegistrations().blockingUpload()")
+                    D2SdkOperationLocks.dataValueAndAggregateMutex.withLock {
+                        d2.dataSetModule().dataSetCompleteRegistrations().blockingUpload()
+                    }
+                    Log.d(
+                        TAG,
+                        "[$attemptId] blockingUpload success in ${android.os.SystemClock.elapsedRealtime() - uploadStartMs}ms"
+                    )
+                    Log.d(TAG, "[$attemptId] completeDatasetInstance success total=${android.os.SystemClock.elapsedRealtime() - startMs}ms")
+                    return@withContext Result.success(Unit)
+                } catch (e: Exception) {
+                    lastError = e
+                    val isNestedTransactionError = e.message?.contains(
+                        "cannot start a transaction within a transaction",
+                        ignoreCase = true
+                    ) == true
+                    Log.e(
+                        TAG,
+                        "[$attemptId] attempt=$attempt failed type=${e.javaClass.name} message=${e.message} nestedTx=$isNestedTransactionError",
+                        e
+                    )
+                    if (!isNestedTransactionError || attempt == maxAttempts) {
+                        break
+                    }
+                    val backoffMs = 300L * attempt
+                    Log.w(TAG, "[$attemptId] retrying completion in ${backoffMs}ms due to nested transaction conflict")
+                    delay(backoffMs)
+                }
             }
+            Log.e(
+                TAG,
+                "[$attemptId] Failed to complete dataset instance after ${android.os.SystemClock.elapsedRealtime() - startMs}ms",
+                lastError
+            )
+            Result.failure(lastError ?: IllegalStateException("Unknown completion failure"))
         }
     }
     
@@ -214,6 +270,10 @@ class DatasetInstancesRepositoryImpl @Inject constructor(
         return withContext(Dispatchers.IO) {
             try {
                 Log.d(TAG, "Getting instance count for dataset: $datasetId")
+                if (!databaseProvider.isAccountDatabaseActive()) {
+                    Log.w(TAG, "Account database not active - returning 0 for dataset count")
+                    return@withContext 0
+                }
 
                 // Get scoped org units
                 val scopedOrgUnits = d2.organisationUnitModule().organisationUnits()
@@ -241,15 +301,29 @@ class DatasetInstancesRepositoryImpl @Inject constructor(
                     return@withContext 0
                 }
 
-                // Count dataset instances across all relevant org units
-                val count = d2.dataSetModule()
-                    .dataSetInstances()
-                    .byDataSetUid().eq(datasetId)
-                    .byOrganisationUnitUid().`in`(relevantOrgUnitIds.toList())
-                    .blockingCount()
+                // Count dataset instances across all relevant org units (SDK)
+                try {
+                    val count = d2.dataSetModule()
+                        .dataSetInstances()
+                        .byDataSetUid().eq(datasetId)
+                        .byOrganisationUnitUid().`in`(relevantOrgUnitIds.toList())
+                        .blockingCount()
 
-                Log.d(TAG, "Found $count instances for dataset $datasetId")
-                count
+                    Log.d(TAG, "Found $count instances for dataset $datasetId")
+                    count
+                } catch (e: Exception) {
+                    Log.w(TAG, "SDK count failed, falling back to Room count", e)
+                    val roomCount = if (relevantOrgUnitIds.isEmpty()) {
+                        dataValueDao.countDistinctInstancesIncludingDrafts(datasetId)
+                    } else {
+                        dataValueDao.countDistinctInstancesIncludingDraftsForOrgUnits(
+                            datasetId,
+                            relevantOrgUnitIds.toList()
+                        )
+                    }
+                    Log.d(TAG, "Room fallback count=$roomCount for dataset $datasetId")
+                    roomCount
+                }
             } catch (e: Exception) {
                 Log.e(TAG, "Failed to get instance count for dataset $datasetId", e)
                 0
@@ -261,9 +335,12 @@ class DatasetInstancesRepositoryImpl @Inject constructor(
         return withContext(Dispatchers.IO) {
             try {
                 Log.d(TAG, "Marking dataset as incomplete: $datasetId, $period, $orgUnit, $attributeOptionCombo")
-                d2.dataSetModule().dataSetCompleteRegistrations()
-                    .value(period, orgUnit, datasetId, attributeOptionCombo).blockingDeleteIfExist()
-                d2.dataSetModule().dataSetCompleteRegistrations().blockingUpload()
+                D2SdkOperationLocks.dataValueAndAggregateMutex.withLock {
+                    d2.dataSetModule().dataSetCompleteRegistrations()
+                        .value(period, orgUnit, datasetId, attributeOptionCombo)
+                        .blockingDeleteIfExist()
+                    d2.dataSetModule().dataSetCompleteRegistrations().blockingUpload()
+                }
                 Log.d(TAG, "Dataset marked as incomplete successfully.")
                 Result.success(Unit)
             } catch (e: Exception) {
@@ -300,6 +377,87 @@ class DatasetInstancesRepositoryImpl @Inject constructor(
             }
 
             Log.d(TAG, "User authenticated: ${user.uid()}")
+
+            // STEP 0: Upload local tracker changes before downloading
+            Log.d(TAG, "STEP 0: Uploading local tracker changes before download...")
+            val localTeisBeforeUpload = d2.trackedEntityModule().trackedEntityInstances()
+                .byProgramUids(listOf(programId))
+                .get().await()
+            val localEnrollmentsBeforeUpload = d2.enrollmentModule().enrollments()
+                .byProgram().eq(programId)
+                .get().await()
+            val localEventsBeforeUpload = d2.eventModule().events()
+                .byProgramUid().eq(programId)
+                .get().await()
+            val pendingTeisBefore = localTeisBeforeUpload.count {
+                it.aggregatedSyncState() == org.hisp.dhis.android.core.common.State.TO_POST ||
+                    it.aggregatedSyncState() == org.hisp.dhis.android.core.common.State.TO_UPDATE ||
+                    it.aggregatedSyncState() == org.hisp.dhis.android.core.common.State.ERROR
+            }
+            val pendingEnrollmentsBefore = localEnrollmentsBeforeUpload.count {
+                it.aggregatedSyncState() == org.hisp.dhis.android.core.common.State.TO_POST ||
+                    it.aggregatedSyncState() == org.hisp.dhis.android.core.common.State.TO_UPDATE ||
+                    it.aggregatedSyncState() == org.hisp.dhis.android.core.common.State.ERROR
+            }
+            val pendingEventsBefore = localEventsBeforeUpload.count {
+                it.aggregatedSyncState() == org.hisp.dhis.android.core.common.State.TO_POST ||
+                    it.aggregatedSyncState() == org.hisp.dhis.android.core.common.State.TO_UPDATE ||
+                    it.aggregatedSyncState() == org.hisp.dhis.android.core.common.State.ERROR
+            }
+            Log.d(
+                TAG,
+                "TRACKER SYNC: pending before upload teis=$pendingTeisBefore enrollments=$pendingEnrollmentsBefore events=$pendingEventsBefore"
+            )
+            d2.trackedEntityModule().trackedEntityInstances().blockingUpload()
+            // SDK 1.13.1 uploads tracker payloads (TEIs + enrollments + nested tracker events)
+            // through the TEI upload endpoint; EnrollmentCollectionRepository has no blockingUpload().
+            d2.eventModule().events()
+                .byProgramUid().eq(programId)
+                .blockingUpload()
+            val localTeisAfterUpload = d2.trackedEntityModule().trackedEntityInstances()
+                .byProgramUids(listOf(programId))
+                .get().await()
+            val localEnrollmentsAfterUpload = d2.enrollmentModule().enrollments()
+                .byProgram().eq(programId)
+                .get().await()
+            val localEventsAfterUpload = d2.eventModule().events()
+                .byProgramUid().eq(programId)
+                .get().await()
+            val pendingTeisAfter = localTeisAfterUpload.count {
+                it.aggregatedSyncState() == org.hisp.dhis.android.core.common.State.TO_POST ||
+                    it.aggregatedSyncState() == org.hisp.dhis.android.core.common.State.TO_UPDATE ||
+                    it.aggregatedSyncState() == org.hisp.dhis.android.core.common.State.ERROR
+            }
+            val pendingEnrollmentsAfter = localEnrollmentsAfterUpload.count {
+                it.aggregatedSyncState() == org.hisp.dhis.android.core.common.State.TO_POST ||
+                    it.aggregatedSyncState() == org.hisp.dhis.android.core.common.State.TO_UPDATE ||
+                    it.aggregatedSyncState() == org.hisp.dhis.android.core.common.State.ERROR
+            }
+            val pendingEventsAfter = localEventsAfterUpload.count {
+                it.aggregatedSyncState() == org.hisp.dhis.android.core.common.State.TO_POST ||
+                    it.aggregatedSyncState() == org.hisp.dhis.android.core.common.State.TO_UPDATE ||
+                    it.aggregatedSyncState() == org.hisp.dhis.android.core.common.State.ERROR
+            }
+            Log.d(
+                TAG,
+                "TRACKER SYNC: pending after upload teis=$pendingTeisAfter enrollments=$pendingEnrollmentsAfter events=$pendingEventsAfter"
+            )
+            localTeisAfterUpload
+                .filter { it.aggregatedSyncState() == org.hisp.dhis.android.core.common.State.ERROR }
+                .forEach { tei ->
+                    Log.w(
+                        TAG,
+                        "TRACKER SYNC: TEI ERROR after upload tei=${tei.uid()} orgUnit=${tei.organisationUnit()} sync=${tei.aggregatedSyncState()}"
+                    )
+                }
+            localEnrollmentsAfterUpload
+                .filter { it.aggregatedSyncState() == org.hisp.dhis.android.core.common.State.ERROR }
+                .forEach { enrollment ->
+                    Log.w(
+                        TAG,
+                        "TRACKER SYNC: ENROLLMENT ERROR after upload enrollment=${enrollment.uid()} tei=${enrollment.trackedEntityInstance()} orgUnit=${enrollment.organisationUnit()} status=${enrollment.status()} sync=${enrollment.aggregatedSyncState()}"
+                    )
+                }
 
             // STEP 1: Ensure tracker-specific metadata is complete
             Log.d(TAG, "STEP 1: Ensuring tracker metadata is complete...")
@@ -338,9 +496,9 @@ class DatasetInstancesRepositoryImpl @Inject constructor(
             val downloader = d2.trackedEntityModule().trackedEntityInstanceDownloader()
                 .byProgramUid(programId)
 
-            // Execute download
-            val downloadResult = downloader.download()
-            Log.d(TAG, "Tracker download completed with result: $downloadResult")
+            // Execute download (blocking). `download()` returns Rx type in this SDK version.
+            downloader.blockingDownload()
+            Log.d(TAG, "Tracker download completed")
 
             // STEP 5: Post-download validation and foreign key violation resolution
             Log.d(TAG, "STEP 5: Post-download validation...")
@@ -365,6 +523,22 @@ class DatasetInstancesRepositoryImpl @Inject constructor(
                 .byProgramUid().eq(programId)
                 .get().await()
             Log.d(TAG, "Found ${storedEvents.size} Events in local storage")
+            storedEnrollments
+                .filter { it.aggregatedSyncState() == org.hisp.dhis.android.core.common.State.ERROR }
+                .forEach { enrollment ->
+                    Log.w(
+                        TAG,
+                        "TRACKER SYNC: ENROLLMENT ERROR after download enrollment=${enrollment.uid()} tei=${enrollment.trackedEntityInstance()} orgUnit=${enrollment.organisationUnit()} status=${enrollment.status()} sync=${enrollment.aggregatedSyncState()}"
+                    )
+                }
+            storedTEIs
+                .filter { it.aggregatedSyncState() == org.hisp.dhis.android.core.common.State.ERROR }
+                .forEach { tei ->
+                    Log.w(
+                        TAG,
+                        "TRACKER SYNC: TEI ERROR after download tei=${tei.uid()} orgUnit=${tei.organisationUnit()} sync=${tei.aggregatedSyncState()}"
+                    )
+                }
 
             // STEP 7: Additional diagnostics if no data was stored despite successful API call
             if (storedTEIs.isEmpty() && storedEnrollments.isEmpty()) {
@@ -538,6 +712,32 @@ class DatasetInstancesRepositoryImpl @Inject constructor(
                     com.ash.simpledataentry.domain.model.ProgramType.EVENT -> {
                         // Sync events - download from server
                         Log.d(TAG, "=== EVENT DATA SYNC START for program: $programId ===")
+                        val beforeSyncStates = d2.eventModule().events()
+                            .byProgramUid().eq(programId)
+                            .get().await()
+                        val pendingBefore = beforeSyncStates.count {
+                            it.aggregatedSyncState() == org.hisp.dhis.android.core.common.State.TO_POST ||
+                                it.aggregatedSyncState() == org.hisp.dhis.android.core.common.State.TO_UPDATE
+                        }
+                        Log.d(TAG, "EVENT SYNC: before upload local events=${beforeSyncStates.size}, pendingUpload=$pendingBefore")
+                        if (pendingBefore > 0) {
+                            Log.d(TAG, "EVENT SYNC: Uploading pending events for program $programId...")
+                            d2.eventModule().events()
+                                .byProgramUid().eq(programId)
+                                .blockingUpload()
+                            Log.d(TAG, "EVENT SYNC: Event upload completed")
+                        } else {
+                            Log.d(TAG, "EVENT SYNC: No pending local event changes to upload")
+                        }
+
+                        val afterUploadStates = d2.eventModule().events()
+                            .byProgramUid().eq(programId)
+                            .get().await()
+                        val pendingAfterUpload = afterUploadStates.count {
+                            it.aggregatedSyncState() == org.hisp.dhis.android.core.common.State.TO_POST ||
+                                it.aggregatedSyncState() == org.hisp.dhis.android.core.common.State.TO_UPDATE
+                        }
+                        Log.d(TAG, "EVENT SYNC: after upload pendingUpload=$pendingAfterUpload")
 
                         // First ensure metadata is up to date
                         d2.metadataModule().blockingDownload()
@@ -556,8 +756,17 @@ class DatasetInstancesRepositoryImpl @Inject constructor(
                         Log.d(TAG, "EVENT SYNC: Found ${storedEvents.size} events in local storage for program $programId")
 
                         storedEvents.forEach { event ->
-                            Log.d(TAG, "EVENT SYNC: - Event ${event.uid()}: status=${event.status()}, orgUnit=${event.organisationUnit()}, date=${event.eventDate()}")
+                            Log.d(
+                                TAG,
+                                "EVENT SYNC: - Event ${event.uid()}: status=${event.status()}, sync=${event.aggregatedSyncState()}, orgUnit=${event.organisationUnit()}, date=${event.eventDate()}"
+                            )
                         }
+
+                        val pendingAfter = storedEvents.count {
+                            it.aggregatedSyncState() == org.hisp.dhis.android.core.common.State.TO_POST ||
+                                it.aggregatedSyncState() == org.hisp.dhis.android.core.common.State.TO_UPDATE
+                        }
+                        Log.d(TAG, "EVENT SYNC: after download pendingUpload=$pendingAfter")
 
                         // PHASE 2: Populate Room cache after successful SDK sync
                         Log.d(TAG, "EVENT SYNC: Populating Room cache...")

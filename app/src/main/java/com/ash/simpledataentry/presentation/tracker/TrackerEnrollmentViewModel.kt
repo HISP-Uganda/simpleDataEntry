@@ -30,6 +30,7 @@ import kotlinx.coroutines.launch
 import org.hisp.dhis.android.core.D2
 import org.hisp.dhis.android.core.enrollment.Enrollment
 import org.hisp.dhis.android.core.enrollment.EnrollmentCreateProjection
+import org.hisp.dhis.android.core.organisationunit.OrganisationUnit as SdkOrganisationUnit
 import org.hisp.dhis.android.core.program.ProgramRuleAction
 import org.hisp.dhis.android.core.program.ProgramRuleActionType
 import org.hisp.dhis.android.core.program.ProgramRuleVariable
@@ -149,6 +150,7 @@ class TrackerEnrollmentViewModel @Inject constructor(
     fun initializeNewEnrollment(programId: String) {
         viewModelScope.launch(Dispatchers.IO) {
             try {
+                android.util.Log.d(TAG, "initializeNewEnrollment(programId=$programId)")
                 val progress = NavigationProgress(
                     phase = LoadingPhase.INITIALIZING,
                     overallPercentage = 10,
@@ -194,16 +196,39 @@ class TrackerEnrollmentViewModel @Inject constructor(
                 }
 
                 // Load available organisation units
-                val orgUnits = d2Instance.organisationUnitModule()
+                val programOrgUnits = d2Instance.organisationUnitModule()
                     .organisationUnits()
                     .byProgramUids(listOf(programId))
                     .blockingGet()
+
+                val userCaptureRoots = d2Instance.organisationUnitModule()
+                    .organisationUnits()
+                    .byOrganisationUnitScope(SdkOrganisationUnit.Scope.SCOPE_DATA_CAPTURE)
+                    .blockingGet()
+                val accessibleOrgUnitIds = mutableSetOf<String>()
+                userCaptureRoots.forEach { root ->
+                    accessibleOrgUnitIds.add(root.uid())
+                    val descendants = d2Instance.organisationUnitModule()
+                        .organisationUnits()
+                        .byPath().like("${root.path()}/%")
+                        .blockingGet()
+                    descendants.forEach { descendant ->
+                        accessibleOrgUnitIds.add(descendant.uid())
+                    }
+                }
+
+                val orgUnits = programOrgUnits
+                    .filter { it.uid() in accessibleOrgUnitIds }
                     .map { orgUnit ->
                         OrganisationUnit(
                             id = orgUnit.uid(),
                             name = orgUnit.displayName() ?: orgUnit.name() ?: ""
                         )
                     }
+                android.util.Log.d(
+                    TAG,
+                    "initializeNewEnrollment: orgUnit options program=${programOrgUnits.size}, accessible=${accessibleOrgUnitIds.size}, intersection=${orgUnits.size}"
+                )
 
                 _state.update {
                     it.copy(
@@ -240,6 +265,7 @@ class TrackerEnrollmentViewModel @Inject constructor(
 
         viewModelScope.launch(Dispatchers.IO) {
             try {
+                android.util.Log.d(TAG, "loadEnrollment(enrollmentId=$enrollmentId)")
                 val progress = NavigationProgress(
                     phase = LoadingPhase.LOADING_DATA,
                     overallPercentage = 20,
@@ -297,17 +323,44 @@ class TrackerEnrollmentViewModel @Inject constructor(
                     .blockingGet()
                     .associate { it.trackedEntityAttribute()!! to (it.value() ?: "") }
 
-                // Load available organisation units
-                val orgUnits = d2Instance.organisationUnitModule()
+                // Load available organisation units (program OUs intersected with user's data-capture scope)
+                val programOrgUnits = d2Instance.organisationUnitModule()
                     .organisationUnits()
                     .byProgramUids(listOf(enrollment.program()!!))
                     .blockingGet()
+
+                val userCaptureRoots = d2Instance.organisationUnitModule()
+                    .organisationUnits()
+                    .byOrganisationUnitScope(SdkOrganisationUnit.Scope.SCOPE_DATA_CAPTURE)
+                    .blockingGet()
+                val accessibleOrgUnitIds = mutableSetOf<String>()
+                userCaptureRoots.forEach { root ->
+                    accessibleOrgUnitIds.add(root.uid())
+                    val descendants = d2Instance.organisationUnitModule()
+                        .organisationUnits()
+                        .byPath().like("${root.path()}/%")
+                        .blockingGet()
+                    descendants.forEach { descendant ->
+                        accessibleOrgUnitIds.add(descendant.uid())
+                    }
+                }
+
+                val orgUnits = programOrgUnits
+                    .filter { it.uid() in accessibleOrgUnitIds }
                     .map { orgUnit ->
                         OrganisationUnit(
                             id = orgUnit.uid(),
                             name = orgUnit.displayName() ?: orgUnit.name() ?: ""
                         )
                     }
+                android.util.Log.d(
+                    TAG,
+                    "loadEnrollment: orgUnit options program=${programOrgUnits.size}, accessible=${accessibleOrgUnitIds.size}, intersection=${orgUnits.size}"
+                )
+                android.util.Log.d(
+                    TAG,
+                    "loadEnrollment: enrollment=$enrollmentId status=${enrollment.status()} sync=${enrollment.aggregatedSyncState()} orgUnit=${enrollment.organisationUnit()} attrs=${attributeValues.size}"
+                )
 
                 _state.update {
                     it.copy(
@@ -698,12 +751,16 @@ class TrackerEnrollmentViewModel @Inject constructor(
         viewModelScope.launch(Dispatchers.IO) {
             try {
                 _state.update { it.copy(saveInProgress = true, error = null) }
+                val currentState = _state.value
+                android.util.Log.d(
+                    TAG,
+                    "saveEnrollment start: isEdit=${enrollmentId != null} enrollmentId=$enrollmentId programId=${currentState.programId} orgUnit=${currentState.selectedOrganisationUnitId} attrsFilled=${currentState.attributeValues.count { it.value.isNotBlank() }}/${currentState.attributeValues.size} canSave=${currentState.canSave}"
+                )
                 if (_uiState.value is UiState.Success) {
                     _uiState.emitSuccess(_state.value)
                 }
 
                 val d2Instance = d2 ?: throw Exception("Not authenticated")
-                val currentState = _state.value
 
                 if (!currentState.canSave) {
                     _state.update {
@@ -720,11 +777,15 @@ class TrackerEnrollmentViewModel @Inject constructor(
 
                 if (enrollmentId != null) {
                     // Update existing enrollment
+                    android.util.Log.d(TAG, "saveEnrollment: updating enrollment $enrollmentId")
                     updateExistingEnrollment(d2Instance, enrollmentId!!, currentState)
                 } else {
                     // Create new enrollment
+                    android.util.Log.d(TAG, "saveEnrollment: creating new enrollment")
                     createNewEnrollment(d2Instance, currentState)
                 }
+
+                this@TrackerEnrollmentViewModel.enrollmentId?.let { logEnrollmentSnapshot(d2Instance, it, "saveEnrollment.afterLocalWrite") }
 
                 _state.update {
                     it.copy(
@@ -739,11 +800,12 @@ class TrackerEnrollmentViewModel @Inject constructor(
                 }
 
             } catch (e: Exception) {
+                android.util.Log.e(TAG, "saveEnrollment failed", e)
                 _state.update {
                     it.copy(
                         saveInProgress = false,
                         saveResult = Result.failure(e),
-                        error = "Failed to save enrollment: ${e.message}"
+                        error = "Failed to save enrollment: ${e.message ?: e.cause?.message ?: e::class.java.simpleName}"
                     )
                 }
                 if (_uiState.value is UiState.Success) {
@@ -768,6 +830,8 @@ class TrackerEnrollmentViewModel @Inject constructor(
             try {
                 val currentState = _state.value
                 if (currentState.programId.isBlank()) return@launch
+                val d2Instance = d2 ?: throw Exception("Not authenticated")
+                enrollmentId?.let { logEnrollmentSnapshot(d2Instance, it, "syncEnrollment.before") }
 
                 _state.update {
                     it.copy(
@@ -798,6 +862,7 @@ class TrackerEnrollmentViewModel @Inject constructor(
                         _state.update {
                             it.copy(successMessage = "Enrollment synced successfully")
                         }
+                        enrollmentId?.let { logEnrollmentSnapshot(d2Instance, it, "syncEnrollment.after") }
                     }
                     .onFailure { error ->
                         _state.update {
@@ -825,6 +890,10 @@ class TrackerEnrollmentViewModel @Inject constructor(
     }
 
     private fun createNewEnrollment(d2: D2, state: TrackerEnrollmentState) {
+        android.util.Log.d(
+            TAG,
+            "createNewEnrollment: program=${state.programId} orgUnit=${state.selectedOrganisationUnitId} enrollmentDate=${state.enrollmentDate} incidentDate=${state.incidentDate} attrsFilled=${state.attributeValues.count { it.value.isNotBlank() }}/${state.attributeValues.size}"
+        )
         // Get tracked entity type for the program (reuse existing helper)
         val trackedEntityTypeUid = getTrackedEntityTypeForProgram(d2, state.programId)
 
@@ -835,13 +904,15 @@ class TrackerEnrollmentViewModel @Inject constructor(
                 .trackedEntityType(trackedEntityTypeUid)
                 .build()
         ).blockingGet()
+        android.util.Log.d(TAG, "createNewEnrollment: created teiUid=$teiUid")
 
         // Add tracked entity attribute values
         state.attributeValues.forEach { (attributeId, value) ->
             if (value.isNotBlank()) {
+                android.util.Log.d(TAG, "createNewEnrollment: set TEI attr=$attributeId len=${value.length}")
                 d2.trackedEntityModule().trackedEntityAttributeValues()
                     .value(attributeId, teiUid)
-                    .set(value)
+                    .blockingSet(value)
             }
         }
 
@@ -853,6 +924,8 @@ class TrackerEnrollmentViewModel @Inject constructor(
                 .organisationUnit(state.selectedOrganisationUnitId!!)
                 .build()
         ).blockingGet()
+        this.enrollmentId = enrollmentUid
+        android.util.Log.d(TAG, "createNewEnrollment: created enrollmentUid=$enrollmentUid")
 
         // Set enrollment date
         d2.enrollmentModule().enrollments().uid(enrollmentUid).setEnrollmentDate(state.enrollmentDate!!)
@@ -861,10 +934,19 @@ class TrackerEnrollmentViewModel @Inject constructor(
         if (state.incidentDate != null) {
             d2.enrollmentModule().enrollments().uid(enrollmentUid).setIncidentDate(state.incidentDate)
         }
+        logEnrollmentSnapshot(d2, enrollmentUid, "createNewEnrollment.afterCreate")
     }
 
     private fun updateExistingEnrollment(d2: D2, enrollmentId: String, state: TrackerEnrollmentState) {
+        android.util.Log.d(
+            TAG,
+            "updateExistingEnrollment: enrollmentId=$enrollmentId orgUnit=${state.selectedOrganisationUnitId} enrollmentDate=${state.enrollmentDate} incidentDate=${state.incidentDate}"
+        )
         // Update enrollment dates
+        if (!state.selectedOrganisationUnitId.isNullOrBlank()) {
+            d2.enrollmentModule().enrollments().uid(enrollmentId)
+                .setOrganisationUnitUid(state.selectedOrganisationUnitId)
+        }
         d2.enrollmentModule().enrollments().uid(enrollmentId)
             .setEnrollmentDate(state.enrollmentDate!!)
 
@@ -881,21 +963,50 @@ class TrackerEnrollmentViewModel @Inject constructor(
         // Update tracked entity attribute values
         state.attributeValues.forEach { (attributeId, value) ->
             if (value.isNotBlank()) {
+                android.util.Log.d(TAG, "updateExistingEnrollment: set TEI attr=$attributeId len=${value.length}")
                 d2.trackedEntityModule().trackedEntityAttributeValues()
                     .value(attributeId, teiUid)
-                    .set(value)
+                    .blockingSet(value)
             } else {
                 // Remove empty values
+                android.util.Log.d(TAG, "updateExistingEnrollment: clear TEI attr=$attributeId")
                 d2.trackedEntityModule().trackedEntityAttributeValues()
                     .value(attributeId, teiUid)
-                    .delete()
+                    .blockingSet(null)
             }
         }
+        logEnrollmentSnapshot(d2, enrollmentId, "updateExistingEnrollment.afterUpdate")
     }
 
     private fun getTrackedEntityTypeForProgram(d2: D2, programId: String): String {
         val program = d2.programModule().programs().uid(programId).blockingGet()
         return program?.trackedEntityType()?.uid()
             ?: throw Exception("Tracked entity type not found for program")
+    }
+
+    private fun logEnrollmentSnapshot(d2: D2, enrollmentUid: String, source: String) {
+        try {
+            val enrollment = d2.enrollmentModule().enrollments().uid(enrollmentUid).blockingGet()
+            if (enrollment == null) {
+                android.util.Log.w(TAG, "$source: enrollment=$enrollmentUid not found")
+                return
+            }
+            val teiUid = enrollment.trackedEntityInstance()
+            val attrs = if (teiUid != null) {
+                d2.trackedEntityModule().trackedEntityAttributeValues()
+                    .byTrackedEntityInstance().eq(teiUid)
+                    .blockingGet()
+            } else emptyList()
+            android.util.Log.d(
+                TAG,
+                "$source: enrollment=$enrollmentUid tei=$teiUid status=${enrollment.status()} sync=${enrollment.aggregatedSyncState()} orgUnit=${enrollment.organisationUnit()} attrs=${attrs.size}"
+            )
+        } catch (e: Exception) {
+            android.util.Log.e(TAG, "$source: failed to inspect enrollment=$enrollmentUid", e)
+        }
+    }
+
+    companion object {
+        private const val TAG = "TrackerEnrollmentVM"
     }
 }

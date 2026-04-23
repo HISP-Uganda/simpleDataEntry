@@ -34,6 +34,7 @@ import com.ash.simpledataentry.presentation.core.UiState
 import com.ash.simpledataentry.util.toUiError
 import dagger.hilt.android.lifecycle.HiltViewModel
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -92,6 +93,23 @@ class DatasetInstancesViewModel @Inject constructor(
     private var isSyncOverlayVisible = false
     private var userSyncInProgress = false
     private val draftDao get() = databaseProvider.getCurrentDatabase().dataValueDraftDao()
+
+    private fun hasInternetConnection(): Boolean {
+        return NetworkUtils.isNetworkAvailable(app.applicationContext)
+    }
+
+    fun canStartSync(): Boolean = hasInternetConnection()
+
+    private fun offlineUiError(): UiError {
+        return UiError.Network(
+            message = "No internet connection. Please check internet connectivity and try again.",
+            canRetry = true
+        )
+    }
+
+    private fun safeMessage(message: String?, fallback: String): String {
+        return message?.takeIf { it.isNotBlank() } ?: fallback
+    }
 
     private fun currentData(): DatasetInstancesData {
         return when (val state = _uiState.value) {
@@ -518,6 +536,13 @@ class DatasetInstancesViewModel @Inject constructor(
             Log.e("DatasetInstancesVM", "Cannot sync: programId is empty")
             return
         }
+        if (!hasInternetConnection()) {
+            _uiState.value = UiState.Error(
+                error = offlineUiError(),
+                previousData = lastSuccessfulData
+            )
+            return
+        }
 
         Log.d("DatasetInstancesVM", "Starting enhanced sync for program: $programId, type: $currentProgramType, uploadFirst: $uploadFirst")
         viewModelScope.launch {
@@ -572,7 +597,12 @@ class DatasetInstancesViewModel @Inject constructor(
                                 } else {
                                     "Dataset instances synced successfully"
                                 }
-                                loadData() // Reload all data after sync
+                                viewModelScope.launch {
+                                    withContext(Dispatchers.IO) {
+                                        clearDraftsForInstances(currentData().instancesWithDrafts)
+                                    }
+                                    loadData() // Reload all data after sync
+                                }
                             },
                             onFailure = { throwable ->
                                 Log.e("DatasetInstancesVM", "Dataset sync failed", throwable)
@@ -610,6 +640,10 @@ class DatasetInstancesViewModel @Inject constructor(
         onResult: (Boolean, String?) -> Unit
     ) {
         viewModelScope.launch {
+            if (!hasInternetConnection()) {
+                onResult(false, "No internet connection. Please check internet connectivity and try again.")
+                return@launch
+            }
             try {
                 userSyncInProgress = true
                 val result = syncQueueManager.startSyncForInstance(
@@ -621,17 +655,27 @@ class DatasetInstancesViewModel @Inject constructor(
                 result.fold(
                     onSuccess = {
                         syncQueueManager.clearErrorState()
-                        loadData()
-                        onResult(true, "Entry synced successfully.")
+                        viewModelScope.launch {
+                            withContext(Dispatchers.IO) {
+                                draftDao.deleteDraftsForInstance(
+                                    datasetId = instance.programId,
+                                    period = instance.period.id,
+                                    orgUnit = instance.organisationUnit.id,
+                                    attributeOptionCombo = instance.attributeOptionCombo
+                                )
+                            }
+                            loadData()
+                            onResult(true, "Entry synced successfully.")
+                        }
                     },
                     onFailure = { error ->
                         syncQueueManager.clearErrorState()
-                        onResult(false, error.message ?: "Failed to sync entry.")
+                        onResult(false, safeMessage(error.message, "Failed to sync entry. Please try again."))
                     }
                 )
             } catch (e: Exception) {
                 syncQueueManager.clearErrorState()
-                onResult(false, e.message ?: "Failed to sync entry.")
+                onResult(false, safeMessage(e.message, "Failed to sync entry. Please try again."))
             } finally {
                 userSyncInProgress = false
             }
@@ -640,6 +684,23 @@ class DatasetInstancesViewModel @Inject constructor(
 
     fun manualRefresh() {
         loadData()
+    }
+
+    private suspend fun clearDraftsForInstances(instanceKeys: Set<String>) {
+        if (instanceKeys.isEmpty()) {
+            return
+        }
+        instanceKeys.forEach { key ->
+            val parts = key.split("|")
+            if (parts.size >= 4) {
+                draftDao.deleteDraftsForInstance(
+                    datasetId = parts[0],
+                    period = parts[1],
+                    orgUnit = parts[2],
+                    attributeOptionCombo = parts[3]
+                )
+            }
+        }
     }
 
     fun dismissSyncOverlay() {

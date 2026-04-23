@@ -54,6 +54,35 @@ class ValidationService @Inject constructor(
                     )
                 )
 
+            val validationRulesForDataset = try {
+                d2.validationModule().validationRules()
+                    .byDataSetUids(listOf(datasetId))
+                    .blockingGet()
+            } catch (e: Exception) {
+                Log.w(tag, "Could not fetch validation rules for dataset $datasetId: ${e.message}")
+                emptyList()
+            }
+
+            Log.d(tag, "Found ${validationRulesForDataset.size} validation rules for dataset $datasetId")
+            if (validationRulesForDataset.isEmpty()) {
+                val allRulesCount = try {
+                    d2.validationModule().validationRules().blockingGet().size
+                } catch (e: Exception) { 0 }
+                Log.d(
+                    tag,
+                    "Skipping SDK staging/validation for dataset=$datasetId because it has 0 rules (system has $allRulesCount total rules)"
+                )
+                return@withContext ValidationSummary(
+                    totalRulesChecked = 0,
+                    passedRules = 0,
+                    errorCount = 0,
+                    warningCount = 0,
+                    canComplete = true,
+                    executionTimeMs = System.currentTimeMillis() - startTime,
+                    validationResult = ValidationResult.Success("No validation rules configured for this dataset")
+                )
+            }
+
             // CRITICAL: Comprehensive data staging for DHIS2 SDK validation
             Log.d(tag, "Starting comprehensive data staging for validation...")
             Log.d(tag, "Parameters: dataset=$datasetId, period=$period, orgUnit=$organisationUnit, attrCombo=$attributeOptionCombo")
@@ -61,6 +90,7 @@ class ValidationService @Inject constructor(
             
             var stagedCount = 0
             var stagingErrors = 0
+            var fatalTransactionError: Exception? = null
             
             for (dataValue in dataValues) {
                 try {
@@ -119,7 +149,33 @@ class ValidationService @Inject constructor(
                 } catch (e: Exception) {
                     stagingErrors++
                     Log.e(tag, "Failed to stage data value: ${dataValue.dataElement} = '${dataValue.value}': ${e.message}", e)
+                    if (e.message?.contains("cannot start a transaction within a transaction", ignoreCase = true) == true) {
+                        fatalTransactionError = e
+                        Log.e(tag, "Fatal transaction nesting error during staging. Aborting further staging attempts.")
+                        break
+                    }
                 }
+            }
+
+            if (fatalTransactionError != null) {
+                return@withContext ValidationSummary(
+                    totalRulesChecked = validationRulesForDataset.size,
+                    passedRules = 0,
+                    errorCount = 1,
+                    warningCount = 0,
+                    canComplete = false,
+                    executionTimeMs = System.currentTimeMillis() - startTime,
+                    validationResult = ValidationResult.Error(
+                        listOf(
+                            ValidationIssue(
+                                ruleId = "validation_transaction_error",
+                                ruleName = "Validation Transaction Error",
+                                description = "Validation failed due to SDK database transaction conflict: ${fatalTransactionError?.message}",
+                                severity = ValidationSeverity.ERROR
+                            )
+                        )
+                    )
+                )
             }
             
             Log.d(tag, "Data staging complete: $stagedCount staged successfully, $stagingErrors errors")
@@ -171,18 +227,6 @@ class ValidationService @Inject constructor(
 
             Log.d(tag, "Using DHIS2 SDK native validation engine for dataset: $datasetId, period: $period, orgUnit: $organisationUnit")
             
-            // Check if validation rules exist before calling validation engine
-            val validationRulesForDataset = try {
-                d2.validationModule().validationRules()
-                    .byDataSetUids(listOf(datasetId))
-                    .blockingGet()
-            } catch (e: Exception) {
-                Log.w(tag, "Could not fetch validation rules for dataset $datasetId: ${e.message}")
-                emptyList()
-            }
-            
-            Log.d(tag, "Found ${validationRulesForDataset.size} validation rules for dataset $datasetId")
-            
             // Enhanced validation rule debugging based on DHIS2 Community research
             Log.d(tag, "=== VALIDATION RULE ANALYSIS ===")
             validationRulesForDataset.forEachIndexed { index, rule ->
@@ -219,24 +263,6 @@ class ValidationService @Inject constructor(
                     Log.d(tag, "    Element '$elementExpression': ${if (hasMatchingData) "✓" else "✗"} Available, Value: '$stagedValue'")
                 }
                 Log.d(tag, "  " + "-".repeat(50))
-            }
-            
-            if (validationRulesForDataset.isEmpty()) {
-                // Check if ANY validation rules exist in the system
-                val allRulesCount = try {
-                    d2.validationModule().validationRules().blockingGet().size
-                } catch (e: Exception) { 0 }
-                
-                Log.w(tag, "No validation rules for dataset $datasetId (system has $allRulesCount total rules)")
-                return@withContext ValidationSummary(
-                    totalRulesChecked = 0,
-                    passedRules = 0,
-                    errorCount = 0,
-                    warningCount = 0,
-                    canComplete = true,
-                    executionTimeMs = System.currentTimeMillis() - startTime,
-                    validationResult = ValidationResult.Success("No validation rules configured for this dataset")
-                )
             }
             
             // Try DHIS2 SDK validation engine first, then fallback to manual evaluation
