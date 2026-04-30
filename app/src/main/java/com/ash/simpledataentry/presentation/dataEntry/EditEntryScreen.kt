@@ -1,4 +1,5 @@
 @file:OptIn(ExperimentalMaterial3Api::class)
+@file:Suppress("SpellCheckingInspection")
 
 package com.ash.simpledataentry.presentation.dataEntry
 
@@ -22,7 +23,6 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.rotate
 import androidx.compose.ui.graphics.Color
-import android.text.format.DateUtils
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.TextFieldValue
 import androidx.compose.foundation.text.KeyboardOptions
@@ -45,11 +45,8 @@ import com.ash.simpledataentry.presentation.datasetInstances.SyncOptions
 import org.hisp.dhis.mobile.ui.designsystem.component.Button
 import org.hisp.dhis.mobile.ui.designsystem.component.ButtonStyle
 import org.hisp.dhis.mobile.ui.designsystem.component.ColorStyle
-import org.hisp.dhis.mobile.ui.designsystem.component.InputNumber
 import org.hisp.dhis.mobile.ui.designsystem.component.InputShellState
 import org.hisp.dhis.mobile.ui.designsystem.component.InputText
-import org.hisp.dhis.mobile.ui.designsystem.component.SupportingTextData
-import org.hisp.dhis.mobile.ui.designsystem.component.SupportingTextState
 import com.ash.simpledataentry.domain.model.*
 import com.ash.simpledataentry.presentation.core.AdaptiveLoadingOverlay
 import com.ash.simpledataentry.presentation.core.BaseScreen
@@ -58,11 +55,8 @@ import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.Sync
-import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.CheckCircle
-import androidx.compose.material.icons.filled.Warning
 import androidx.compose.ui.platform.LocalContext
-import com.ash.simpledataentry.presentation.core.CompletionAction
 import androidx.compose.foundation.relocation.BringIntoViewRequester
 import androidx.compose.foundation.relocation.bringIntoViewRequester
 import androidx.compose.ui.focus.onFocusChanged
@@ -109,7 +103,7 @@ private fun parseGridLabel(name: String): Pair<String, String>? {
         val index = last.range.first
         val delimiterLength = last.value.length
         if (index > 0 && index < name.length - delimiterLength) {
-            val row = name.substring(0, index)
+            val row = name.take(index)
                 .replace(Regex("\\s+"), " ")
                 .trim()
                 .trimEnd('-', ':', '|', '/', '\\')
@@ -144,17 +138,22 @@ private fun cleanUserLabel(raw: String?): String {
 }
 
 private fun formatRelativeTime(timestamp: Long): String {
-    return DateUtils.getRelativeTimeSpanString(
-        timestamp,
-        System.currentTimeMillis(),
-        DateUtils.MINUTE_IN_MILLIS
-    ).toString()
+    val diffMs = System.currentTimeMillis() - timestamp
+    val minuteMs = 60_000L
+    val hourMs = 60 * minuteMs
+    val dayMs = 24 * hourMs
+    return when {
+        diffMs < minuteMs -> "just now"
+        diffMs < hourMs -> "${diffMs / minuteMs} min ago"
+        diffMs < dayMs -> "${diffMs / hourMs} hr ago"
+        else -> "${diffMs / dayMs} day ago"
+    }
 }
 
 
 @Composable
 fun SectionContent(
-    sectionName: String,
+    @Suppress("UNUSED_PARAMETER") sectionName: String,
     values: List<DataValue>,
     valuesByCombo: Map<String, List<DataValue>>,
     valuesByElement: Map<String, List<DataValue>>,
@@ -168,8 +167,9 @@ fun SectionContent(
     onElementSelected: (String) -> Unit
 ) {
     // Get distinct data elements in order
-    val dataElements = if (dataElementsForSection.isNotEmpty()) dataElementsForSection
-    else values.map { it.dataElement to it.dataElementName }.distinct()
+    val dataElements = dataElementsForSection.ifEmpty {
+        values.map { it.dataElement to it.dataElementName }.distinct()
+    }
 
     // Render each data element as an accordion (first level)
     dataElements.forEach { (dataElement, dataElementName) ->
@@ -215,9 +215,7 @@ fun SectionContent(
                     dataValue?.let { cleanUserLabel(optionName) to it }
                 }
 
-                val fallbackRows = if (rows.isNotEmpty()) {
-                    rows
-                } else {
+                val fallbackRows = rows.ifEmpty {
                     dataElementValues.map { dataValue ->
                         val optionName = optionMap.entries.firstOrNull { (_, comboUid) ->
                             comboUid == dataValue.categoryOptionCombo
@@ -331,7 +329,8 @@ fun DataValueField(
     val renderType = state.renderTypes[dataValue.dataElement] ?: optionSet?.computeRenderType()
     val isHidden = state.hiddenFields.contains(dataValue.dataElement)
     val isDisabledByRule = state.disabledFields.contains(dataValue.dataElement)
-    val isDisabledByMetadata = state.metadataDisabledFields.contains(dataValue.dataElement)
+    val fieldKey = "${dataValue.dataElement}|${dataValue.categoryOptionCombo}"
+    val isDisabledByMetadata = state.metadataDisabledFields.contains(fieldKey)
     val isMandatoryByRule = state.mandatoryFields.contains(dataValue.dataElement)
     val warning = state.fieldWarnings[dataValue.dataElement]
     val error = state.fieldErrors[dataValue.dataElement]
@@ -438,7 +437,7 @@ fun DataValueField(
                 }
             }
             dataValue.dataEntryType == DataEntryType.YES_NO -> {
-                val yesNoLabel = if (labelText.isNotBlank()) labelText else dataValue.dataElementName
+                val yesNoLabel = labelText.ifBlank { dataValue.dataElementName }
                 if (yesNoLabel.isNotBlank()) {
                     Text(
                         text = yesNoLabel,
@@ -521,12 +520,12 @@ fun DataValueField(
                         },
                         onDismissRequest = { showDatePicker = false },
                         initialDate = parsedDate ?: Date(),
-                        title = if (labelText.isNotBlank()) labelText else "Select date"
+                        title = labelText.ifBlank { "Select date" }
                     )
                 }
             }
             dataValue.dataEntryType == DataEntryType.YES_ONLY -> {
-                val yesOnlyLabel = if (labelText.isNotBlank()) labelText else dataValue.dataElementName
+                val yesOnlyLabel = labelText.ifBlank { dataValue.dataElementName }
                 val isChecked = (calculatedValue ?: dataValue.value)?.lowercase() in listOf("true", "1", "yes")
                 Row(
                     modifier = Modifier
@@ -1104,8 +1103,7 @@ private fun DataEntryGridRow(
     cells: List<GridCellData>,
     rowIndex: Int,
     onValueChange: (String, DataValue) -> Unit,
-    viewModel: DataEntryViewModel,
-    enabled: Boolean
+    viewModel: DataEntryViewModel
 ) {
     val formColors = LocalFormColors.current
     val formDimensions = LocalFormDimensions.current
@@ -1135,7 +1133,6 @@ private fun DataEntryGridRow(
         cells.forEach { cell ->
             GridDataCell(
                 dataValue = cell.dataValue,
-                enabled = enabled,
                 onValueChange = onValueChange,
                 viewModel = viewModel,
                 modifier = Modifier
@@ -1156,7 +1153,6 @@ private fun DataEntryGridRow(
 @Composable
 private fun GridDataCell(
     dataValue: DataValue?,
-    enabled: Boolean,
     onValueChange: (String, DataValue) -> Unit,
     viewModel: DataEntryViewModel,
     modifier: Modifier = Modifier
@@ -1190,7 +1186,7 @@ private fun GridDataCell(
                 dataValue = dataValue,
                 onValueChange = { value -> onValueChange(value, dataValue) },
                 viewModel = viewModel,
-                enabled = enabled,
+                enabled = true,
                 showLabel = false,
                 compact = true,
                 inputModifier = focusModifier
@@ -1275,11 +1271,6 @@ fun CategoryAccordion(
         }
     }
 }
-
-private fun valuesForCombo(
-    valuesByCombo: Map<String, List<DataValue>>,
-    comboUid: String?
-): List<DataValue> = comboUid?.let { valuesByCombo[it].orEmpty() }.orEmpty()
 
 /**
  * Recursively renders nested accordions for N categories, except:
@@ -1382,8 +1373,7 @@ fun CategoryAccordionRecursive(
                         cells = cells,
                         rowIndex = index,
                         onValueChange = onValueChange,
-                        viewModel = viewModel,
-                        enabled = true
+                        viewModel = viewModel
                     )
                 }
             }
@@ -1418,8 +1408,7 @@ fun CategoryAccordionRecursive(
         var selectorExpanded by remember(parentPath, categories) { mutableStateOf(false) }
         var selectedSelectorUid by remember(parentPath, categories) {
             mutableStateOf(
-                if (bestSelectorUid.isNotBlank()) bestSelectorUid
-                else selectorCategory.second.firstOrNull()?.first.orEmpty()
+                bestSelectorUid.ifBlank { selectorCategory.second.firstOrNull()?.first.orEmpty() }
             )
         }
         val selectedSelectorName = selectorCategory.second
@@ -1429,7 +1418,7 @@ fun CategoryAccordionRecursive(
 
         ExposedDropdownMenuBox(
             expanded = selectorExpanded,
-            onExpandedChange = { selectorExpanded = !selectorExpanded }
+            onExpandedChange = { expanded -> selectorExpanded = expanded }
         ) {
             OutlinedTextField(
                 value = cleanUserLabel(selectedSelectorName).ifBlank { "Select" },
@@ -1438,7 +1427,7 @@ fun CategoryAccordionRecursive(
                 label = { Text(selectorCategory.first) },
                 trailingIcon = { ExposedDropdownMenuDefaults.TrailingIcon(expanded = selectorExpanded) },
                 modifier = Modifier
-                    .menuAnchor()
+                    .menuAnchor(MenuAnchorType.PrimaryNotEditable, enabled = true)
                     .fillMaxWidth()
             )
             ExposedDropdownMenu(
@@ -1525,8 +1514,7 @@ fun CategoryAccordionRecursive(
                         cells = cells,
                         rowIndex = index,
                         onValueChange = onValueChange,
-                        viewModel = viewModel,
-                        enabled = true
+                        viewModel = viewModel
                     )
                 }
             }
@@ -1912,17 +1900,6 @@ fun EditEntryScreen(
             delay(300)
             isUIReady = true
         }
-    }
-    fun manualRefresh() {
-        viewModel.loadDataValues(
-            datasetId = datasetId,
-            datasetName = datasetName,
-            period = period,
-            orgUnitId = orgUnit,
-            attributeOptionCombo = attributeOptionCombo,
-            isEditMode = true
-        )
-        lastLoadedParams = currentParams
     }
     // Show Snackbar on save result
     LaunchedEffect(state.saveResult) {
@@ -2422,7 +2399,7 @@ fun EditEntryScreen(
                                                                         // Get optionSet if available, otherwise provide empty one
                                                                         // Note: GroupedRadioButtons doesn't actually use optionSet, it's just for API compatibility
                                                                         val optionSet = groupFields.firstOrNull()?.let { state.optionSets[it.dataElement] }
-                                                                            ?: com.ash.simpledataentry.domain.model.OptionSet(id = "", name = "", options = emptyList())
+                                                                            ?: OptionSet(id = "", name = "", options = emptyList())
 
                                                                         // Find which field (if any) has value "YES" or "true"
                                                                         val selectedFieldId = groupFields.firstOrNull {

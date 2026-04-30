@@ -444,13 +444,17 @@ class DataEntryViewModel @Inject constructor(
                         )
                     }
 
+                    // PERFORMANCE: Only resolve category metadata for representative combos per data element.
+                    // Resolving for every value/C.O.C can explode to thousands of lookups and stall form open.
                     val uniqueCategoryCombos = LinkedHashSet<String>().apply {
-                        values.forEach { value ->
-                            val combo = value.categoryOptionCombo
-                            if (!combo.isNullOrBlank()) {
-                                add(combo)
+                        values.groupBy { it.dataElement }
+                            .values
+                            .forEach { elementValues ->
+                                val representative = elementValues.firstOrNull()?.categoryOptionCombo
+                                if (!representative.isNullOrBlank()) {
+                                    add(representative)
+                                }
                             }
-                        }
                     }
 
                     val categoryComboStructures = mutableMapOf<String, List<Pair<String, List<Pair<String, String>>>>>()
@@ -557,7 +561,8 @@ class DataEntryViewModel @Inject constructor(
                     val valuesByCombo = mergedValues.groupBy { it.categoryOptionCombo }
                     val valuesByElement = mergedValues.groupBy { it.dataElement }
                     val metadataDisabledFields = resolveMetadataDisabledFields(
-                        mergedValues.map { it.dataElement }.distinct()
+                        datasetId = datasetId,
+                        values = mergedValues
                     )
                     val (isEntryEditable, nonEditableReason) = editabilityDeferred.await()
                     val isCompleted = completionDeferred.await()
@@ -879,6 +884,19 @@ class DataEntryViewModel @Inject constructor(
         attributeOptionCombos: List<Pair<String, String>>
     ): String = withContext(Dispatchers.IO) {
         val comboCandidates = attributeOptionCombos.map { it.first }.filter { it.isNotBlank() }
+        if (comboCandidates.isEmpty()) {
+            return@withContext preferredAttributeOptionCombo
+        }
+
+        // Fast path: keep current/preferred combo when it is assignable.
+        // This avoids expensive scoring work during form open.
+        if (preferredAttributeOptionCombo.isNotBlank() && comboCandidates.contains(preferredAttributeOptionCombo)) {
+            if (isAttributeOptionComboAssignable(datasetId, period, orgUnitId, preferredAttributeOptionCombo)) {
+                Log.d(TAG, "Resolved attribute option combo via preferred fast path: $preferredAttributeOptionCombo")
+                return@withContext preferredAttributeOptionCombo
+            }
+        }
+
         val assignableCandidates = comboCandidates.filter { comboUid ->
             isAttributeOptionComboAssignable(datasetId, period, orgUnitId, comboUid)
         }
@@ -895,37 +913,6 @@ class DataEntryViewModel @Inject constructor(
             addAll(assignableCandidates.filter { it != preferredAttributeOptionCombo })
         }
 
-        val scoredCandidates: List<Pair<String, Int>> = prioritizedCandidates.map { comboUid: String ->
-            comboUid to comboExistingDataCount(
-                datasetId = datasetId,
-                period = period,
-                orgUnitId = orgUnitId,
-                attributeOptionComboUid = comboUid
-            )
-        }
-        val scoreText = scoredCandidates.joinToString(separator = ", ") { pair ->
-            "${pair.first}=${pair.second}"
-        }
-        Log.d(
-            TAG,
-            "Assignable AOC scores: $scoreText"
-        )
-
-        val maxCount = scoredCandidates.maxOfOrNull { it.second } ?: 0
-        if (maxCount > 0) {
-            val maxCandidates = scoredCandidates.filter { it.second == maxCount }.map { it.first }
-            val chosen = if (preferredAttributeOptionCombo.isNotBlank() && maxCandidates.contains(preferredAttributeOptionCombo)) {
-                preferredAttributeOptionCombo
-            } else {
-                maxCandidates.first()
-            }
-            Log.d(
-                TAG,
-                "Resolved attribute option combo with highest data count: $chosen (count=$maxCount, preferred=$preferredAttributeOptionCombo)"
-            )
-            return@withContext chosen
-        }
-
         val fallback = prioritizedCandidates.first()
         Log.d(TAG, "Resolved attribute option combo fallback (assignable): $fallback")
         fallback
@@ -938,18 +925,8 @@ class DataEntryViewModel @Inject constructor(
         attributeOptionComboUid: String
     ): Int = withContext(Dispatchers.IO) {
         try {
-            val networkState = networkStateManager.networkState.value
-            if (networkState.isConnected && networkState.hasInternet) {
-                val refreshedCount = repository.refreshDataValues(
-                    datasetId = datasetId,
-                    period = period,
-                    orgUnit = orgUnitId,
-                    attributeOptionCombo = attributeOptionComboUid
-                )
-                return@withContext refreshedCount
-            }
-
-            // Offline fallback: if cached exists, treat as present.
+            // Local-only check to keep form-open path fast.
+            // Never trigger server refreshes while resolving AOC for navigation.
             if (repository.hasCachedDataValues(datasetId, period, orgUnitId, attributeOptionComboUid)) {
                 return@withContext 1
             }
@@ -1017,10 +994,82 @@ class DataEntryViewModel @Inject constructor(
     }
 
     private suspend fun resolveMetadataDisabledFields(
-        dataElementIds: List<String>
+        datasetId: String,
+        values: List<DataValue>
     ): Set<String> = withContext(Dispatchers.IO) {
-        // SDK DataElement does not expose field-level access in this version.
-        emptySet()
+        val d2 = sessionManager.getD2() ?: return@withContext emptySet()
+
+        try {
+            val validKeys = values.map { fieldKey(it.dataElement, it.categoryOptionCombo) }.toSet()
+            val disabledKeys = mutableSetOf<String>()
+
+            fun invokeNoArg(target: Any, methodName: String): Any? {
+                val method = target.javaClass.methods.firstOrNull { it.name == methodName && it.parameterCount == 0 }
+                    ?: return null
+                return method.invoke(target)
+            }
+
+            fun invokeOneArg(target: Any, methodName: String, arg: Any): Any? {
+                val method = target.javaClass.methods.firstOrNull { it.name == methodName && it.parameterCount == 1 }
+                    ?: return null
+                return method.invoke(target, arg)
+            }
+
+            val sectionsRepository = d2.dataSetModule().sections()
+            val sections = run {
+                val withGreyedRepo = invokeNoArg(sectionsRepository, "withGreyedFields")
+                if (withGreyedRepo != null) {
+                    val byDataSetUid = invokeNoArg(withGreyedRepo, "byDataSetUid")
+                    val eqCall = byDataSetUid?.let { invokeOneArg(it, "eq", datasetId) }
+                    val blocking = eqCall?.let { invokeNoArg(it, "blockingGet") }
+                    val reflected = blocking as? List<*>
+                    if (!reflected.isNullOrEmpty()) {
+                        reflected
+                    } else {
+                        sectionsRepository.byDataSetUid().eq(datasetId).blockingGet()
+                    }
+                } else {
+                    sectionsRepository.byDataSetUid().eq(datasetId).blockingGet()
+                }
+            }
+
+            sections.forEach { sectionAny ->
+                val section = sectionAny ?: return@forEach
+                val greyedFieldsMethod = section.javaClass.methods.firstOrNull { it.name == "greyedFields" }
+                    ?: return@forEach
+                val greyedFields = greyedFieldsMethod.invoke(section) as? Iterable<*> ?: return@forEach
+
+                greyedFields.forEach { operand ->
+                    if (operand == null) return@forEach
+
+                    val dataElementRef = operand.javaClass.methods
+                        .firstOrNull { it.name == "dataElement" }
+                        ?.invoke(operand)
+                    val cocRef = operand.javaClass.methods
+                        .firstOrNull { it.name == "categoryOptionCombo" }
+                        ?.invoke(operand)
+
+                    val dataElementUid = dataElementRef?.javaClass?.methods
+                        ?.firstOrNull { it.name == "uid" }
+                        ?.invoke(dataElementRef) as? String
+                    val cocUid = cocRef?.javaClass?.methods
+                        ?.firstOrNull { it.name == "uid" }
+                        ?.invoke(cocRef) as? String
+
+                    if (!dataElementUid.isNullOrBlank()) {
+                        val key = fieldKey(dataElementUid, cocUid.orEmpty())
+                        if (validKeys.contains(key)) {
+                            disabledKeys.add(key)
+                        }
+                    }
+                }
+            }
+
+            disabledKeys
+        } catch (e: Exception) {
+            Log.w(TAG, "Failed to resolve metadata greyed fields", e)
+            emptySet()
+        }
     }
 
     fun updateCurrentValue(value: String, dataElementUid: String, categoryOptionComboUid: String) {
