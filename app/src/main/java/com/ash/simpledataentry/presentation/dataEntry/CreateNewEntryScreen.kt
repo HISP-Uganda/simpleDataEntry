@@ -41,6 +41,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
@@ -85,18 +86,18 @@ fun CreateNewEntryScreen(
     var attributeOptionCombos by remember { mutableStateOf<List<Pair<String, String>>>(emptyList()) }
     var selectedAttributeOptionCombo by remember { mutableStateOf("") }
     var expandedAttributeOptionCombo by remember { mutableStateOf(false) }
-    var showAllPeriods by remember { mutableStateOf(false) }
+    var periodLoadRequests by remember { mutableIntStateOf(0) }
     var isFetchingExistingData by remember { mutableStateOf(false) }
     val state by viewModel.state.collectAsState()
     val decodedDatasetName = remember(datasetName) { URLDecoder.decode(datasetName, "UTF-8") }
     val snackbarHostState = remember { SnackbarHostState() }
     val coroutineScope = rememberCoroutineScope()
 
-    LaunchedEffect(datasetId, showAllPeriods) {
+    LaunchedEffect(datasetId, periodLoadRequests) {
         try {
             isLoading = true
             error = null
-            periods = viewModel.getAvailablePeriods(datasetId, showAll = showAllPeriods)
+            periods = viewModel.getAvailablePeriods(datasetId, showAll = periodLoadRequests > 0)
             orgUnits = viewModel.getUserOrgUnits(datasetId) // Get multiple org units
             selectedOrgUnit = orgUnits.firstOrNull() // Select first org unit by default
             defaultAttributeOptionCombo = viewModel.getDefaultAttributeOptionCombo()
@@ -350,21 +351,19 @@ fun CreateNewEntryScreen(
                                             }
                                         )
                                     }
-                                    if (!showAllPeriods) {
-                                        DropdownMenuItem(
-                                            text = {
-                                                Text(
-                                                    "Show more periods...",
-                                                    color = MaterialTheme.colorScheme.primary,
-                                                    style = MaterialTheme.typography.bodyMedium
-                                                )
-                                            },
-                                            onClick = {
-                                                showAllPeriods = true
-                                                expandedPeriod = false
-                                            }
-                                        )
-                                    }
+                                    DropdownMenuItem(
+                                        text = {
+                                            Text(
+                                                "Show more periods...",
+                                                color = MaterialTheme.colorScheme.primary,
+                                                style = MaterialTheme.typography.bodyMedium
+                                            )
+                                        },
+                                        onClick = {
+                                            periodLoadRequests += 1
+                                            expandedPeriod = false
+                                        }
+                                    )
                                 }
                             }
 

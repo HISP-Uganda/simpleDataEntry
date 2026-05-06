@@ -35,6 +35,8 @@ import kotlin.Result
 import org.hisp.dhis.android.core.dataelement.DataElement
 import org.hisp.dhis.android.core.common.ValueType
 import android.content.Context
+import org.hisp.dhis.android.core.period.PeriodType
+import java.util.Date
 
 /**
  * CRITICAL: Uses DatabaseProvider for dynamic DAO access to ensure we always use
@@ -710,12 +712,66 @@ class DataEntryRepositoryImpl @Inject constructor(
             }
 
             // Generate ONLY the periods we need (prevents ANR on daily/weekly datasets)
-            d2.periodModule().periodHelper()
+            val sdkPeriods = d2.periodModule().periodHelper()
                 .getPeriodsForDataSet(datasetId)
                 .blockingGet()
-                .sortedByDescending { it.periodId() } // Sort before limiting
+            val mergedPeriods = mergeWithGeneratedPeriods(datasetId, sdkPeriods)
+            mergedPeriods
+                .sortedByDescending { it.periodId() ?: "" } // Sort before limiting
                 .take(currentOffset) // CRITICAL: Limit BEFORE mapping to prevent full materialization
-                .map { Period(id = it.periodId().toString()) }
+                .mapNotNull { period ->
+                    period.periodId()?.let { Period(id = it) }
+                }
+        }
+    }
+
+    private fun mergeWithGeneratedPeriods(
+        datasetId: String,
+        sdkPeriods: List<org.hisp.dhis.android.core.period.Period>
+    ): List<org.hisp.dhis.android.core.period.Period> {
+        val dataSet = d2.dataSetModule().dataSets().uid(datasetId).blockingGet()
+        val periodType = dataSet?.periodType()
+        if (periodType == null) return sdkPeriods
+
+        val generated = generateHistoricalPeriods(periodType)
+        if (generated.isEmpty()) return sdkPeriods
+
+        // Prefer SDK-calculated periods but supplement with generated history for web-like navigation.
+        val byId = linkedMapOf<String, org.hisp.dhis.android.core.period.Period>()
+        sdkPeriods.forEach { period ->
+            period.periodId()?.let { id -> byId[id] = period }
+        }
+        generated.forEach { period ->
+            period.periodId()?.let { id -> byId.putIfAbsent(id, period) }
+        }
+        return byId.values.toList()
+    }
+
+    private fun generateHistoricalPeriods(periodType: PeriodType): List<org.hisp.dhis.android.core.period.Period> {
+        val maxBackPeriods = when (periodType) {
+            PeriodType.Daily -> 60
+            PeriodType.Weekly,
+            PeriodType.WeeklyWednesday,
+            PeriodType.WeeklyThursday,
+            PeriodType.WeeklySaturday,
+            PeriodType.WeeklySunday,
+            PeriodType.BiWeekly -> 104
+            PeriodType.Monthly -> 60
+            PeriodType.BiMonthly -> 36
+            PeriodType.Quarterly -> 20
+            PeriodType.SixMonthly,
+            PeriodType.SixMonthlyApril -> 20
+            PeriodType.Yearly,
+            PeriodType.FinancialApril,
+            PeriodType.FinancialJuly,
+            PeriodType.FinancialOct -> 12
+            else -> 24
+        }
+
+        val helper = d2.periodModule().periodHelper()
+        val now = Date()
+        return (0..maxBackPeriods).mapNotNull { offset ->
+            runCatching { helper.blockingGetPeriodForPeriodTypeAndDate(periodType, now, -offset) }.getOrNull()
         }
     }
 
