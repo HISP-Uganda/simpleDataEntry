@@ -32,9 +32,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.rotate
 import androidx.compose.ui.platform.LocalView
-import androidx.compose.ui.graphics.Brush
 import androidx.compose.material3.ExperimentalMaterial3Api
-import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.toArgb
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
@@ -89,28 +87,10 @@ fun EventCaptureScreen(
     val view = LocalView.current
     val isDarkTheme = isSystemInDarkTheme()
     val listState = rememberLazyListState()
-    val colorScheme = MaterialTheme.colorScheme
-    val screenBackgroundBrush = remember(colorScheme, isDarkTheme) {
-        Brush.verticalGradient(
-            colors = listOf(
-                colorScheme.surface,
-                if (isDarkTheme) colorScheme.surfaceVariant.copy(alpha = 0.35f) else colorScheme.primary.copy(alpha = 0.08f),
-                if (isDarkTheme) colorScheme.background else colorScheme.surface
-            )
-        )
-    }
-    val topGlowBrush = remember(colorScheme, isDarkTheme) {
-        Brush.verticalGradient(
-            colors = listOf(
-                colorScheme.primary.copy(alpha = if (isDarkTheme) 0.20f else 0.12f),
-                Color.Transparent
-            )
-        )
-    }
+    val barColor = MaterialTheme.colorScheme.background.toArgb()
 
     SideEffect {
         val window = (view.context as? Activity)?.window ?: return@SideEffect
-        val barColor = if (isDarkTheme) Color.Black.toArgb() else Color.White.toArgb()
         window.statusBarColor = barColor
         window.navigationBarColor = barColor
         WindowInsetsControllerCompat(window, window.decorView).apply {
@@ -395,15 +375,8 @@ fun EventCaptureScreen(
                 modifier = Modifier
                     .fillMaxSize()
                     .padding(paddingValues)
-                    .background(screenBackgroundBrush)
+                    .background(MaterialTheme.colorScheme.background)
             ) {
-                Box(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .height(220.dp)
-                        .background(topGlowBrush)
-                )
-
                 when {
                     state.isLoading -> {
                         Box(
@@ -460,22 +433,13 @@ fun EventCaptureScreen(
                     Column(
                         modifier = Modifier
                             .fillMaxSize()
-                            .padding(horizontal = 14.dp, vertical = 12.dp)
+                            .padding(horizontal = 8.dp, vertical = 8.dp)
                     ) {
-                        Card(
-                            modifier = Modifier.fillMaxSize(),
-                            shape = RoundedCornerShape(22.dp),
-                            colors = CardDefaults.cardColors(
-                                containerColor = MaterialTheme.colorScheme.surface
-                            ),
-                            border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.5f)),
-                            elevation = CardDefaults.cardElevation(defaultElevation = 10.dp)
+                        Column(
+                            modifier = Modifier
+                                .fillMaxSize()
+                                .padding(horizontal = 4.dp)
                         ) {
-                            Column(
-                                modifier = Modifier
-                                    .fillMaxSize()
-                                    .padding(14.dp)
-                            ) {
                                 // Show warning banner if rule evaluation had issues
                                 if (state.ruleEvaluationWarning != null) {
                                     Card(
@@ -727,7 +691,6 @@ fun EventCaptureScreen(
                                         }
                                     }
                                 }
-                            }
                         }
                     }
                 }

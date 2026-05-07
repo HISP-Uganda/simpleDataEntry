@@ -6,6 +6,7 @@ package com.ash.simpledataentry.presentation.dataEntry
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.ExperimentalLayoutApi
@@ -57,6 +58,7 @@ import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.Sync
 import androidx.compose.material.icons.filled.CheckCircle
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.foundation.relocation.BringIntoViewRequester
 import androidx.compose.foundation.relocation.bringIntoViewRequester
 import androidx.compose.ui.focus.onFocusChanged
@@ -69,6 +71,8 @@ import com.ash.simpledataentry.presentation.core.UiState
 import com.ash.simpledataentry.ui.theme.LocalFormColors
 import com.ash.simpledataentry.ui.theme.LocalFormDimensions
 import com.ash.simpledataentry.ui.theme.LocalFormTypography
+import androidx.compose.foundation.ScrollState
+import androidx.compose.foundation.rememberScrollState
 
 data class Quadruple<A, B, C, D>(val first: A, val second: B, val third: C, val fourth: D)
 
@@ -92,6 +96,7 @@ private data class CategoryPathRow(
 )
 
 private val GridRowHeaderWidth = 120.dp
+private val CompactGridCellMinWidth = 96.dp
 
 private fun parseGridLabel(name: String): Pair<String, String>? {
     // Only split on primary separators between row and column.
@@ -722,7 +727,7 @@ private fun GridNumericField(
             disabledPlaceholderColor = formColors.gridCellPlaceholder.copy(alpha = 0.7f)
         ),
         modifier = modifier
-            .heightIn(min = formDimensions.gridCellHeight)
+            .heightIn(min = if (formDimensions.gridCellHeight < 44.dp) 44.dp else formDimensions.gridCellHeight)
     )
 }
 
@@ -993,13 +998,18 @@ fun DataElementAccordion(
 private fun DataEntryGridHeader(
     columnTitles: List<String>,
     rowHeaderTitle: String? = null,
+    horizontalScrollState: ScrollState? = null,
+    compactGrid: Boolean = false,
     modifier: Modifier = Modifier
 ) {
     val formColors = LocalFormColors.current
     val formTypography = LocalFormTypography.current
     Row(
         modifier = modifier
-            .fillMaxWidth()
+            .then(
+                if (horizontalScrollState != null) Modifier.horizontalScroll(horizontalScrollState)
+                else Modifier.fillMaxWidth()
+            )
             .background(formColors.gridHeaderBackground)
             .padding(vertical = 8.dp)
     ) {
@@ -1020,7 +1030,10 @@ private fun DataEntryGridHeader(
         columnTitles.forEach { title ->
             Box(
                 modifier = Modifier
-                    .weight(1f)
+                    .then(
+                        if (compactGrid) Modifier.width(CompactGridCellMinWidth)
+                        else Modifier.weight(1f)
+                    )
                     .padding(horizontal = 6.dp),
                 contentAlignment = Alignment.CenterStart
             ) {
@@ -1102,6 +1115,8 @@ private fun DataEntryGridRow(
     rowTitle: String,
     cells: List<GridCellData>,
     rowIndex: Int,
+    horizontalScrollState: ScrollState? = null,
+    compactGrid: Boolean = false,
     onValueChange: (String, DataValue) -> Unit,
     viewModel: DataEntryViewModel
 ) {
@@ -1112,7 +1127,10 @@ private fun DataEntryGridRow(
 
     Row(
         modifier = Modifier
-            .fillMaxWidth()
+            .then(
+                if (horizontalScrollState != null) Modifier.horizontalScroll(horizontalScrollState)
+                else Modifier.fillMaxWidth()
+            )
             .background(rowBackground)
             .padding(vertical = 6.dp)
     ) {
@@ -1136,7 +1154,10 @@ private fun DataEntryGridRow(
                 onValueChange = onValueChange,
                 viewModel = viewModel,
                 modifier = Modifier
-                    .weight(1f)
+                    .then(
+                        if (compactGrid) Modifier.width(CompactGridCellMinWidth)
+                        else Modifier.weight(1f)
+                    )
                     .padding(horizontal = 6.dp)
                     .border(
                         width = 1.dp,
@@ -1347,6 +1368,8 @@ fun CategoryAccordionRecursive(
             val columnTitles = columnCategory.second.map { it.second }
             val valuesByComboUid = values.associateBy { it.categoryOptionCombo }
             val formDimensions = LocalFormDimensions.current
+            val compactGrid = LocalConfiguration.current.screenWidthDp < 600
+            val horizontalScrollState = rememberScrollState()
 
             Column(
                 modifier = Modifier
@@ -1360,7 +1383,9 @@ fun CategoryAccordionRecursive(
             ) {
                 DataEntryGridHeader(
                     columnTitles = columnTitles,
-                    rowHeaderTitle = rowCategory.first
+                    rowHeaderTitle = rowCategory.first,
+                    horizontalScrollState = if (compactGrid) horizontalScrollState else null,
+                    compactGrid = compactGrid
                 )
                 rowCategory.second.forEachIndexed { index, (rowUid, rowName) ->
                     val cells = columnCategory.second.map { (colUid, colName) ->
@@ -1372,6 +1397,8 @@ fun CategoryAccordionRecursive(
                         rowTitle = rowName,
                         cells = cells,
                         rowIndex = index,
+                        horizontalScrollState = if (compactGrid) horizontalScrollState else null,
+                        compactGrid = compactGrid,
                         onValueChange = onValueChange,
                         viewModel = viewModel
                     )
@@ -1486,6 +1513,8 @@ fun CategoryAccordionRecursive(
         if (rowCount >= 2 && columnCount in 2..6) {
             val valuesByComboUid = values.associateBy { it.categoryOptionCombo }
             val formDimensions = LocalFormDimensions.current
+            val compactGrid = LocalConfiguration.current.screenWidthDp < 600
+            val horizontalScrollState = rememberScrollState()
 
             Column(
                 modifier = Modifier
@@ -1499,7 +1528,9 @@ fun CategoryAccordionRecursive(
             ) {
                 DataEntryGridHeader(
                     columnTitles = columnCombos.map { it.second.ifBlank { "Value" } },
-                    rowHeaderTitle = selectedPrefixLabel?.let { "$it / ${rowCategory.first}" } ?: rowCategory.first
+                    rowHeaderTitle = selectedPrefixLabel?.let { "$it / ${rowCategory.first}" } ?: rowCategory.first,
+                    horizontalScrollState = if (compactGrid) horizontalScrollState else null,
+                    compactGrid = compactGrid
                 )
 
                 rowCategory.second.forEachIndexed { index, (rowUid, rowName) ->
@@ -1513,6 +1544,8 @@ fun CategoryAccordionRecursive(
                         rowTitle = rowName,
                         cells = cells,
                         rowIndex = index,
+                        horizontalScrollState = if (compactGrid) horizontalScrollState else null,
+                        compactGrid = compactGrid,
                         onValueChange = onValueChange,
                         viewModel = viewModel
                     )
@@ -1703,7 +1736,15 @@ fun EditEntryScreen(
     attributeOptionCombo: String
 ) {
     fun safeMessage(message: String?, fallback: String): String {
-        return message?.takeIf { it.isNotBlank() } ?: fallback
+        val raw = message?.trim().orEmpty()
+        if (raw.isBlank()) return fallback
+        return when {
+            raw.contains("cannot start a transaction within a transaction", ignoreCase = true) ||
+                raw.contains("SQLITE_ERROR", ignoreCase = true) -> {
+                "Database is busy right now. Please wait a few seconds and try again."
+            }
+            else -> raw
+        }
     }
     val snackbarContainerColor = Color(0xFF1F2937)
     val snackbarContentColor = Color.White
@@ -1719,6 +1760,8 @@ fun EditEntryScreen(
 
     val context = LocalContext.current
     val listState = rememberLazyListState()
+    val configuration = LocalConfiguration.current
+    val isCompactPhone = configuration.screenWidthDp < 600
     val syncProgress = state.detailedSyncProgress
     val navigationProgress = state.navigationProgress
     val completionProgress = state.completionProgress
@@ -2101,6 +2144,14 @@ fun EditEntryScreen(
             }
 
             Box(modifier = Modifier.fillMaxSize()) {
+                val collapseFormHeader by remember(listState, isCompactPhone) {
+                    derivedStateOf {
+                        isCompactPhone && (
+                            listState.firstVisibleItemIndex > 0 ||
+                                listState.firstVisibleItemScrollOffset > 24
+                            )
+                    }
+                }
                 Column(
                     modifier = Modifier
                         .fillMaxSize()
@@ -2169,35 +2220,39 @@ fun EditEntryScreen(
                         }
                     }
 
-                    SectionNavigationBar(
-                        currentSection = Section(currentSectionName),
-                        currentSubsection = subsectionTitles.getOrNull(subsectionIndex)
-                            ?.let { Subsection(it) },
-                        sectionIndex = state.currentSectionIndex.coerceAtLeast(0),
-                        totalSections = state.totalSections.coerceAtLeast(1),
-                        onPreviousSection = { viewModel.goToPreviousSection() },
-                        onNextSection = { viewModel.goToNextSection() },
-                        onPreviousSubsection = {
-                            val nextIndex = (subsectionIndex - 1).coerceAtLeast(0)
-                            subsectionIndex = nextIndex
-                            focusSubsection(nextIndex)
-                        },
-                        onNextSubsection = {
-                            val nextIndex = (subsectionIndex + 1).coerceAtMost(subsectionTitles.lastIndex)
-                            subsectionIndex = nextIndex
-                            focusSubsection(nextIndex)
-                        },
-                        hasSubsections = subsectionTitles.isNotEmpty()
-                    )
-                    state.lastSyncTime?.let { lastSync ->
-                        Text(
-                            text = "Last sync: ${formatRelativeTime(lastSync)}",
-                            style = MaterialTheme.typography.labelSmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
-                            modifier = Modifier
-                                .padding(horizontal = 16.dp)
-                                .padding(bottom = 8.dp)
-                        )
+                    AnimatedVisibility(visible = !collapseFormHeader) {
+                        Column {
+                            SectionNavigationBar(
+                                currentSection = Section(currentSectionName),
+                                currentSubsection = subsectionTitles.getOrNull(subsectionIndex)
+                                    ?.let { Subsection(it) },
+                                sectionIndex = state.currentSectionIndex.coerceAtLeast(0),
+                                totalSections = state.totalSections.coerceAtLeast(1),
+                                onPreviousSection = { viewModel.goToPreviousSection() },
+                                onNextSection = { viewModel.goToNextSection() },
+                                onPreviousSubsection = {
+                                    val nextIndex = (subsectionIndex - 1).coerceAtLeast(0)
+                                    subsectionIndex = nextIndex
+                                    focusSubsection(nextIndex)
+                                },
+                                onNextSubsection = {
+                                    val nextIndex = (subsectionIndex + 1).coerceAtMost(subsectionTitles.lastIndex)
+                                    subsectionIndex = nextIndex
+                                    focusSubsection(nextIndex)
+                                },
+                                hasSubsections = subsectionTitles.isNotEmpty()
+                            )
+                            state.lastSyncTime?.let { lastSync ->
+                                Text(
+                                    text = "Last sync: ${formatRelativeTime(lastSync)}",
+                                    style = MaterialTheme.typography.labelSmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                    modifier = Modifier
+                                        .padding(horizontal = 16.dp)
+                                        .padding(bottom = 8.dp)
+                                )
+                            }
+                        }
                     }
 
                     val showFormContent = state.dataElementGroupedSections.isNotEmpty() && (isUIReady || state.isLoading)

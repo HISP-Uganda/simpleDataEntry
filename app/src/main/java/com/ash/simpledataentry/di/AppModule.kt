@@ -253,9 +253,18 @@ object AppModule {
     @Singleton
     fun provideDatasetInstancesRepository(
         sessionManager: SessionManager,
-        databaseProvider: DatabaseProvider
+        databaseProvider: DatabaseProvider,
+        syncQueueManager: SyncQueueManager,
+        savedAccountRepository: com.ash.simpledataentry.data.repositoryImpl.SavedAccountRepository,
+        @ApplicationContext context: Context
     ): DatasetInstancesRepository {
-        return DatasetInstancesRepositoryImpl(sessionManager, databaseProvider)
+        return DatasetInstancesRepositoryImpl(
+            sessionManager = sessionManager,
+            databaseProvider = databaseProvider,
+            syncQueueManager = syncQueueManager,
+            savedAccountRepository = savedAccountRepository,
+            appContext = context
+        )
     }
 
 
@@ -323,6 +332,7 @@ object AppModule {
         sessionManager: SessionManager,
         databaseProvider: DatabaseProvider,
         metadataCacheService: MetadataCacheService,
+        savedAccountRepository: SavedAccountRepository,
         @ApplicationContext context: Context
     ): SyncQueueManager {
         return SyncQueueManager(
@@ -330,6 +340,7 @@ object AppModule {
             sessionManager,
             databaseProvider,
             metadataCacheService,
+            savedAccountRepository,
             context
         )
     }

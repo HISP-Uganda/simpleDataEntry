@@ -127,7 +127,7 @@ class BackgroundDataPrefetcher @Inject constructor(
                 // while foreground sync/upload is active.
                 for ((datasetId, period, orgUnit) in batch) {
                     try {
-                        D2SdkOperationLocks.dataValueAndAggregateMutex.withLock {
+                        D2SdkOperationLocks.withSdkOp("sdk-db-op") {
                             d2Instance.dataValueModule().dataValues()
                                 .byDataSetUid(datasetId)
                                 .byPeriod().eq(period.periodId())

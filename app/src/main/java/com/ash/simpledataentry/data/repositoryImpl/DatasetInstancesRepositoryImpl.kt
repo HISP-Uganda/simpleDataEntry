@@ -1,10 +1,15 @@
 package com.ash.simpledataentry.data.repositoryImpl
 
+import android.content.Context
+import android.util.Base64
 import android.util.Log
+import androidx.work.WorkInfo
+import androidx.work.WorkManager
 import com.ash.simpledataentry.domain.model.DatasetInstance
 import com.ash.simpledataentry.domain.model.DatasetInstanceState
 import com.ash.simpledataentry.domain.model.Period
 import com.ash.simpledataentry.domain.repository.DatasetInstancesRepository
+import com.ash.simpledataentry.data.repositoryImpl.SavedAccountRepository
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
@@ -15,19 +20,39 @@ import com.ash.simpledataentry.data.SessionManager
 import com.ash.simpledataentry.data.DatabaseProvider
 import com.ash.simpledataentry.data.local.DraftInstanceSummary
 import com.ash.simpledataentry.data.sync.D2SdkOperationLocks
+import com.ash.simpledataentry.data.sync.SyncQueueManager
+import dagger.hilt.android.qualifiers.ApplicationContext
 import org.hisp.dhis.android.core.D2
 import org.hisp.dhis.android.core.organisationunit.OrganisationUnit
 import javax.inject.Inject
-import kotlinx.coroutines.sync.withLock
+import kotlinx.coroutines.withTimeoutOrNull
+import org.json.JSONObject
+import java.net.HttpURLConnection
+import java.net.URL
+import java.nio.charset.StandardCharsets
+import org.json.JSONArray
 
 private const val TAG = "DatasetInstancesRepo"
 
 class DatasetInstancesRepositoryImpl @Inject constructor(
     private val sessionManager: SessionManager,
-    private val databaseProvider: DatabaseProvider
+    private val databaseProvider: DatabaseProvider,
+    private val syncQueueManager: SyncQueueManager,
+    private val savedAccountRepository: SavedAccountRepository,
+    @ApplicationContext private val appContext: Context
 ) : DatasetInstancesRepository {
+    private val syncWorkTags = listOf(
+        "immediate_metadata_sync",
+        "metadata_sync_work",
+        "background_sync_work",
+        "immediate_sync"
+    )
 
     private val d2 get() = sessionManager.getD2()!!
+    private val completionDispatcher = Dispatchers.IO.limitedParallelism(1)
+    private val deferredCompletionPrefs by lazy {
+        appContext.getSharedPreferences("deferred_completion_queue", Context.MODE_PRIVATE)
+    }
 
     // Lazy DAO accessors - always get from current account's database
     private val trackerEnrollmentDao get() = databaseProvider.getCurrentDatabase().trackerEnrollmentDao()
@@ -204,55 +229,94 @@ class DatasetInstancesRepositoryImpl @Inject constructor(
     }
 
     override suspend fun completeDatasetInstance(datasetId: String, period: String, orgUnit: String, attributeOptionCombo: String): Result<Unit> {
-        return withContext(Dispatchers.IO) {
+        return withContext(completionDispatcher) {
             val attemptId = "repo-cmp-${System.currentTimeMillis()}"
             val startMs = android.os.SystemClock.elapsedRealtime()
-            val maxAttempts = 3
+            val syncIdle = syncQueueManager.awaitIdle(20_000L)
+            if (!syncIdle) {
+                Log.w(TAG, "[$attemptId] completion blocked because sync stayed active for >20s")
+                return@withContext Result.failure(
+                    IllegalStateException("Sync is still running. Please wait for sync to finish, then complete again.")
+                )
+            }
+            cancelAndDrainBackgroundSyncWork(attemptId)
+            val metadataIdle = withTimeoutOrNull(20_000L) {
+                while (isMetadataSyncRunning()) {
+                    delay(500L)
+                }
+                true
+            }
+            if (metadataIdle == null) {
+                Log.w(TAG, "[$attemptId] completion blocked because metadata sync worker stayed active for >20s")
+                return@withContext Result.failure(
+                    IllegalStateException("Metadata sync is active. Please wait, then complete again.")
+                )
+            }
+            val maxAttempts = 2
             var lastError: Exception? = null
+            var runtimeRefreshed = false
             for (attempt in 1..maxAttempts) {
                 try {
                     Log.d(
                         TAG,
                         "[$attemptId] completeDatasetInstance attempt=$attempt/$maxAttempts dataset=$datasetId period=$period orgUnit=$orgUnit attrCombo=$attributeOptionCombo thread=${Thread.currentThread().name}"
                     )
-                    val setStartMs = android.os.SystemClock.elapsedRealtime()
-                    Log.d(TAG, "[$attemptId] calling dataSetCompleteRegistrations.value(...).blockingSet()")
-                    D2SdkOperationLocks.dataValueAndAggregateMutex.withLock {
+                    D2SdkOperationLocks.withSdkOp("sdk-db-op") {
+                        val setStartMs = android.os.SystemClock.elapsedRealtime()
+                        Log.d(TAG, "[$attemptId] calling dataSetCompleteRegistrations.value(...).blockingSet()")
                         d2.dataSetModule().dataSetCompleteRegistrations()
                             .value(period, orgUnit, datasetId, attributeOptionCombo)
                             .blockingSet()
-                    }
-                    Log.d(
-                        TAG,
-                        "[$attemptId] blockingSet success in ${android.os.SystemClock.elapsedRealtime() - setStartMs}ms"
-                    )
+                        Log.d(
+                            TAG,
+                            "[$attemptId] blockingSet success in ${android.os.SystemClock.elapsedRealtime() - setStartMs}ms"
+                        )
 
-                    val uploadStartMs = android.os.SystemClock.elapsedRealtime()
-                    Log.d(TAG, "[$attemptId] calling dataSetCompleteRegistrations().blockingUpload()")
-                    D2SdkOperationLocks.dataValueAndAggregateMutex.withLock {
+                        val uploadStartMs = android.os.SystemClock.elapsedRealtime()
+                        Log.d(TAG, "[$attemptId] calling dataSetCompleteRegistrations().blockingUpload()")
                         d2.dataSetModule().dataSetCompleteRegistrations().blockingUpload()
+                        Log.d(
+                            TAG,
+                            "[$attemptId] blockingUpload success in ${android.os.SystemClock.elapsedRealtime() - uploadStartMs}ms"
+                        )
                     }
-                    Log.d(
-                        TAG,
-                        "[$attemptId] blockingUpload success in ${android.os.SystemClock.elapsedRealtime() - uploadStartMs}ms"
-                    )
                     Log.d(TAG, "[$attemptId] completeDatasetInstance success total=${android.os.SystemClock.elapsedRealtime() - startMs}ms")
                     return@withContext Result.success(Unit)
                 } catch (e: Exception) {
                     lastError = e
-                    val isNestedTransactionError = e.message?.contains(
-                        "cannot start a transaction within a transaction",
-                        ignoreCase = true
-                    ) == true
+                    val isDbLockConflict = isDbLockConflict(e)
                     Log.e(
                         TAG,
-                        "[$attemptId] attempt=$attempt failed type=${e.javaClass.name} message=${e.message} nestedTx=$isNestedTransactionError",
+                        "[$attemptId] attempt=$attempt failed type=${e.javaClass.name} message=${e.message} dbLockConflict=$isDbLockConflict",
                         e
                     )
-                    if (!isNestedTransactionError || attempt == maxAttempts) {
+                    if (isDbLockConflict && !runtimeRefreshed) {
+                        runtimeRefreshed = true
+                        Log.w(TAG, "[$attemptId] DB lock conflict detected; refreshing D2 runtime before final retry")
+                        runCatching { sessionManager.refreshD2Runtime(appContext) }
+                            .onFailure { Log.e(TAG, "[$attemptId] D2 runtime refresh failed: ${it.message}", it) }
+                        continue
+                    }
+                    if (isDbLockConflict) {
+                        val apiFallbackSuccess = completeDatasetViaApiDirect(
+                            datasetId = datasetId,
+                            period = period,
+                            orgUnit = orgUnit,
+                            attributeOptionCombo = attributeOptionCombo,
+                            attemptId = attemptId
+                        )
+                        if (apiFallbackSuccess) {
+                            Log.w(TAG, "[$attemptId] SDK completion failed; direct API fallback succeeded")
+                            return@withContext Result.success(Unit)
+                        }
+                        enqueueDeferredCompletion(datasetId, period, orgUnit, attributeOptionCombo)
+                        Log.w(TAG, "[$attemptId] completion deferred to local queue due to DB lock + API fallback unavailable")
+                        return@withContext Result.success(Unit)
+                    }
+                    if (!isDbLockConflict || attempt == maxAttempts) {
                         break
                     }
-                    val backoffMs = 300L * attempt
+                    val backoffMs = 700L * attempt
                     Log.w(TAG, "[$attemptId] retrying completion in ${backoffMs}ms due to nested transaction conflict")
                     delay(backoffMs)
                 }
@@ -263,6 +327,143 @@ class DatasetInstancesRepositoryImpl @Inject constructor(
                 lastError
             )
             Result.failure(lastError ?: IllegalStateException("Unknown completion failure"))
+        }
+    }
+
+    private suspend fun completeDatasetViaApiDirect(
+        datasetId: String,
+        period: String,
+        orgUnit: String,
+        attributeOptionCombo: String,
+        attemptId: String
+    ): Boolean = withContext(Dispatchers.IO) {
+        val sessionPrefs = appContext.getSharedPreferences("session_prefs", Context.MODE_PRIVATE)
+        val sessionUsername = sessionPrefs.getString("username", null)
+        val sessionServerUrl = sessionPrefs.getString("serverUrl", null)
+        val activeAccount = savedAccountRepository.getActiveAccount()
+            ?: if (!sessionUsername.isNullOrBlank() && !sessionServerUrl.isNullOrBlank()) {
+                savedAccountRepository.getAccountByCredentials(
+                    serverUrl = sessionServerUrl,
+                    username = sessionUsername
+                )
+            } else {
+                null
+            }
+        if (activeAccount == null) {
+            Log.w(TAG, "[$attemptId] direct completion skipped: no active account")
+            return@withContext false
+        }
+        val password = savedAccountRepository.getDecryptedPassword(activeAccount.id)
+        if (password.isNullOrBlank()) {
+            Log.w(TAG, "[$attemptId] direct completion skipped: missing decrypted password")
+            return@withContext false
+        }
+
+        val body = JSONObject().apply {
+            put(
+                "completeDataSetRegistrations",
+                org.json.JSONArray().put(
+                    JSONObject().apply {
+                        put("dataSet", datasetId)
+                        put("period", period)
+                        put("organisationUnit", orgUnit)
+                        put("attributeOptionCombo", attributeOptionCombo)
+                        put("storedBy", activeAccount.username)
+                    }
+                )
+            )
+        }.toString()
+
+        val endpoint = "${activeAccount.serverUrl.trimEnd('/')}/api/completeDataSetRegistrations"
+        var connection: HttpURLConnection? = null
+        try {
+            connection = (URL(endpoint).openConnection() as HttpURLConnection).apply {
+                requestMethod = "POST"
+                connectTimeout = 30000
+                readTimeout = 60000
+                doOutput = true
+                setRequestProperty("Content-Type", "application/json")
+                setRequestProperty("Accept", "application/json")
+                val credentials = "${activeAccount.username}:$password"
+                val authHeader = Base64.encodeToString(
+                    credentials.toByteArray(StandardCharsets.UTF_8),
+                    Base64.NO_WRAP
+                )
+                setRequestProperty("Authorization", "Basic $authHeader")
+            }
+            connection.outputStream.use { os ->
+                os.write(body.toByteArray(StandardCharsets.UTF_8))
+            }
+
+            val code = connection.responseCode
+            val responseBody = try {
+                val stream = if (code in 200..299) connection.inputStream else connection.errorStream
+                stream?.bufferedReader()?.use { it.readText() }.orEmpty()
+            } catch (_: Exception) {
+                ""
+            }
+            Log.d(TAG, "[$attemptId] direct completion POST code=$code bodyLen=${responseBody.length}")
+            code in 200..299
+        } catch (e: Exception) {
+            Log.e(TAG, "[$attemptId] direct completion fallback failed: ${e.message}", e)
+            false
+        } finally {
+            connection?.disconnect()
+        }
+    }
+
+    private fun isDbLockConflict(e: Exception): Boolean {
+        val msg = e.message.orEmpty()
+        return msg.contains("cannot start a transaction within a transaction", ignoreCase = true) ||
+            msg.contains("database is locked", ignoreCase = true) ||
+            msg.contains("SQLITE_BUSY", ignoreCase = true) ||
+            msg.contains("SQLITE_ERROR[1]", ignoreCase = true)
+    }
+
+    private fun enqueueDeferredCompletion(
+        datasetId: String,
+        period: String,
+        orgUnit: String,
+        attributeOptionCombo: String
+    ) {
+        val key = "$datasetId|$period|$orgUnit|$attributeOptionCombo"
+        val existingRaw = deferredCompletionPrefs.getString("items", null)
+        val existing = if (existingRaw.isNullOrBlank()) JSONArray() else runCatching { JSONArray(existingRaw) }.getOrElse { JSONArray() }
+        val alreadyQueued = (0 until existing.length()).any { idx -> existing.optString(idx) == key }
+        if (!alreadyQueued) {
+            existing.put(key)
+            deferredCompletionPrefs.edit().putString("items", existing.toString()).apply()
+        }
+    }
+
+    private fun isMetadataSyncRunning(): Boolean {
+        return try {
+            val workManager = WorkManager.getInstance(appContext)
+            syncWorkTags.any { tag ->
+                val infos = workManager.getWorkInfosByTag(tag).get()
+                infos.any { it.state == WorkInfo.State.RUNNING || it.state == WorkInfo.State.ENQUEUED }
+            }
+        } catch (e: Exception) {
+            Log.w(TAG, "Failed to inspect metadata sync work state: ${e.message}")
+            false
+        }
+    }
+
+    private suspend fun cancelAndDrainBackgroundSyncWork(attemptId: String) {
+        val workManager = WorkManager.getInstance(appContext)
+        syncWorkTags.forEach { tag ->
+            runCatching { workManager.cancelAllWorkByTag(tag) }
+                .onFailure { Log.w(TAG, "[$attemptId] failed to cancel tag=$tag: ${it.message}") }
+        }
+        withTimeoutOrNull(15_000L) {
+            while (true) {
+                val active = syncWorkTags.any { tag ->
+                    val infos = workManager.getWorkInfosByTag(tag).get()
+                    infos.any { it.state == WorkInfo.State.RUNNING || it.state == WorkInfo.State.ENQUEUED }
+                }
+                if (!active) break
+                delay(300L)
+            }
         }
     }
     
@@ -335,7 +536,7 @@ class DatasetInstancesRepositoryImpl @Inject constructor(
         return withContext(Dispatchers.IO) {
             try {
                 Log.d(TAG, "Marking dataset as incomplete: $datasetId, $period, $orgUnit, $attributeOptionCombo")
-                D2SdkOperationLocks.dataValueAndAggregateMutex.withLock {
+                D2SdkOperationLocks.withSdkOp("sdk-db-op") {
                     d2.dataSetModule().dataSetCompleteRegistrations()
                         .value(period, orgUnit, datasetId, attributeOptionCombo)
                         .blockingDeleteIfExist()

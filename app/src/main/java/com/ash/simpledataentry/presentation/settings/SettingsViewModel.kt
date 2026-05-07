@@ -270,6 +270,18 @@ class SettingsViewModel @Inject constructor(
         }
     }
 
+    fun logoutCurrentSession(onComplete: (Boolean) -> Unit = {}) {
+        viewModelScope.launch {
+            try {
+                sessionManager.logout(appContext)
+                onComplete(true)
+            } catch (e: Exception) {
+                android.util.Log.w("SettingsViewModel", "Logout before account switch failed: ${e.message}", e)
+                onComplete(false)
+            }
+        }
+    }
+
     fun updateAccountDisplayName(accountId: String, newDisplayName: String) {
         viewModelScope.launch {
             try {

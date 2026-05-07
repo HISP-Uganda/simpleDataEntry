@@ -88,6 +88,8 @@ class LoginViewModel @Inject constructor(
     // Keeps business data stable while UiState is Loading.
     private var lastKnownData: LoginData = LoginData()
     private var autoSessionCheckJob: Job? = null
+    private var autoSessionCheckDisabled: Boolean = false
+    private var autoSessionRedirectConsumed: Boolean = false
 
     /**
      * Primary state flow using UiState pattern.
@@ -115,10 +117,9 @@ class LoginViewModel @Inject constructor(
     init {
         loadCachedUrls()
         loadSavedAccounts()
-        val skipAutoLogin = savedStateHandle.get<Boolean>("skipAutoLogin") ?: false
-        if (!skipAutoLogin) {
-            autoSessionCheckJob = checkExistingSession()
-        }
+        // Disabled to prevent repeated auto-navigation loops when LoginViewModel is
+        // instantiated outside the primary login flow.
+        autoSessionCheckJob = null
     }
 
     /**
@@ -127,8 +128,10 @@ class LoginViewModel @Inject constructor(
      */
     private fun checkExistingSession(): Job {
         return viewModelScope.launch {
+            if (autoSessionCheckDisabled || autoSessionRedirectConsumed) return@launch
             // Try immediately, then retry while D2/session restoration finishes.
             repeat(40) { attempt ->
+                if (autoSessionCheckDisabled || autoSessionRedirectConsumed) return@launch
                 val hasActiveSession = try {
                     sessionManager.isSessionActive()
                 } catch (e: Exception) {
@@ -137,15 +140,24 @@ class LoginViewModel @Inject constructor(
                 }
 
                 if (hasActiveSession) {
-                    android.util.Log.d("LoginViewModel", "Active session detected - auto-navigating to datasets")
                     val currentData = getCurrentData()
-                    _uiState.value = UiState.Success(currentData.copy(isLoggedIn = true))
+                    if (!currentData.isLoggedIn) {
+                        android.util.Log.d("LoginViewModel", "Active session detected - auto-navigating to datasets")
+                        _uiState.value = UiState.Success(currentData.copy(isLoggedIn = true))
+                    }
+                    autoSessionRedirectConsumed = true
                     return@launch
                 }
 
                 kotlinx.coroutines.delay(250)
             }
         }
+    }
+
+    fun disableAutoSessionRedirect() {
+        autoSessionCheckDisabled = true
+        autoSessionCheckJob?.cancel()
+        autoSessionCheckJob = null
     }
 
     // ===== LOGIN OPERATIONS =====
@@ -173,26 +185,7 @@ class LoginViewModel @Inject constructor(
                     // Cache the successful URL
                     urlCacheRepository.addOrUpdateUrl(serverUrl)
 
-                    // Persist account automatically to avoid extra post-login save flow.
-                    val existingAccount = savedAccountRepository.getAccountByCredentials(serverUrl, username)
-                    android.util.Log.d("LoginDebug", "Existing account found: ${existingAccount != null}")
-
-                    if (existingAccount != null) {
-                        // Update last used timestamp for existing account
-                        savedAccountRepository.updateLastUsed(existingAccount.id)
-                        savedAccountRepository.switchToAccount(existingAccount.id)
-                    } else {
-                        runCatching {
-                            savedAccountRepository.saveAccount(
-                                displayName = username,
-                                serverUrl = serverUrl,
-                                username = username,
-                                password = password
-                            )
-                        }.onFailure {
-                            android.util.Log.w("LoginViewModel", "Auto-save account failed: ${it.message}")
-                        }
-                    }
+                    persistAndActivateAccountCredentials(serverUrl, username, password)
 
                     val successData = loadingData.copy(
                         isLoggedIn = true,
@@ -272,26 +265,7 @@ class LoginViewModel @Inject constructor(
                     // Cache the successful URL
                     urlCacheRepository.addOrUpdateUrl(serverUrl)
 
-                    // Persist account automatically to avoid extra post-login save flow.
-                    val existingAccount = savedAccountRepository.getAccountByCredentials(serverUrl, username)
-                    android.util.Log.d("LoginDebug", "Enhanced login - Existing account found: ${existingAccount != null}")
-
-                    if (existingAccount != null) {
-                        // Update last used timestamp for existing account
-                        savedAccountRepository.updateLastUsed(existingAccount.id)
-                        savedAccountRepository.switchToAccount(existingAccount.id)
-                    } else {
-                        runCatching {
-                            savedAccountRepository.saveAccount(
-                                displayName = username,
-                                serverUrl = serverUrl,
-                                username = username,
-                                password = password
-                            )
-                        }.onFailure {
-                            android.util.Log.w("LoginViewModel", "Auto-save account failed: ${it.message}")
-                        }
-                    }
+                    persistAndActivateAccountCredentials(serverUrl, username, password)
 
                     val successData = loadingData.copy(
                         isLoggedIn = true,
@@ -600,20 +574,7 @@ class LoginViewModel @Inject constructor(
 
                 urlCacheRepository.addOrUpdateUrl(serverUrl)
 
-                val existingAccount = savedAccountRepository.getAccountByCredentials(serverUrl, username)
-                if (existingAccount != null) {
-                    savedAccountRepository.updateLastUsed(existingAccount.id)
-                    savedAccountRepository.switchToAccount(existingAccount.id)
-                } else {
-                    runCatching {
-                        savedAccountRepository.saveAccount(
-                            displayName = username,
-                            serverUrl = serverUrl,
-                            username = username,
-                            password = password
-                        )
-                    }
-                }
+                persistAndActivateAccountCredentials(serverUrl, username, password)
 
                 // Continue bootstrap while app is in background.
                 backgroundSyncManager.triggerImmediateMetadataSync()
@@ -660,5 +621,30 @@ class LoginViewModel @Inject constructor(
     fun canSaveNewAccount(): Boolean {
         val currentData = getCurrentData()
         return currentData.savedAccounts.size < SavedAccountRepository.MAX_SAVED_ACCOUNTS
+    }
+
+    private suspend fun persistAndActivateAccountCredentials(
+        serverUrl: String,
+        username: String,
+        password: String
+    ) {
+        val existingAccount = savedAccountRepository.getAccountByCredentials(serverUrl, username)
+        val displayName = existingAccount?.displayName ?: username
+        runCatching {
+            savedAccountRepository.saveAccount(
+                displayName = displayName,
+                serverUrl = serverUrl,
+                username = username,
+                password = password
+            )
+        }.onFailure {
+            android.util.Log.w("LoginViewModel", "Auto-save/refresh account failed: ${it.message}")
+        }
+        val refreshed = savedAccountRepository.getAccountByCredentials(serverUrl, username)
+        if (refreshed != null) {
+            savedAccountRepository.switchToAccount(refreshed.id)
+        } else {
+            android.util.Log.w("LoginViewModel", "Unable to activate account after credential refresh")
+        }
     }
 }

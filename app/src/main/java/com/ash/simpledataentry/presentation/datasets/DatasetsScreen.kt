@@ -68,6 +68,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.draw.clip
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.font.FontWeight
@@ -95,6 +96,7 @@ import com.ash.simpledataentry.ui.theme.EventAccentLight
 import com.ash.simpledataentry.ui.theme.TrackerAccent
 import com.ash.simpledataentry.ui.theme.TrackerAccentLight
 import android.text.format.DateUtils
+import kotlinx.coroutines.delay
 
 @Composable
 private fun HomeCategoryCard(
@@ -507,6 +509,7 @@ fun DatasetsScreen(
     val backgroundSyncRunning by viewModel.backgroundSyncRunning.collectAsState()
     val isRefreshingAfterSync by viewModel.isRefreshingAfterSync.collectAsState()
     val hasActiveSession by viewModel.hasActiveSession.collectAsState()
+    var loginRedirectTriggered by rememberSaveable { mutableStateOf(false) }
     val lastSyncLabel = syncState.lastSync?.let { formatRelativeTime(it) } ?: "Never"
     val syncStatusLabel = when {
         backgroundSyncRunning || syncState.isRunning -> "Sync in progress"
@@ -516,35 +519,53 @@ fun DatasetsScreen(
     }
 
     LaunchedEffect(hasActiveSession) {
-        if (!hasActiveSession) {
+        if (!hasActiveSession && !loginRedirectTriggered) {
+            delay(250)
+            if (hasActiveSession) return@LaunchedEffect
+            loginRedirectTriggered = true
             navController.navigate("login") {
                 popUpTo(navController.graph.id) { inclusive = true }
                 launchSingleTop = true
             }
         }
+        if (hasActiveSession) {
+            loginRedirectTriggered = false
+        }
     }
 
     Scaffold(
         bottomBar = {
-            NavigationBar {
-                NavigationBarItem(
-                    selected = selectedTab == HomeTab.Activities,
-                    onClick = { selectedTab = HomeTab.Activities },
-                    icon = { Icon(Icons.Default.AccessTime, contentDescription = null) },
-                    label = { Text("Activities") }
-                )
-                NavigationBarItem(
-                    selected = selectedTab == HomeTab.Home,
-                    onClick = { selectedTab = HomeTab.Home },
-                    icon = { Icon(Icons.Default.Home, contentDescription = null) },
-                    label = { Text("DHIS2 Home") }
-                )
-                NavigationBarItem(
-                    selected = selectedTab == HomeTab.Account,
-                    onClick = { selectedTab = HomeTab.Account },
-                    icon = { Icon(Icons.Default.AccountCircle, contentDescription = null) },
-                    label = { Text("My Account") }
-                )
+            Box(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 14.dp, vertical = 10.dp),
+                contentAlignment = Alignment.Center
+            ) {
+                NavigationBar(
+                    modifier = Modifier
+                        .clip(RoundedCornerShape(32.dp)),
+                    containerColor = MaterialTheme.colorScheme.surface,
+                    tonalElevation = 8.dp
+                ) {
+                    NavigationBarItem(
+                        selected = selectedTab == HomeTab.Activities,
+                        onClick = { selectedTab = HomeTab.Activities },
+                        icon = { Icon(Icons.Default.AccessTime, contentDescription = null) },
+                        label = { Text("Activities") }
+                    )
+                    NavigationBarItem(
+                        selected = selectedTab == HomeTab.Home,
+                        onClick = { selectedTab = HomeTab.Home },
+                        icon = { Icon(Icons.Default.Home, contentDescription = null) },
+                        label = { Text("Home") }
+                    )
+                    NavigationBarItem(
+                        selected = selectedTab == HomeTab.Account,
+                        onClick = { selectedTab = HomeTab.Account },
+                        icon = { Icon(Icons.Default.AccountCircle, contentDescription = null) },
+                        label = { Text("Account") }
+                    )
+                }
             }
         }
     ) { innerPadding ->
@@ -1205,12 +1226,6 @@ private fun AccountContent(
 
         item {
             Spacer(modifier = Modifier.height(24.dp))
-            Text(
-                text = "Version ${com.ash.simpledataentry.BuildConfig.VERSION_NAME}",
-                style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant
-            )
-            Spacer(modifier = Modifier.height(12.dp))
             Button(
                 onClick = onLogout,
                 modifier = Modifier.fillMaxWidth()

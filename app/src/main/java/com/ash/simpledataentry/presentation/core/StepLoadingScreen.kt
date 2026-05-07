@@ -37,15 +37,12 @@ import androidx.compose.runtime.SideEffect
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.shadow
-import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.toArgb
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.platform.LocalView
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
-import com.ash.simpledataentry.ui.theme.DHIS2Blue
-import com.ash.simpledataentry.ui.theme.DHIS2BlueDark
 import com.ash.simpledataentry.ui.theme.DatasetAccent
 import androidx.core.view.WindowInsetsControllerCompat
 import android.app.Activity
@@ -71,6 +68,7 @@ fun StepLoadingScreen(
 ) {
     val view = LocalView.current
     val isDarkTheme = isSystemInDarkTheme()
+    val scheme = MaterialTheme.colorScheme
     val statusBarColor = if (isDarkTheme) Color.Black else Color.White
     SideEffect {
         val window = (view.context as? Activity)?.window ?: return@SideEffect
@@ -128,11 +126,7 @@ fun StepLoadingScreen(
     Box(
         modifier = modifier
             .fillMaxSize()
-            .background(
-                Brush.verticalGradient(
-                    colors = listOf(DHIS2Blue, DHIS2BlueDark)
-                )
-            ),
+            .background(scheme.primary),
         contentAlignment = Alignment.Center
     ) {
         Column(
@@ -159,7 +153,7 @@ fun StepLoadingScreen(
                 Icon(
                     imageVector = icon,
                     contentDescription = null,
-                    tint = if (isComplete) DHIS2Blue else DatasetAccent,
+                    tint = if (isComplete) scheme.primary else DatasetAccent,
                     modifier = Modifier
                         .size(50.dp)
                         .graphicsLayer {
@@ -223,7 +217,7 @@ fun StepLoadingScreen(
                         modifier = Modifier
                             .fillMaxWidth()
                             .height(6.dp),
-                        color = DHIS2Blue,
+                        color = scheme.primary,
                         trackColor = Color.White.copy(alpha = 0.2f)
                     )
                 }

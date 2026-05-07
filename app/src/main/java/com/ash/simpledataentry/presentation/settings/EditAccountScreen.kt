@@ -40,6 +40,7 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.font.FontWeight
@@ -53,6 +54,7 @@ import com.ash.simpledataentry.presentation.core.BaseScreen
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
+import kotlinx.coroutines.launch
 
 @Composable
 fun EditAccountScreen(
@@ -74,6 +76,8 @@ fun EditAccountScreen(
     var showEditAccountDialog by remember { mutableStateOf<SavedAccount?>(null) }
     var showDeleteAccountConfirmation by remember { mutableStateOf<SavedAccount?>(null) }
     var showDeleteAllConfirmation by remember { mutableStateOf(false) }
+    var showAddAccountFlowDialog by remember { mutableStateOf(false) }
+    val coroutineScope = rememberCoroutineScope()
 
     LaunchedEffect(Unit) {
         viewModel.loadAccounts()
@@ -151,7 +155,7 @@ fun EditAccountScreen(
 
             item {
                 Button(
-                    onClick = { navController.navigate(Screen.AddAccountScreen.route) },
+                    onClick = { showAddAccountFlowDialog = true },
                     modifier = Modifier.fillMaxWidth()
                 ) {
                     Icon(
@@ -225,7 +229,8 @@ fun EditAccountScreen(
                         account = account,
                         dateFormatter = dateFormatter,
                         onEditClick = { showEditAccountDialog = account },
-                        onDeleteClick = { showDeleteAccountConfirmation = account }
+                        onDeleteClick = { showDeleteAccountConfirmation = account },
+                        onSwitchClick = { navController.navigate(Screen.ManageAccountsLoginScreen.route) }
                     )
                 }
             }
@@ -302,6 +307,40 @@ fun EditAccountScreen(
             }
         )
     }
+
+    if (showAddAccountFlowDialog) {
+        AlertDialog(
+            onDismissRequest = { showAddAccountFlowDialog = false },
+            title = { Text("Add Account") },
+            text = {
+                Text("Do you want to log out the current account first before adding a new one?")
+            },
+            confirmButton = {
+                Button(
+                    onClick = {
+                        showAddAccountFlowDialog = false
+                        viewModel.logoutCurrentSession { _ ->
+                            coroutineScope.launch {
+                                navController.navigate(Screen.AddAccountScreen.route)
+                            }
+                        }
+                    }
+                ) {
+                    Text("Logout First")
+                }
+            },
+            dismissButton = {
+                TextButton(
+                    onClick = {
+                        showAddAccountFlowDialog = false
+                        navController.navigate(Screen.AddAccountScreen.route)
+                    }
+                ) {
+                    Text("Keep Session")
+                }
+            }
+        )
+    }
 }
 
 @Composable
@@ -309,7 +348,8 @@ private fun EditAccountListItem(
     account: SavedAccount,
     dateFormatter: SimpleDateFormat,
     onEditClick: () -> Unit,
-    onDeleteClick: () -> Unit
+    onDeleteClick: () -> Unit,
+    onSwitchClick: () -> Unit
 ) {
     Card(
         modifier = Modifier.fillMaxWidth(),
@@ -384,6 +424,10 @@ private fun EditAccountListItem(
                     contentDescription = "Edit account",
                     tint = MaterialTheme.colorScheme.primary
                 )
+            }
+
+            TextButton(onClick = onSwitchClick) {
+                Text("Switch")
             }
 
             IconButton(onClick = onDeleteClick) {

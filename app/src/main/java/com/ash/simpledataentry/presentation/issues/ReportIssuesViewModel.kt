@@ -116,7 +116,6 @@ class ReportIssuesViewModel @Inject constructor() : ViewModel() {
             appendLine()
             appendLine("---")
             appendLine("App: DHIS2 Data Entry")
-            appendLine("Version: 1.0.0")
             appendLine("Device: Android")
             appendLine("Timestamp: ${System.currentTimeMillis()}")
         }

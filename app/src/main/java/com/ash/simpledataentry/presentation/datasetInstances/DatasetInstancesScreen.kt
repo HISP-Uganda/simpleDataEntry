@@ -42,7 +42,6 @@ import com.ash.simpledataentry.ui.theme.StatusDraft
 import com.ash.simpledataentry.ui.theme.StatusDraftLight
 import com.ash.simpledataentry.ui.theme.StatusSynced
 import com.ash.simpledataentry.ui.theme.StatusSyncedLight
-import org.hisp.dhis.mobile.ui.designsystem.theme.TextColor
 import androidx.compose.ui.graphics.Color
 import androidx.compose.material.icons.filled.Edit
 import androidx.compose.foundation.BorderStroke
@@ -588,9 +587,6 @@ fun DatasetInstancesScreen(
     fun safeMessage(message: String?, fallback: String): String {
         return message?.takeIf { it.isNotBlank() } ?: fallback
     }
-    val snackbarContainerColor = Color(0xFF1F2937)
-    val snackbarContentColor = Color.White
-
     val snackbarHostState = remember { SnackbarHostState() }
     val scope = rememberCoroutineScope()
     val uiState by viewModel.uiState.collectAsState()
@@ -714,7 +710,7 @@ fun DatasetInstancesScreen(
                     Icon(
                         imageVector = Icons.Default.Sync,
                         contentDescription = "Sync",
-                        tint = TextColor.OnSurface,
+                        tint = MaterialTheme.colorScheme.onSurface,
                         modifier = Modifier.size(24.dp)
                     )
                 }
@@ -903,13 +899,13 @@ fun DatasetInstancesScreen(
                     .zIndex(3f),
                 snackbar = { data ->
                     Snackbar(
-                        containerColor = snackbarContainerColor,
-                        contentColor = snackbarContentColor,
-                        actionContentColor = snackbarContentColor
+                        containerColor = MaterialTheme.colorScheme.inverseSurface,
+                        contentColor = MaterialTheme.colorScheme.inverseOnSurface,
+                        actionContentColor = MaterialTheme.colorScheme.inverseOnSurface
                     ) {
                         Text(
                             text = safeMessage(data.visuals.message, "Something happened."),
-                            color = snackbarContentColor,
+                            color = MaterialTheme.colorScheme.inverseOnSurface,
                             maxLines = 3,
                             overflow = TextOverflow.Ellipsis
                         )

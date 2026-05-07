@@ -7,6 +7,7 @@ import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Add
@@ -14,7 +15,6 @@ import androidx.compose.material.icons.filled.ChevronRight
 import androidx.compose.material.icons.filled.FilterList
 import androidx.compose.material.icons.filled.Search
 import androidx.compose.material.icons.filled.Sync
-import androidx.compose.material.icons.filled.Tune
 import androidx.compose.material.icons.filled.ViewList
 import androidx.compose.material.icons.filled.ViewModule
 import androidx.compose.material3.*
@@ -46,7 +46,6 @@ import com.ash.simpledataentry.ui.theme.StatusDraftLight
 import com.ash.simpledataentry.ui.theme.StatusSynced
 import com.ash.simpledataentry.ui.theme.StatusSyncedLight
 import com.ash.simpledataentry.util.PeriodHelper
-import org.hisp.dhis.mobile.ui.designsystem.theme.TextColor
 import java.net.URLEncoder
 import java.text.SimpleDateFormat
 import java.util.*
@@ -69,7 +68,6 @@ fun EventInstancesScreen(
     val uiState by viewModel.uiState.collectAsState()
     var showSyncDialog by remember { mutableStateOf(false) }
     var showFilterDialog by remember { mutableStateOf(false) }
-    var showColumnDialog by remember { mutableStateOf(false) }
     var searchQuery by remember { mutableStateOf("") }
     var useCardView by rememberSaveable { mutableStateOf(true) }
     var filterState by remember { mutableStateOf(EventInstanceFilterState()) }
@@ -164,7 +162,7 @@ fun EventInstancesScreen(
                     Icon(
                         imageVector = Icons.Default.Sync,
                         contentDescription = "Sync",
-                        tint = TextColor.OnSurface,
+                        tint = MaterialTheme.colorScheme.onSurface,
                         modifier = Modifier.size(24.dp)
                     )
                 }
@@ -189,67 +187,61 @@ fun EventInstancesScreen(
         Box(modifier = Modifier.fillMaxSize()) {
             val content: @Composable () -> Unit = {
                 Column(modifier = Modifier.fillMaxSize()) {
-                    Row(
+                    Surface(
                         modifier = Modifier
                             .fillMaxWidth()
                             .padding(horizontal = 16.dp, vertical = 12.dp),
-                        verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.spacedBy(12.dp)
+                        shape = RoundedCornerShape(16.dp),
+                        color = MaterialTheme.colorScheme.surface,
+                        tonalElevation = 2.dp
                     ) {
-                        OutlinedTextField(
-                            value = searchQuery,
-                            onValueChange = {
-                                searchQuery = it
-                                filterState = filterState.copy(searchQuery = it)
-                            },
-                            modifier = Modifier.weight(1f),
-                            singleLine = true,
-                            placeholder = { Text("Search events...") },
-                            leadingIcon = {
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(horizontal = 10.dp, vertical = 8.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(8.dp)
+                        ) {
+                            OutlinedTextField(
+                                value = searchQuery,
+                                onValueChange = {
+                                    searchQuery = it
+                                    filterState = filterState.copy(searchQuery = it)
+                                },
+                                modifier = Modifier.weight(1f),
+                                singleLine = true,
+                                placeholder = { Text("Search events...") },
+                                leadingIcon = {
+                                    Icon(
+                                        imageVector = Icons.Default.Search,
+                                        contentDescription = null
+                                    )
+                                }
+                            )
+
+                            IconButton(
+                                onClick = { showFilterDialog = true }
+                            ) {
                                 Icon(
-                                    imageVector = Icons.Default.Search,
-                                    contentDescription = null
+                                    imageVector = Icons.Default.FilterList,
+                                    contentDescription = "Filter",
+                                    tint = if (filterState.hasActiveFilters()) {
+                                        MaterialTheme.colorScheme.primary
+                                    } else {
+                                        MaterialTheme.colorScheme.onSurfaceVariant
+                                    }
                                 )
                             }
-                        )
 
-                        IconButton(
-                            onClick = { showFilterDialog = true }
-                        ) {
-                            Icon(
-                                imageVector = Icons.Default.FilterList,
-                                contentDescription = "Filter",
-                                tint = if (filterState.hasActiveFilters()) {
-                                    MaterialTheme.colorScheme.primary
-                                } else {
-                                    MaterialTheme.colorScheme.onSurfaceVariant
-                                }
-                            )
-                        }
-
-                        IconButton(
-                            onClick = { showColumnDialog = true },
-                            enabled = !useCardView && data?.lineListColumns?.isNotEmpty() == true
-                        ) {
-                            Icon(
-                                imageVector = Icons.Default.Tune,
-                                contentDescription = "Columns",
-                                tint = if (!useCardView && data?.lineListColumns?.isNotEmpty() == true) {
-                                    MaterialTheme.colorScheme.onSurfaceVariant
-                                } else {
-                                    MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.4f)
-                                }
-                            )
-                        }
-
-                        IconButton(
-                            onClick = { useCardView = !useCardView }
-                        ) {
-                            Icon(
-                                imageVector = if (useCardView) Icons.Default.ViewList else Icons.Default.ViewModule,
-                                contentDescription = "Toggle list view",
-                                tint = MaterialTheme.colorScheme.onSurfaceVariant
-                            )
+                            IconButton(
+                                onClick = { useCardView = !useCardView }
+                            ) {
+                                Icon(
+                                    imageVector = if (useCardView) Icons.Default.ViewList else Icons.Default.ViewModule,
+                                    contentDescription = "Toggle list view",
+                                    tint = MaterialTheme.colorScheme.onSurfaceVariant
+                                )
+                            }
                         }
                     }
                     if (orgUnitOptions.size > 1) {
@@ -458,118 +450,6 @@ fun EventInstancesScreen(
                         searchQuery = ""
                     },
                     onDismiss = { showFilterDialog = false }
-                )
-            }
-
-            if (showColumnDialog) {
-                val columns = data?.lineListColumns.orEmpty()
-                var selectedColumns by remember(columns, data?.visibleLineListColumnIds) {
-                    val initial = if (data?.visibleLineListColumnIds.isNullOrEmpty()) {
-                        columns.map { it.id }.toSet()
-                    } else {
-                        data?.visibleLineListColumnIds.orEmpty()
-                    }
-                    mutableStateOf(initial)
-                }
-                var columnSearch by remember { mutableStateOf("") }
-                val filteredColumns = if (columnSearch.isBlank()) {
-                    columns
-                } else {
-                    val query = columnSearch.trim().lowercase(Locale.getDefault())
-                    columns.filter { column ->
-                        column.displayName.lowercase(Locale.getDefault()).contains(query)
-                    }
-                }
-                AlertDialog(
-                    onDismissRequest = { showColumnDialog = false },
-                    title = { Text("Line list columns") },
-                    text = {
-                        Column(
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .heightIn(max = 420.dp)
-                                .verticalScroll(rememberScrollState()),
-                            verticalArrangement = Arrangement.spacedBy(8.dp)
-                        ) {
-                            OutlinedTextField(
-                                value = columnSearch,
-                                onValueChange = { columnSearch = it },
-                                singleLine = true,
-                                placeholder = { Text("Search columns...") },
-                                modifier = Modifier.fillMaxWidth()
-                            )
-                            Row(
-                                modifier = Modifier.fillMaxWidth(),
-                                horizontalArrangement = Arrangement.spacedBy(12.dp)
-                            ) {
-                                TextButton(
-                                    onClick = {
-                                        selectedColumns = columns.map { it.id }.toSet()
-                                    }
-                                ) {
-                                    Text("Select all")
-                                }
-                                TextButton(
-                                    onClick = {
-                                        selectedColumns = emptySet()
-                                    }
-                                ) {
-                                    Text("Clear all")
-                                }
-                            }
-                            filteredColumns.forEach { column ->
-                                Row(
-                                    modifier = Modifier
-                                        .fillMaxWidth()
-                                        .clickable {
-                                            selectedColumns = if (selectedColumns.contains(column.id)) {
-                                                selectedColumns - column.id
-                                            } else {
-                                                selectedColumns + column.id
-                                            }
-                                        }
-                                        .padding(vertical = 4.dp),
-                                    verticalAlignment = Alignment.CenterVertically
-                                ) {
-                                    Checkbox(
-                                        checked = selectedColumns.contains(column.id),
-                                        onCheckedChange = { checked ->
-                                            selectedColumns = if (checked) {
-                                                selectedColumns + column.id
-                                            } else {
-                                                selectedColumns - column.id
-                                            }
-                                        }
-                                    )
-                                    Text(
-                                        text = column.displayName,
-                                        style = MaterialTheme.typography.bodyMedium,
-                                        modifier = Modifier.padding(start = 8.dp)
-                                    )
-                                }
-                            }
-                        }
-                    },
-                    confirmButton = {
-                        TextButton(
-                            onClick = {
-                                val finalSelection = if (selectedColumns.isEmpty()) {
-                                    columns.map { it.id }.toSet()
-                                } else {
-                                    selectedColumns
-                                }
-                                viewModel.updateVisibleLineListColumns(finalSelection)
-                                showColumnDialog = false
-                            }
-                        ) {
-                            Text("Apply")
-                        }
-                    },
-                    dismissButton = {
-                        TextButton(onClick = { showColumnDialog = false }) {
-                            Text("Cancel")
-                        }
-                    }
                 )
             }
 

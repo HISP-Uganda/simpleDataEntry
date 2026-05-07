@@ -20,8 +20,6 @@ import androidx.compose.material3.MenuAnchorType
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.graphics.Brush
-import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.TextFieldValue
 import androidx.compose.ui.text.TextRange
@@ -37,9 +35,6 @@ import com.ash.simpledataentry.presentation.core.SimpleProgressOverlay
 import com.ash.simpledataentry.presentation.core.StepLoadingType
 import com.ash.simpledataentry.presentation.core.ValidationErrorDialog
 import com.ash.simpledataentry.domain.model.TrackedEntityAttributeValue
-import com.ash.simpledataentry.ui.theme.DHIS2Blue
-import com.ash.simpledataentry.ui.theme.DHIS2BlueDark
-import com.ash.simpledataentry.ui.theme.DHIS2BlueLight
 import org.hisp.dhis.mobile.ui.designsystem.component.*
 import java.text.SimpleDateFormat
 import java.util.*
@@ -167,13 +162,10 @@ fun TrackerEnrollmentScreen(
             uiState = uiState,
             modifier = Modifier.fillMaxSize()
         ) {
-            val gradientBrush = Brush.verticalGradient(
-                colors = listOf(DHIS2Blue, DHIS2BlueDark)
-            )
             Box(
                 modifier = Modifier
                     .fillMaxSize()
-                    .background(gradientBrush)
+                    .background(MaterialTheme.colorScheme.background)
             ) {
                 when {
                     state.isLoading -> {
@@ -198,20 +190,9 @@ fun TrackerEnrollmentScreen(
                             Column(
                                 modifier = Modifier
                                     .fillMaxSize()
-                                    .padding(horizontal = 20.dp, vertical = 24.dp)
+                                    .padding(horizontal = 12.dp, vertical = 12.dp),
+                                verticalArrangement = Arrangement.spacedBy(12.dp)
                             ) {
-                                Card(
-                                    modifier = Modifier.fillMaxSize(),
-                                    shape = RoundedCornerShape(24.dp),
-                                    colors = CardDefaults.cardColors(containerColor = Color.White),
-                                    elevation = CardDefaults.cardElevation(defaultElevation = 8.dp)
-                                ) {
-                                    Column(
-                                        modifier = Modifier
-                                            .fillMaxSize()
-                                            .padding(20.dp),
-                                        verticalArrangement = Arrangement.spacedBy(16.dp)
-                                    ) {
                                         Row(
                                             verticalAlignment = Alignment.CenterVertically,
                                             horizontalArrangement = Arrangement.spacedBy(12.dp)
@@ -219,14 +200,14 @@ fun TrackerEnrollmentScreen(
                                             Box(
                                                 modifier = Modifier
                                                     .size(56.dp)
-                                                    .background(DHIS2BlueLight, CircleShape),
+                                                    .background(MaterialTheme.colorScheme.primaryContainer, CircleShape),
                                                 contentAlignment = Alignment.Center
                                             ) {
                                                 Icon(
                                                     imageVector = Icons.Default.Person,
                                                     contentDescription = null,
                                                     modifier = Modifier.size(28.dp),
-                                                    tint = DHIS2Blue
+                                                    tint = MaterialTheme.colorScheme.primary
                                                 )
                                             }
                                             Column {
@@ -244,13 +225,13 @@ fun TrackerEnrollmentScreen(
                                         }
 
                                         Surface(
-                                            color = DHIS2BlueLight.copy(alpha = 0.35f),
+                                            color = MaterialTheme.colorScheme.secondaryContainer,
                                             shape = RoundedCornerShape(12.dp)
                                         ) {
                                             Text(
                                                 text = "Offline mode supported. Enrollment will sync when connected.",
                                                 style = MaterialTheme.typography.bodySmall,
-                                                color = MaterialTheme.colorScheme.onSurface,
+                                                color = MaterialTheme.colorScheme.onSecondaryContainer,
                                                 modifier = Modifier.padding(12.dp)
                                             )
                                         }
@@ -309,8 +290,6 @@ fun TrackerEnrollmentScreen(
                                         ) {
                                             Text("Cancel")
                                         }
-                                    }
-                                }
                             }
                         }
                         if (state.saveInProgress) {

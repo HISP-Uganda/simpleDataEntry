@@ -517,7 +517,7 @@ class DataEntryRepositoryImpl @Inject constructor(
 
             if (value != null) {
                 try {
-                    D2SdkOperationLocks.dataValueAndAggregateMutex.withLock {
+                    D2SdkOperationLocks.withSdkOp("sdk-db-op") {
                         dataValueObjectRepository.blockingSet(value)
                     }
 //                    if (comment != null) {
@@ -544,7 +544,7 @@ class DataEntryRepositoryImpl @Inject constructor(
                     throw e
                 }
             } else {
-                D2SdkOperationLocks.dataValueAndAggregateMutex.withLock {
+                D2SdkOperationLocks.withSdkOp("sdk-db-op") {
                     dataValueObjectRepository.blockingDeleteIfExist()
                 }
                 // Also remove draft if value is deleted

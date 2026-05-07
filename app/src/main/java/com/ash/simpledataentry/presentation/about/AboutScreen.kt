@@ -50,7 +50,7 @@ fun AboutScreen(
                 }
             }
 
-            // App Name and Version
+            // App Name
             Text(
                 text = "DHIS2 Data Entry",
                 style = MaterialTheme.typography.headlineMedium,
@@ -58,17 +58,6 @@ fun AboutScreen(
                 textAlign = TextAlign.Center
             )
 
-            Text(
-                text = "Version 1.0.0",
-                style = MaterialTheme.typography.bodyLarge,
-                color = MaterialTheme.colorScheme.onSurfaceVariant
-            )
-
-            Text(
-                text = "Build: ${System.currentTimeMillis() / 1000}",
-                style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant
-            )
 
             Divider(modifier = Modifier.padding(vertical = 8.dp))
 

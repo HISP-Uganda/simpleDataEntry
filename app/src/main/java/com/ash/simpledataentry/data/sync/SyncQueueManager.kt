@@ -2,17 +2,25 @@ package com.ash.simpledataentry.data.sync
 
 import android.content.Context
 import android.os.PowerManager
+import android.util.Base64
 import android.util.Log
 import com.ash.simpledataentry.data.SessionManager
 import com.ash.simpledataentry.data.DatabaseProvider
 import com.ash.simpledataentry.data.cache.MetadataCacheService
 import com.ash.simpledataentry.data.local.DataValueDraftEntity
+import com.ash.simpledataentry.data.repositoryImpl.SavedAccountRepository
 import kotlinx.coroutines.*
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.sync.withLock
+import kotlinx.coroutines.withTimeoutOrNull
+import org.json.JSONArray
+import org.json.JSONObject
+import java.net.HttpURLConnection
+import java.net.URL
+import java.nio.charset.StandardCharsets
 import javax.inject.Inject
 import javax.inject.Singleton
 
@@ -105,8 +113,16 @@ class SyncQueueManager @Inject constructor(
     private val sessionManager: SessionManager,
     private val databaseProvider: DatabaseProvider,
     private val metadataCacheService: MetadataCacheService,
+    private val savedAccountRepository: SavedAccountRepository,
     private val context: Context
 ) {
+    private enum class DirectUploadOutcome {
+        SUCCESS,
+        NO_ACCOUNT,
+        MISSING_PASSWORD,
+        FAILED
+    }
+
 
     private val tag = "SyncQueueManager"
     private val syncScope = CoroutineScope(Dispatchers.IO + SupervisorJob())
@@ -148,7 +164,7 @@ class SyncQueueManager @Inject constructor(
     private val overallSyncTimeoutMs = 600000L // 10 minutes max - aligned with DHIS2 standard
 
     // Robust retry configuration for field conditions
-    private val maxRetryAttempts = 5 // Multiple attempts for robust sync resilience
+    private val maxRetryAttempts = 1 // Fail fast for SDK DB transaction conflicts; avoid repeated lock hammering
     private val baseRetryDelayMs = 3000L // Shorter initial delay
     private val maxRetryDelayMs = 15000L // Allow longer delays for network recovery
     private val maxConsecutiveFailures = 3 // Allow more failures before giving up
@@ -234,12 +250,8 @@ class SyncQueueManager @Inject constructor(
 
         syncJob = syncScope.launch {
             try {
-                withTimeout(downloadTimeoutMs) { // 5 minutes for download-only
-                    performDownloadOnlySync()
-                }
-            } catch (e: TimeoutCancellationException) {
-                Log.e(tag, "Download-only sync timed out after ${downloadTimeoutMs/1000} seconds")
-                setErrorState(SyncError.TimeoutError("Download sync timed out"))
+                // Avoid coroutine timeout around SDK blocking operations; cancellation can leave transactions open.
+                performDownloadOnlySync()
             } catch (e: Exception) {
                 Log.e(tag, "Download-only sync failed", e)
                 setErrorState(classifyError(e))
@@ -449,10 +461,8 @@ class SyncQueueManager @Inject constructor(
             try {
                 updateProgress(SyncPhase.DOWNLOADING_DATASETS, 85, "Downloading latest data...")
 
-                withTimeout(downloadTimeoutMs) {
-                    D2SdkOperationLocks.dataValueAndAggregateMutex.withLock {
-                        d2.aggregatedModule().data().blockingDownload()
-                    }
+                D2SdkOperationLocks.withSdkOp("sdk-db-op") {
+                    d2.aggregatedModule().data().blockingDownload()
                 }
 
                 updateProgress(SyncPhase.DOWNLOADING_DATASETS, 95, "Download completed")
@@ -578,10 +588,8 @@ class SyncQueueManager @Inject constructor(
                         totalItems = totalItems,
                         itemDescription = "datasets"
                     )
-                    withTimeout(downloadTimeoutMs) {
-                        D2SdkOperationLocks.dataValueAndAggregateMutex.withLock {
-                            d2.aggregatedModule().data().blockingDownload()
-                        }
+                    D2SdkOperationLocks.withSdkOp("sdk-db-op") {
+                        d2.aggregatedModule().data().blockingDownload()
                     }
                 }
 
@@ -595,13 +603,11 @@ class SyncQueueManager @Inject constructor(
                         totalItems = totalItems,
                         itemDescription = "enrollments"
                     )
-                    withTimeout(downloadTimeoutMs) {
-                        D2SdkOperationLocks.dataValueAndAggregateMutex.withLock {
-                            d2.trackedEntityModule().trackedEntityInstanceDownloader()
-                                .limit(200)
-                                .limitByProgram(true)
-                                .blockingDownload()
-                        }
+                    D2SdkOperationLocks.withSdkOp("sdk-db-op") {
+                        d2.trackedEntityModule().trackedEntityInstanceDownloader()
+                            .limit(200)
+                            .limitByProgram(true)
+                            .blockingDownload()
                     }
                 }
 
@@ -615,13 +621,11 @@ class SyncQueueManager @Inject constructor(
                         totalItems = totalItems,
                         itemDescription = "events"
                     )
-                    withTimeout(downloadTimeoutMs) {
-                        D2SdkOperationLocks.dataValueAndAggregateMutex.withLock {
-                            d2.eventModule().eventDownloader()
-                                .limit(200)
-                                .limitByProgram(true)
-                                .blockingDownload()
-                        }
+                    D2SdkOperationLocks.withSdkOp("sdk-db-op") {
+                        d2.eventModule().eventDownloader()
+                            .limit(200)
+                            .limitByProgram(true)
+                            .blockingDownload()
                     }
                 }
 
@@ -674,7 +678,7 @@ class SyncQueueManager @Inject constructor(
             }
 
 
-            if (!networkStateManager.isOnline()) {
+            if (!hasUsableNetwork()) {
                 throw Exception("No internet connection. Please check internet connectivity and try again.")
             }
 
@@ -705,7 +709,7 @@ class SyncQueueManager @Inject constructor(
             for (draft in drafts) {
                 try {
                     // Set the data value in DHIS2 local database
-                    D2SdkOperationLocks.dataValueAndAggregateMutex.withLock {
+                    D2SdkOperationLocks.withSdkOp("sdk-db-op") {
                         d2.dataValueModule().dataValues()
                             .value(
                                 period = draft.period,
@@ -738,13 +742,16 @@ class SyncQueueManager @Inject constructor(
             while (attempt < maxRetryAttempts && !uploadSuccessful) {
                 try {
                     Log.d(tag, "Upload attempt ${attempt + 1} of $maxRetryAttempts for ${allSuccessfulDrafts.size} values from instance")
+                    if (!waitForSdkDbIdle("instance-upload")) {
+                        throw IllegalStateException("SDK database is busy. Please wait and retry sync.")
+                    }
 
                     // IMPORTANT:
                     // `blockingUpload()` is not coroutine-cancellable. Wrapping it with `withTimeout`
                     // can throw in the coroutine while the SDK upload/DB transaction is still running,
                     // causing retries to overlap and hit "cannot start a transaction within a transaction".
                     // Rely on DHIS2 SDK HTTP timeouts configured in SessionManager instead.
-                    val uploadResult = D2SdkOperationLocks.dataValueAndAggregateMutex.withLock {
+                    val uploadResult = D2SdkOperationLocks.withSdkOp("sdk-db-op") {
                         d2.dataValueModule().dataValues().blockingUpload()
                     }
                     Log.d(tag, "Upload result for instance: $uploadResult")
@@ -782,7 +789,7 @@ class SyncQueueManager @Inject constructor(
                         delay(delay)
 
                         // Check if network is still available before retry
-                        if (!networkStateManager.isOnline()) {
+                        if (!hasUsableNetwork()) {
                             throw Exception("Network connection lost during retry")
                         }
                     } else {
@@ -802,10 +809,8 @@ class SyncQueueManager @Inject constructor(
             // Download latest data to sync (with timeout) - only if some uploads succeeded
             if (allSuccessfulDrafts.isNotEmpty()) {
                 try {
-                    withTimeout(downloadTimeoutMs) {
-                        D2SdkOperationLocks.dataValueAndAggregateMutex.withLock {
-                            d2.aggregatedModule().data().blockingDownload()
-                        }
+                    D2SdkOperationLocks.withSdkOp("sdk-db-op") {
+                        d2.aggregatedModule().data().blockingDownload()
                     }
                     Log.d(tag, "Aggregate data download completed after instance upload sync")
                 } catch (e: Exception) {
@@ -918,6 +923,15 @@ class SyncQueueManager @Inject constructor(
             isRunning = false
         )
         Log.d(tag, "Error state cleared - sync dialogues should be dismissible")
+    }
+
+    suspend fun awaitIdle(timeoutMs: Long = 20_000L): Boolean {
+        return withTimeoutOrNull(timeoutMs) {
+            while (syncJob?.isActive == true || _syncState.value.isRunning) {
+                delay(200L)
+            }
+            true
+        } == true
     }
 
     /**
@@ -1083,14 +1097,11 @@ class SyncQueueManager @Inject constructor(
 
                 // Extract the actual error message from nested D2Error
                 val rawMessage = exception.message ?: exception.cause?.message ?: "Unknown D2Error"
-                val actualMessage = if (
+                val isOpaqueD2Error = (
                     rawMessage.contains("AutoValue_D2Error", ignoreCase = true) ||
                     rawMessage.contains("org.hisp.dhis.android.core.maintenance", ignoreCase = true)
-                ) {
-                    "Server connection issue"
-                } else {
-                    rawMessage
-                }
+                )
+                val actualMessage = if (isOpaqueD2Error) "Local SDK database is busy" else rawMessage
 
                 // Check if it's a network/timeout-related D2Error that can be retried
                 val canRetry = actualMessage.let { msg ->
@@ -1101,7 +1112,9 @@ class SyncQueueManager @Inject constructor(
                     msg.contains("SocketTimeoutException", ignoreCase = true)
                 }
 
-                if (canRetry) {
+                if (isOpaqueD2Error) {
+                    SyncError.ValidationError("Database is busy. Wait for ongoing sync to finish, then retry.")
+                } else if (canRetry) {
                     SyncError.TimeoutError("DHIS2 upload timeout - ${actualMessage}", canAutoRetry = true)
                 } else {
                     SyncError.ServerError("DHIS2 server error - ${actualMessage}")
@@ -1225,7 +1238,7 @@ class SyncQueueManager @Inject constructor(
         }
 
         // Check network before retry
-        if (!networkStateManager.isOnline()) {
+        if (!hasUsableNetwork()) {
             setErrorState(SyncError.NetworkError("Network connection lost during retry"))
             return false
         }
@@ -1252,6 +1265,11 @@ class SyncQueueManager @Inject constructor(
      */
     private fun extractErrorMessage(exception: Exception): String {
         return when {
+            exception.javaClass.name.contains("D2Error") &&
+                (exception.message.isNullOrBlank() ||
+                    exception.message?.contains("AutoValue_D2Error", ignoreCase = true) == true) -> {
+                "Database is busy. Please wait for sync to finish, then try again."
+            }
             // Handle D2Error from DHIS2 SDK
             exception.message?.contains("D2Error") == true -> {
                 "Server connection issue. Please check your internet connection and try again."
@@ -1433,11 +1451,14 @@ class SyncQueueManager @Inject constructor(
                     }
 
                     updateProgress(SyncPhase.UPLOADING_DATA, progressPercentage, progressDetail, chunkIndex + 1, totalChunks)
+                    if (!waitForSdkDbIdle("chunk-${chunkIndex + 1}")) {
+                        throw IllegalStateException("SDK database is busy before chunk upload.")
+                    }
 
                     // Set chunk data values in DHIS2
                     for (draft in chunk) {
                         val d2 = sessionManager.getD2() ?: throw Exception("DHIS2 session not available")
-                        D2SdkOperationLocks.dataValueAndAggregateMutex.withLock {
+                        D2SdkOperationLocks.withSdkOp("sdk-db-op") {
                             d2.dataValueModule().dataValues()
                                 .value(
                                     period = draft.period,
@@ -1452,7 +1473,7 @@ class SyncQueueManager @Inject constructor(
 
                     // See note above: avoid coroutine timeout around non-cancellable SDK upload.
                     val d2 = sessionManager.getD2() ?: throw Exception("DHIS2 session not available")
-                    D2SdkOperationLocks.dataValueAndAggregateMutex.withLock {
+                    D2SdkOperationLocks.withSdkOp("sdk-db-op") {
                         d2.dataValueModule().dataValues().blockingUpload()
                     }
 
@@ -1467,6 +1488,27 @@ class SyncQueueManager @Inject constructor(
                     Log.d(tag, "Successfully uploaded chunk ${chunkIndex + 1}/${totalChunks} with ${chunk.size} values")
 
                 } catch (e: Exception) {
+                    if (isOpaqueD2Error(e)) {
+                        when (uploadChunkViaApiDirect(chunk)) {
+                            DirectUploadOutcome.SUCCESS -> {
+                                chunkUploaded = true
+                                successfulChunks++
+                                for (draft in chunk) {
+                                    databaseProvider.getCurrentDatabase().dataValueDraftDao().deleteDraft(draft)
+                                }
+                                Log.w(tag, "Chunk ${chunkIndex + 1}/${totalChunks} uploaded via direct API fallback")
+                                continue
+                            }
+                            DirectUploadOutcome.MISSING_PASSWORD -> {
+                                val reloginMessage =
+                                    "Saved account credentials are invalid on this device. Re-login from Manage Accounts."
+                                setErrorState(SyncError.AuthenticationError(reloginMessage))
+                                return Result.failure(IllegalStateException(reloginMessage))
+                            }
+                            DirectUploadOutcome.NO_ACCOUNT,
+                            DirectUploadOutcome.FAILED -> Unit
+                        }
+                    }
                     chunkAttempt++
                     val error = classifyError(e)
 
@@ -1491,5 +1533,119 @@ class SyncQueueManager @Inject constructor(
         }
 
         return Result.success(Unit)
+    }
+
+    private suspend fun waitForSdkDbIdle(scope: String, maxWaitMs: Long = 20_000L): Boolean {
+        val start = System.currentTimeMillis()
+        var probe = 0
+        while (System.currentTimeMillis() - start < maxWaitMs) {
+            probe++
+            try {
+                val d2 = sessionManager.getD2() ?: return false
+                D2SdkOperationLocks.withSdkOp("sdk-db-op") {
+                    d2.maintenanceModule().foreignKeyViolations().blockingCount()
+                }
+                return true
+            } catch (e: Exception) {
+                val nestedTx = e.message?.contains("cannot start a transaction within a transaction", ignoreCase = true) == true
+                if (!nestedTx) {
+                    return true
+                }
+                val waitMs = (probe * 200L).coerceAtMost(1500L)
+                Log.w(tag, "SDK DB still busy in $scope (probe=$probe). Waiting ${waitMs}ms")
+                delay(waitMs)
+            }
+        }
+        return false
+    }
+
+    private fun hasUsableNetwork(): Boolean {
+        val state = networkStateManager.networkState.value
+        // Some networks (VPN/captive/certain carriers) may not expose VALIDATED
+        // immediately even though internet works. Allow connected transport as usable.
+        return state.hasInternet || state.isConnected
+    }
+
+    private fun isOpaqueD2Error(exception: Exception): Boolean {
+        val message = exception.message.orEmpty()
+        return exception.javaClass.name.contains("D2Error") ||
+            message.contains("AutoValue_D2Error", ignoreCase = true) ||
+            message.contains("org.hisp.dhis.android.core.maintenance", ignoreCase = true)
+    }
+
+    private suspend fun uploadChunkViaApiDirect(chunk: List<DataValueDraftEntity>): DirectUploadOutcome = withContext(Dispatchers.IO) {
+        if (chunk.isEmpty()) return@withContext DirectUploadOutcome.FAILED
+        val first = chunk.first()
+        val sessionPrefs = context.getSharedPreferences("session_prefs", Context.MODE_PRIVATE)
+        val sessionUsername = sessionPrefs.getString("username", null)
+        val sessionServerUrl = sessionPrefs.getString("serverUrl", null)
+        val activeAccount = savedAccountRepository.getActiveAccount()
+            ?: if (!sessionUsername.isNullOrBlank() && !sessionServerUrl.isNullOrBlank()) {
+                savedAccountRepository.getAccountByCredentials(sessionServerUrl, sessionUsername)
+            } else {
+                null
+            }
+        if (activeAccount == null) {
+            Log.w(tag, "Direct upload fallback skipped: no active account")
+            return@withContext DirectUploadOutcome.NO_ACCOUNT
+        }
+        val password = savedAccountRepository.getDecryptedPassword(activeAccount.id)
+        if (password.isNullOrBlank()) {
+            Log.w(tag, "Direct upload fallback skipped: missing decrypted password")
+            return@withContext DirectUploadOutcome.MISSING_PASSWORD
+        }
+
+        val dataValues = JSONArray()
+        val dedup = linkedMapOf<String, DataValueDraftEntity>()
+        chunk.forEach { draft ->
+            dedup["${draft.dataElement}|${draft.categoryOptionCombo}"] = draft
+        }
+        dedup.values.forEach { draft ->
+            dataValues.put(
+                JSONObject().apply {
+                    put("dataElement", draft.dataElement)
+                    put("categoryOptionCombo", draft.categoryOptionCombo)
+                    put("value", draft.value)
+                }
+            )
+        }
+
+        val payload = JSONObject().apply {
+            put("dataSet", first.datasetId)
+            put("period", first.period)
+            put("orgUnit", first.orgUnit)
+            put("attributeOptionCombo", first.attributeOptionCombo)
+            put("dataValues", dataValues)
+        }.toString()
+
+        val endpoint = "${activeAccount.serverUrl.trimEnd('/')}/api/dataValueSets"
+        var connection: HttpURLConnection? = null
+        try {
+            connection = (URL(endpoint).openConnection() as HttpURLConnection).apply {
+                requestMethod = "POST"
+                connectTimeout = 30000
+                readTimeout = 60000
+                doOutput = true
+                setRequestProperty("Content-Type", "application/json")
+                setRequestProperty("Accept", "application/json")
+                val credentials = "${activeAccount.username}:$password"
+                val authHeader = Base64.encodeToString(
+                    credentials.toByteArray(StandardCharsets.UTF_8),
+                    Base64.NO_WRAP
+                )
+                setRequestProperty("Authorization", "Basic $authHeader")
+            }
+            connection.outputStream.use { os ->
+                os.write(payload.toByteArray(StandardCharsets.UTF_8))
+            }
+            val code = connection.responseCode
+            Log.d(tag, "Direct upload fallback POST dataValueSets code=$code values=${dataValues.length()}")
+            if (code in 200..299) DirectUploadOutcome.SUCCESS else DirectUploadOutcome.FAILED
+        } catch (e: Exception) {
+            Log.e(tag, "Direct upload fallback failed: ${e.message}", e)
+            DirectUploadOutcome.FAILED
+        } finally {
+            connection?.disconnect()
+        }
     }
 }

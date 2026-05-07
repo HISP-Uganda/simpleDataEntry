@@ -888,9 +888,16 @@ private var isShowingSyncOverlay = false
     }
 
     private fun formatErrorMessage(error: Throwable): String {
-        return error.message
-            ?: error.cause?.message
-            ?: error::class.java.simpleName
+        val raw = error.message.orEmpty()
+        val cause = error.cause?.message.orEmpty()
+        val combined = "$raw $cause"
+        return when {
+            combined.contains("cannot start a transaction within a transaction", ignoreCase = true) ||
+                combined.contains("SQLITE_ERROR", ignoreCase = true) -> {
+                "A database operation was still running. Please wait a moment and try again."
+            }
+            else -> raw.ifBlank { cause.ifBlank { error::class.java.simpleName } }
+        }
     }
 
     private fun logEventSnapshot(d2: D2, eventId: String, source: String) {

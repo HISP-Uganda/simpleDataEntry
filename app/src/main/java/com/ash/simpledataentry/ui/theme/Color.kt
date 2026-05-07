@@ -2,14 +2,14 @@ package com.ash.simpledataentry.ui.theme
 
 import androidx.compose.ui.graphics.Color
 
-// Clean clinical palette: cool neutrals with a strong primary.
-val BrandGreen = Color(0xFF16A34A)
-val BrandGreenLight = Color(0xFFD1FAE5)
+// DHIS2-like blue palette.
+val BrandGreen = Color(0xFF2E7D32)
+val BrandGreenLight = Color(0xFFC8E6C9)
 
-val ClinicalBlue = Color(0xFF0F6CBD)
-val ClinicalBlueLight = Color(0xFF5BA3E6)
-val ClinicalBlueDark = Color(0xFF0B4F8A)
-val ClinicalBlueContainer = Color(0xFFD7E9FF)
+val ClinicalBlue = Color(0xFF1976D2)
+val ClinicalBlueLight = Color(0xFF64B5F6)
+val ClinicalBlueDark = Color(0xFF0D47A1)
+val ClinicalBlueContainer = Color(0xFFD7E8FF)
 
 // Legacy DHIS2 color aliases (keep existing usages compiling)
 val DHIS2Blue = ClinicalBlue
@@ -17,13 +17,13 @@ val DHIS2BlueLight = ClinicalBlueLight
 val DHIS2BlueDark = ClinicalBlueDark
 val DHIS2BlueDeep = ClinicalBlueDark
 
-// Cool neutral surfaces.
-val NeutralBackground = Color(0xFFF5F7FA)
+// Light gray neutrals with better contrast.
+val NeutralBackground = Color(0xFFF3F7FC)
 val NeutralSurface = Color(0xFFFFFFFF)
-val NeutralSurfaceVariant = Color(0xFFE9EEF3)
-val NeutralOutline = Color(0xFFCBD5E1)
-val NeutralMuted = Color(0xFF64748B)
-val NeutralOnSurface = Color(0xFF1B2430)
+val NeutralSurfaceVariant = Color(0xFFE3ECF6)
+val NeutralOutline = Color(0xFFB6C6DB)
+val NeutralMuted = Color(0xFF4A617D)
+val NeutralOnSurface = Color(0xFF1F2A37)
 
 // Light theme colors
 val Primary40 = ClinicalBlue
@@ -32,7 +32,7 @@ val Secondary40 = BrandGreen
 
 // Dark theme colors
 val Primary80 = ClinicalBlueLight
-val PrimaryContainer80 = Color(0xFF19304A)
+val PrimaryContainer80 = Color(0xFF103B78)
 val Secondary80 = BrandGreenLight
 
 // Legacy colors for compatibility
@@ -52,13 +52,13 @@ val Pink40 = Color(0xFF7D5260)
 val DatasetAccent = ClinicalBlue
 val DatasetAccentLight = ClinicalBlueContainer
 
-// Event accent (orange)
-val EventAccent = Color(0xFFEA580C)          // orange-600
-val EventAccentLight = Color(0xFFFFEDD5)     // orange-100
+// Event accent (teal)
+val EventAccent = Color(0xFF0F9D8A)
+val EventAccentLight = Color(0xFFDDF5F1)
 
-// Tracker accent (purple)
-val TrackerAccent = Color(0xFF7C3AED)        // purple-600
-val TrackerAccentLight = Color(0xFFEDE9FE)   // purple-100
+// Tracker accent (slate-blue)
+val TrackerAccent = Color(0xFF3B82C4)
+val TrackerAccentLight = Color(0xFFE1EFFB)
 
 // ============================================
 // Semantic Color Tokens - Status Colors

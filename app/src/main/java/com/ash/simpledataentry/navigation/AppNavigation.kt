@@ -34,7 +34,7 @@ import com.ash.simpledataentry.presentation.tracker.TrackerDashboardScreen
 
 sealed class Screen(val route: String) {
 
-    data object LoginScreen : Screen("login")  // Added login screen
+    data object LoginScreen : Screen("login")
     data object DatasetsScreen : Screen("datasets")
     data class DatasetInstanceScreen(val datasetId: String, val datasetName: String) : Screen("instances")
     data object SettingsScreen : Screen("settings")
@@ -62,7 +62,15 @@ fun AppNavigation(
         startDestination = startDestination,
         modifier = Modifier
     ) {
-        composable(LoginScreen.route) {
+        composable(
+            route = "${Screen.LoginScreen.route}?skipAutoLogin={skipAutoLogin}",
+            arguments = listOf(
+                navArgument("skipAutoLogin") {
+                    type = NavType.BoolType
+                    defaultValue = false
+                }
+            )
+        ) {
             LoginScreen(navController = navController)
         }
         composable(Screen.ManageAccountsLoginScreen.route) {

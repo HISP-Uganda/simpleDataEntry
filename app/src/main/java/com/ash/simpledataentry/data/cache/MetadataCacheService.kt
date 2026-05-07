@@ -287,7 +287,7 @@ class MetadataCacheService @Inject constructor(
             .byAttributeOptionComboUid().eq(attr)
             .blockingGet()
 
-        var rawSdkDataValues = D2SdkOperationLocks.dataValueAndAggregateMutex.withLock {
+        var rawSdkDataValues = D2SdkOperationLocks.withSdkOp("sdk-db-op") {
             try {
                 // android-core:1.13.1 does not expose a data-value scoped downloader.
                 // Aggregated downloader is the supported server fetch path.
@@ -309,7 +309,7 @@ class MetadataCacheService @Inject constructor(
         logSdkInstanceDiagnostics("afterFetch")
 
         if (rawSdkDataValues.isEmpty() && resolvedAttr != defaultCombo && defaultCombo.isNotBlank()) {
-            val fallbackValues = D2SdkOperationLocks.dataValueAndAggregateMutex.withLock {
+            val fallbackValues = D2SdkOperationLocks.withSdkOp("sdk-db-op") {
                 fetchValues(defaultCombo)
             }
             Log.d(
@@ -359,7 +359,7 @@ class MetadataCacheService @Inject constructor(
                         .distinct()
                     for (candidateAoc in datasetAocs) {
                         if (candidateAoc == resolvedAttr || candidateAoc == defaultCombo) continue
-                        val candidateValues = D2SdkOperationLocks.dataValueAndAggregateMutex.withLock {
+                        val candidateValues = D2SdkOperationLocks.withSdkOp("sdk-db-op") {
                             fetchValues(candidateAoc)
                         }
                         Log.d(

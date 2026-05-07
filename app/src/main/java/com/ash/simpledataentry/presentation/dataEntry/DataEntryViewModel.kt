@@ -38,6 +38,7 @@ import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.flow.*
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.withContext
 import org.hisp.dhis.android.core.dataset.DataSetEditableStatus
 import org.hisp.dhis.android.core.dataset.DataSetNonEditableReason
@@ -164,6 +165,10 @@ class DataEntryViewModel @Inject constructor(
             combined.contains("timeout", ignoreCase = true) ||
             combined.contains("Unable to resolve host", ignoreCase = true) -> {
                 "No internet connection. Please check internet connectivity and try again."
+            }
+            combined.contains("cannot start a transaction within a transaction", ignoreCase = true) ||
+            combined.contains("SQLITE_ERROR", ignoreCase = true) -> {
+                "Database is busy. Please wait a few seconds and try completing again."
             }
             else -> safeMessage(raw, "Failed to mark dataset as complete.")
         }
@@ -1481,6 +1486,16 @@ class DataEntryViewModel @Inject constructor(
                             attributeOptionCombo = stateSnapshot.attributeOptionCombo,
                             isEditMode = stateSnapshot.isEditMode
                         )
+                        // Follow-up refresh to avoid transient blank values after upload+download.
+                        viewModelScope.launch {
+                            delay(1200)
+                            maybeRefreshDataValues(
+                                datasetId = stateSnapshot.datasetId,
+                                period = stateSnapshot.period,
+                                orgUnit = stateSnapshot.orgUnit,
+                                attributeOptionCombo = stateSnapshot.attributeOptionCombo
+                            )
+                        }
                         val message = if (uploadFirst) {
                             "Data synchronized successfully with enhanced progress tracking"
                         } else {

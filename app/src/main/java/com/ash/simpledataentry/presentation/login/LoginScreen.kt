@@ -3,9 +3,7 @@ package com.ash.simpledataentry.presentation.login
 import android.app.Activity
 import android.content.Context
 import android.net.ConnectivityManager
-import android.net.Network
 import android.net.NetworkCapabilities
-import android.net.NetworkRequest
 import android.util.Log
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.isSystemInDarkTheme
@@ -51,7 +49,6 @@ import androidx.compose.material.icons.filled.Person
 import androidx.compose.material.icons.filled.Visibility
 import androidx.compose.material.icons.filled.VisibilityOff
 import androidx.compose.runtime.Composable
-import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
@@ -130,7 +127,10 @@ fun LoginScreen(
     val snackbarHostState = remember { SnackbarHostState() }
     val coroutineScope = rememberCoroutineScope()
     val view = LocalView.current
-    val isNetworkAvailable = rememberNetworkAvailable()
+    val isNetworkAvailable = remember {
+        val connectivityManager = context.getSystemService(Context.CONNECTIVITY_SERVICE) as ConnectivityManager
+        connectivityManager.isCurrentlyConnected()
+    }
     val isDarkTheme = isSystemInDarkTheme()
     val statusBarColor = if (isDarkTheme) Color.Black else Color.White
     val useDarkIcons = !isDarkTheme
@@ -231,6 +231,12 @@ fun LoginScreen(
         }
     }
     val isStalled = stepLoadingInfo != null && (System.currentTimeMillis() - lastProgressTimestamp) > 45000
+
+    LaunchedEffect(isAddAccount) {
+        if (isAddAccount) {
+            viewModel.disableAutoSessionRedirect()
+        }
+    }
 
     LaunchedEffect(loginData.isLoggedIn, loginData.saveAccountOffered, isAddAccount) {
         if (loginData.isLoggedIn && !loginData.saveAccountOffered) {
@@ -377,8 +383,8 @@ fun LoginScreen(
                 ) {
                     Surface(
                         shape = RoundedCornerShape(28.dp),
-                        color = Color.White.copy(alpha = 0.1f),
-                        border = BorderStroke(1.dp, Color.White.copy(alpha = 0.2f))
+                        color = Color.White.copy(alpha = 0.16f),
+                        border = BorderStroke(1.dp, Color.White.copy(alpha = 0.3f))
                     ) {
                         Column(
                             modifier = Modifier.padding(horizontal = 24.dp, vertical = 20.dp),
@@ -406,7 +412,7 @@ fun LoginScreen(
                             Text(
                                 text = "Fast, reliable DHIS2 data capture",
                                 style = MaterialTheme.typography.bodyMedium,
-                                color = Color.White.copy(alpha = 0.85f)
+                                color = Color.White.copy(alpha = 0.96f)
                             )
                         }
                     }
@@ -848,44 +854,6 @@ fun LoginScreen(
             }
         )
     }
-}
-
-@Composable
-private fun rememberNetworkAvailable(): Boolean {
-    val context = LocalContext.current
-    val connectivityManager = remember {
-        context.getSystemService(Context.CONNECTIVITY_SERVICE) as ConnectivityManager
-    }
-    var isConnected by remember {
-        mutableStateOf(connectivityManager.isCurrentlyConnected())
-    }
-
-    DisposableEffect(connectivityManager) {
-        val callback = object : ConnectivityManager.NetworkCallback() {
-            override fun onAvailable(network: Network) {
-                isConnected = true
-            }
-
-            override fun onLost(network: Network) {
-                isConnected = connectivityManager.isCurrentlyConnected()
-            }
-
-            override fun onCapabilitiesChanged(network: Network, networkCapabilities: NetworkCapabilities) {
-                isConnected = networkCapabilities.hasCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET)
-            }
-        }
-
-        val request = NetworkRequest.Builder()
-            .addCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET)
-            .build()
-        connectivityManager.registerNetworkCallback(request, callback)
-
-        onDispose {
-            runCatching { connectivityManager.unregisterNetworkCallback(callback) }
-        }
-    }
-
-    return isConnected
 }
 
 private fun ConnectivityManager.isCurrentlyConnected(): Boolean {

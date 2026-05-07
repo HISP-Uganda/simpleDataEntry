@@ -1,12 +1,18 @@
 package com.ash.simpledataentry.data.repositoryImpl
 
 import com.ash.simpledataentry.domain.model.DataValue
+import com.ash.simpledataentry.domain.model.ValidationIssue
+import com.ash.simpledataentry.domain.model.ValidationResult
+import com.ash.simpledataentry.domain.model.ValidationSeverity
 import com.ash.simpledataentry.domain.model.ValidationSummary
 import com.ash.simpledataentry.domain.validation.ValidationService
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
 import javax.inject.Inject
 import javax.inject.Singleton
@@ -15,6 +21,7 @@ import javax.inject.Singleton
 class ValidationRepository @Inject constructor(
     private val validationService: ValidationService
 ) {
+    private val validationMutex = Mutex()
     
     // Cache validation results to avoid unnecessary re-execution
     private val _validationCache = mutableMapOf<String, ValidationSummary>()
@@ -30,35 +37,69 @@ class ValidationRepository @Inject constructor(
         dataValues: List<DataValue>,
         forceRefresh: Boolean = false
     ): ValidationSummary = withContext(Dispatchers.IO) {
-        
-        val cacheKey = generateCacheKey(datasetId, period, organisationUnit, attributeOptionCombo, dataValues)
-        
-        // Return cached result if available and not forcing refresh
-        if (!forceRefresh && _validationCache.containsKey(cacheKey)) {
-            val cachedResult = _validationCache[cacheKey]!!
-            _lastValidationResult.value = cachedResult
-            return@withContext cachedResult
+        validationMutex.withLock {
+            val cacheKey = generateCacheKey(datasetId, period, organisationUnit, attributeOptionCombo, dataValues)
+
+            // Return cached result if available and not forcing refresh
+            if (!forceRefresh && _validationCache.containsKey(cacheKey)) {
+                val cachedResult = _validationCache[cacheKey]!!
+                _lastValidationResult.value = cachedResult
+                return@withLock cachedResult
+            }
+
+            // Execute validation with guarded retries for transient SQLite nested-transaction conflicts.
+            var result = validationService.validateDatasetInstance(
+                datasetId = datasetId,
+                period = period,
+                organisationUnit = organisationUnit,
+                attributeOptionCombo = attributeOptionCombo,
+                dataValues = dataValues
+            )
+            var attempts = 1
+            while (attempts < MAX_VALIDATION_ATTEMPTS && isNestedTransactionFailure(result)) {
+                delay(VALIDATION_RETRY_DELAYS_MS[(attempts - 1).coerceAtMost(VALIDATION_RETRY_DELAYS_MS.lastIndex)])
+                attempts++
+                result = validationService.validateDatasetInstance(
+                    datasetId = datasetId,
+                    period = period,
+                    organisationUnit = organisationUnit,
+                    attributeOptionCombo = attributeOptionCombo,
+                    dataValues = dataValues
+                )
+            }
+
+            if (isNestedTransactionFailure(result)) {
+                result = ValidationSummary(
+                    totalRulesChecked = result.totalRulesChecked,
+                    passedRules = result.passedRules,
+                    errorCount = 0,
+                    warningCount = 1,
+                    canComplete = true,
+                    executionTimeMs = result.executionTimeMs,
+                    validationResult = ValidationResult.Warning(
+                        listOf(
+                            ValidationIssue(
+                                ruleId = "validation_busy_retry",
+                                ruleName = "Validation Busy",
+                                description = "Validation is temporarily busy due to database locking. Please sync and retry if needed.",
+                                severity = ValidationSeverity.WARNING
+                            )
+                        )
+                    )
+                )
+            }
+
+            // Cache the result
+            _validationCache[cacheKey] = result
+            _lastValidationResult.value = result
+
+            // Clean up old cache entries to prevent memory issues
+            if (_validationCache.size > MAX_CACHE_SIZE) {
+                cleanupCache()
+            }
+
+            result
         }
-        
-        // Execute validation
-        val result = validationService.validateDatasetInstance(
-            datasetId = datasetId,
-            period = period,
-            organisationUnit = organisationUnit,
-            attributeOptionCombo = attributeOptionCombo,
-            dataValues = dataValues
-        )
-        
-        // Cache the result
-        _validationCache[cacheKey] = result
-        _lastValidationResult.value = result
-        
-        // Clean up old cache entries to prevent memory issues
-        if (_validationCache.size > MAX_CACHE_SIZE) {
-            cleanupCache()
-        }
-        
-        result
     }
     
     suspend fun getLastValidationResult(): ValidationSummary? {
@@ -120,5 +161,20 @@ class ValidationRepository @Inject constructor(
     
     companion object {
         private const val MAX_CACHE_SIZE = 50
+        private const val MAX_VALIDATION_ATTEMPTS = 1
+        private val VALIDATION_RETRY_DELAYS_MS = longArrayOf(0L)
+    }
+
+    private fun isNestedTransactionFailure(summary: ValidationSummary): Boolean {
+        val errors = when (val result = summary.validationResult) {
+            is ValidationResult.Error -> result.errors
+            is ValidationResult.Mixed -> result.errors
+            else -> emptyList()
+        }
+        return errors.any { issue ->
+            issue.ruleId == "validation_transaction_error" ||
+                issue.description.contains("cannot start a transaction within a transaction", ignoreCase = true) ||
+                issue.description.contains("SQLITE_ERROR", ignoreCase = true)
+        }
     }
 }

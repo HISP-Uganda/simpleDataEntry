@@ -952,6 +952,15 @@ class SessionManager @Inject constructor(
 
     fun getD2(): D2? = d2
 
+    suspend fun refreshD2Runtime(context: Context) = withContext(Dispatchers.IO) {
+        mutex.withLock {
+            d2 = null
+            Log.w("SessionManager", "D2 runtime cleared for forced re-initialization")
+        }
+        initD2(context)
+        Log.w("SessionManager", "D2 runtime re-initialized")
+    }
+
 
     // REMOVED: downloadMetadata() - DEAD CODE
     // This atomic metadata download function has been replaced by downloadMetadataResilient()
@@ -1104,7 +1113,7 @@ class SessionManager @Inject constructor(
         try {
             Log.d("SessionManager", "Downloading aggregate data...")
             runBlocking {
-                D2SdkOperationLocks.dataValueAndAggregateMutex.withLock {
+                D2SdkOperationLocks.withSdkOp("sdk-db-op") {
                     d2Instance.aggregatedModule().data().blockingDownload()
                 }
             }
@@ -1618,7 +1627,7 @@ class SessionManager @Inject constructor(
             Log.d("SessionManager", "Downloading tracker data for: ${program.displayName()}")
             try {
                 runBlocking {
-                    D2SdkOperationLocks.dataValueAndAggregateMutex.withLock {
+                    D2SdkOperationLocks.withSdkOp("sdk-db-op") {
                         d2Instance.trackedEntityModule().trackedEntityInstanceDownloader()
                             .byProgramUid(programUid)
                             .blockingDownload()
@@ -1641,7 +1650,7 @@ class SessionManager @Inject constructor(
             Log.d("SessionManager", "Downloading event data for: ${program.displayName()}")
             try {
                 runBlocking {
-                    D2SdkOperationLocks.dataValueAndAggregateMutex.withLock {
+                    D2SdkOperationLocks.withSdkOp("sdk-db-op") {
                         d2Instance.eventModule().eventDownloader()
                             .byProgramUid(programUid)
                             .blockingDownload()
@@ -1656,7 +1665,7 @@ class SessionManager @Inject constructor(
         try {
             Log.d("SessionManager", "Downloading standalone events...")
             runBlocking {
-                D2SdkOperationLocks.dataValueAndAggregateMutex.withLock {
+                D2SdkOperationLocks.withSdkOp("sdk-db-op") {
                     d2Instance.eventModule().eventDownloader().download()
                 }
             }

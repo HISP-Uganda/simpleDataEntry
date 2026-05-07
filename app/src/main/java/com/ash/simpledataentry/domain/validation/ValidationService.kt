@@ -2,10 +2,12 @@ package com.ash.simpledataentry.domain.validation
 
 import android.util.Log
 import com.ash.simpledataentry.data.SessionManager
+import com.ash.simpledataentry.data.sync.D2SdkOperationLocks
 import com.ash.simpledataentry.domain.model.*
 import com.ash.simpledataentry.domain.model.ValidationResult
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
+import kotlinx.coroutines.sync.withLock
 import org.hisp.dhis.android.core.dataelement.DataElementOperand
 import org.hisp.dhis.android.core.validation.ValidationRule
 import org.hisp.dhis.android.core.validation.ValidationRuleImportance
@@ -55,9 +57,11 @@ class ValidationService @Inject constructor(
                 )
 
             val validationRulesForDataset = try {
-                d2.validationModule().validationRules()
-                    .byDataSetUids(listOf(datasetId))
-                    .blockingGet()
+                D2SdkOperationLocks.withSdkOp("sdk-db-op") {
+                    d2.validationModule().validationRules()
+                        .byDataSetUids(listOf(datasetId))
+                        .blockingGet()
+                }
             } catch (e: Exception) {
                 Log.w(tag, "Could not fetch validation rules for dataset $datasetId: ${e.message}")
                 emptyList()
@@ -66,7 +70,9 @@ class ValidationService @Inject constructor(
             Log.d(tag, "Found ${validationRulesForDataset.size} validation rules for dataset $datasetId")
             if (validationRulesForDataset.isEmpty()) {
                 val allRulesCount = try {
-                    d2.validationModule().validationRules().blockingGet().size
+                    D2SdkOperationLocks.withSdkOp("sdk-db-op") {
+                        d2.validationModule().validationRules().blockingGet().size
+                    }
                 } catch (e: Exception) { 0 }
                 Log.d(
                     tag,
@@ -100,20 +106,24 @@ class ValidationService @Inject constructor(
                     Log.v(tag, "Staging: ${dataValue.dataElement}.${dataValue.categoryOptionCombo} = '$valueToStage'")
                     
                     // Stage the data value
-                    d2.dataValueModule().dataValues()
-                        .value(
-                            period = period,
-                            organisationUnit = organisationUnit,
-                            dataElement = dataValue.dataElement,
-                            categoryOptionCombo = dataValue.categoryOptionCombo,
-                            attributeOptionCombo = attributeOptionCombo
-                        )
-                        .blockingSet(valueToStage)
+                    D2SdkOperationLocks.withSdkOp("sdk-db-op") {
+                        d2.dataValueModule().dataValues()
+                            .value(
+                                period = period,
+                                organisationUnit = organisationUnit,
+                                dataElement = dataValue.dataElement,
+                                categoryOptionCombo = dataValue.categoryOptionCombo,
+                                attributeOptionCombo = attributeOptionCombo
+                            )
+                            .blockingSet(valueToStage)
+                    }
                     
                     // Verify the value was staged correctly
-                    val stagedValue = d2.dataValueModule().dataValues()
-                        .value(period, organisationUnit, dataValue.dataElement, dataValue.categoryOptionCombo, attributeOptionCombo)
-                        .blockingGet()
+                    val stagedValue = D2SdkOperationLocks.withSdkOp("sdk-db-op") {
+                        d2.dataValueModule().dataValues()
+                            .value(period, organisationUnit, dataValue.dataElement, dataValue.categoryOptionCombo, attributeOptionCombo)
+                            .blockingGet()
+                    }
                     
                     if (stagedValue?.value() == valueToStage) {
                         stagedCount++
@@ -124,14 +134,18 @@ class ValidationService @Inject constructor(
                         Thread.sleep(200) // Brief delay before retry
                         
                         try {
-                            d2.dataValueModule().dataValues()
-                                .value(period, organisationUnit, dataValue.dataElement, dataValue.categoryOptionCombo, attributeOptionCombo)
-                                .blockingSet(valueToStage)
+                            D2SdkOperationLocks.withSdkOp("sdk-db-op") {
+                                d2.dataValueModule().dataValues()
+                                    .value(period, organisationUnit, dataValue.dataElement, dataValue.categoryOptionCombo, attributeOptionCombo)
+                                    .blockingSet(valueToStage)
+                            }
                             
                             // Verify retry
-                            val retryValue = d2.dataValueModule().dataValues()
-                                .value(period, organisationUnit, dataValue.dataElement, dataValue.categoryOptionCombo, attributeOptionCombo)
-                                .blockingGet()
+                            val retryValue = D2SdkOperationLocks.withSdkOp("sdk-db-op") {
+                                d2.dataValueModule().dataValues()
+                                    .value(period, organisationUnit, dataValue.dataElement, dataValue.categoryOptionCombo, attributeOptionCombo)
+                                    .blockingGet()
+                            }
                             
                             if (retryValue?.value() == valueToStage) {
                                 stagedCount++
@@ -149,6 +163,14 @@ class ValidationService @Inject constructor(
                 } catch (e: Exception) {
                     stagingErrors++
                     Log.e(tag, "Failed to stage data value: ${dataValue.dataElement} = '${dataValue.value}': ${e.message}", e)
+                    if (isSdkBusyException(e)) {
+                        Log.w(tag, "Validation staging aborted early due to SDK DB busy/opaque D2Error")
+                        return@withContext buildDeferredValidationSummary(
+                            validationRulesForDataset = validationRulesForDataset,
+                            startTime = startTime,
+                            reason = "Validation is temporarily unavailable because the local SDK database is busy."
+                        )
+                    }
                     if (e.message?.contains("cannot start a transaction within a transaction", ignoreCase = true) == true) {
                         fatalTransactionError = e
                         Log.e(tag, "Fatal transaction nesting error during staging. Aborting further staging attempts.")
@@ -194,7 +216,9 @@ class ValidationService @Inject constructor(
                 // Additional SDK database flush to ensure all writes are committed
                 try {
                     // Force SDK to flush any pending database operations
-                    d2.maintenanceModule().foreignKeyViolations().blockingCount()
+                    D2SdkOperationLocks.withSdkOp("sdk-db-op") {
+                        d2.maintenanceModule().foreignKeyViolations().blockingCount()
+                    }
                     Log.d(tag, "SDK database flush completed successfully")
                 } catch (e: Exception) {
                     Log.w(tag, "SDK database flush failed: ${e.message}")
@@ -202,9 +226,11 @@ class ValidationService @Inject constructor(
                 
                 // Verify all data is properly staged and retrievable
                 val allDataStagedCorrectly = dataValues.all { dataValue ->
-                    val stagedValue = d2.dataValueModule().dataValues()
-                        .value(period, organisationUnit, dataValue.dataElement, dataValue.categoryOptionCombo, attributeOptionCombo)
-                        .blockingGet()
+                    val stagedValue = D2SdkOperationLocks.withSdkOp("sdk-db-op") {
+                        d2.dataValueModule().dataValues()
+                            .value(period, organisationUnit, dataValue.dataElement, dataValue.categoryOptionCombo, attributeOptionCombo)
+                            .blockingGet()
+                    }
                     val expectedValue = dataValue.value ?: ""
                     val actualValue = stagedValue?.value() ?: ""
                     
@@ -572,7 +598,7 @@ class ValidationService @Inject constructor(
         )
     }
 
-    private fun runValidationEngine(
+    private suspend fun runValidationEngine(
         d2: org.hisp.dhis.android.core.D2,
         datasetId: String,
         period: String,
@@ -598,8 +624,10 @@ class ValidationService @Inject constructor(
             4L * 1024L * 1024L
         )
 
-        worker.start()
-        worker.join()
+        D2SdkOperationLocks.withSdkOp("sdk-db-op") {
+            worker.start()
+            worker.join()
+        }
 
         val error = errorRef.get()
         if (error != null) {
@@ -833,4 +861,40 @@ class ValidationService @Inject constructor(
         return@withContext diagnosis.toString()
     }
 
+}
+
+private fun isSdkBusyException(e: Exception): Boolean {
+    val message = e.message.orEmpty()
+    return e.javaClass.name.contains("D2Error", ignoreCase = true) ||
+        message.contains("AutoValue_D2Error", ignoreCase = true) ||
+        message.contains("org.hisp.dhis.android.core.maintenance", ignoreCase = true) ||
+        message.contains("cannot start a transaction within a transaction", ignoreCase = true) ||
+        message.contains("database is locked", ignoreCase = true) ||
+        message.contains("SQLITE_BUSY", ignoreCase = true) ||
+        message.contains("SQLITE_ERROR", ignoreCase = true)
+}
+
+private fun buildDeferredValidationSummary(
+    validationRulesForDataset: List<ValidationRule>,
+    startTime: Long,
+    reason: String
+): ValidationSummary {
+    return ValidationSummary(
+        totalRulesChecked = validationRulesForDataset.size,
+        passedRules = 0,
+        errorCount = 0,
+        warningCount = 1,
+        canComplete = true,
+        executionTimeMs = System.currentTimeMillis() - startTime,
+        validationResult = ValidationResult.Warning(
+            listOf(
+                ValidationIssue(
+                    ruleId = "validation_busy_deferred",
+                    ruleName = "Validation Deferred",
+                    description = "$reason Please sync and retry validation when idle.",
+                    severity = ValidationSeverity.WARNING
+                )
+            )
+        )
+    )
 }
