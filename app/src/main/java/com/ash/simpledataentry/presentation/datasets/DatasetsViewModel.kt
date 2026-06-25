@@ -37,7 +37,6 @@ import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
-import androidx.work.WorkInfo
 import javax.inject.Inject
 
 /**
@@ -107,28 +106,11 @@ class DatasetsViewModel @Inject constructor(
         }
 
         viewModelScope.launch {
-            val dataSyncRunningFlow = backgroundSyncManager.getSyncWorkInfo()
-                .asFlow()
-                .map { infos -> infos.any { it.state == WorkInfo.State.RUNNING } }
-
-            val periodicMetadataRunningFlow = backgroundSyncManager.getMetadataSyncWorkInfo()
-                .asFlow()
-                .map { infos -> infos.any { it.state == WorkInfo.State.RUNNING } }
-
-            val immediateMetadataRunningFlow = backgroundSyncManager.getImmediateMetadataSyncWorkInfoByTag()
-                .asFlow()
-                .map { infos ->
-                    infos.any { info ->
-                        info.state == WorkInfo.State.ENQUEUED || info.state == WorkInfo.State.RUNNING
-                    }
-                }
-
             combine(
-                dataSyncRunningFlow,
-                periodicMetadataRunningFlow,
-                immediateMetadataRunningFlow
-            ) { dataSyncRunning, periodicMetadataRunning, immediateMetadataRunning ->
-                dataSyncRunning || periodicMetadataRunning || immediateMetadataRunning
+                syncController.appSyncState,
+                syncController.metadataBootstrapState
+            ) { appSyncState, metadataState ->
+                appSyncState.isRunning || metadataState.isRunning
             }
                 .distinctUntilChanged()
                 .collect { isRunning ->
@@ -175,6 +157,18 @@ class DatasetsViewModel @Inject constructor(
         viewModelScope.launch {
             loadPrograms()
         }
+    }
+
+    fun retryMetadataBootstrap() {
+        backgroundSyncManager.triggerImmediateMetadataSync()
+    }
+
+    fun notifyMetadataBootstrapPending() {
+        _uiState.emitSuccess(
+            getCurrentData().copy(
+                syncMessage = "Metadata is still syncing for this account. Please wait and try again."
+            )
+        )
     }
 
     fun prefetchProgramIfNeeded(program: ProgramItem) {

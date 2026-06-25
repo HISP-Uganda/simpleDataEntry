@@ -1,43 +1,94 @@
-# Simple Data Entry (DHIS2 Android)
+# The Simple Data Entry
 
-<p align="left">
-  <img alt="Platform" src="https://img.shields.io/badge/platform-android-3ddc84?logo=android&logoColor=white">
-  <img alt="Kotlin" src="https://img.shields.io/badge/kotlin-2.1-7f52ff?logo=kotlin&logoColor=white">
-  <img alt="Compose" src="https://img.shields.io/badge/ui-jetpack%20compose-4285f4?logo=jetpackcompose&logoColor=white">
-  <img alt="Status" src="https://img.shields.io/badge/status-production%20ready-2ea44f">
-  <img alt="Build" src="https://img.shields.io/badge/build-github%20actions-2088ff?logo=githubactions&logoColor=white">
-  <img alt="License" src="https://img.shields.io/badge/license-MIT-0b7285">
+<p align="center">
+  <img src="assets/screenshots/SDE_00.png" alt="The Simple Data Entry overview" width="100%" />
 </p>
 
-Simple Data Entry is a native Android client for DHIS2 focused on fast, reliable data capture in low-connectivity environments. It supports dataset reporting, standalone event capture, and tracker workflows with consistent card-based screens, offline caching, and deliberate, user-controlled sync. Developed by HISP Uganda.
+<p align="center">
+  <strong>DHIS2 Android data capture built for field teams and district data officers.</strong>
+</p>
 
-## Highlights
+<p align="center">
+  Offline-first. Fast to navigate. Practical in low-connectivity environments.
+</p>
 
-- Dataset reporting with sectioned entry, validation, and clear status feedback
-- Event programs with card and line-list views, creation, and editing
-- Tracker programs with enrollments, stage events, and profile details
-- Offline-first behavior with cached metadata and locally stored drafts
-- Manual and login-time sync flows to avoid surprise bandwidth usage
+<p align="center">
+  <img alt="Platform" src="https://img.shields.io/badge/platform-Android-3DDC84?logo=android&logoColor=white">
+  <img alt="Kotlin" src="https://img.shields.io/badge/Kotlin-2.1-7F52FF?logo=kotlin&logoColor=white">
+  <img alt="UI" src="https://img.shields.io/badge/UI-Jetpack%20Compose-4285F4?logo=jetpackcompose&logoColor=white">
+  <img alt="Architecture" src="https://img.shields.io/badge/Architecture-MVVM%20%2B%20StateFlow-0F766E">
+  <img alt="Offline" src="https://img.shields.io/badge/Mode-Offline--first-1D4ED8">
+  <img alt="License" src="https://img.shields.io/badge/License-MIT-0B7285">
+</p>
 
-## Tech stack
+## Overview
 
-- Kotlin + Jetpack Compose (UI)
-- DHIS2 Android SDK + Rules Engine
-- MVVM + StateFlow + repositories
-- Hilt (DI), Room (offline persistence), WorkManager (background sync)
+The Simple Data Entry is a native Android client for DHIS2 focused on reliable, field-ready data capture. It supports aggregate dataset reporting, standalone event capture, and tracker workflows with a simpler interaction model, strong offline behavior, and deliberate user-controlled sync.
 
-## Project layout
+Built by HISP Uganda.
 
-- `app/` - Android application source (Compose UI, ViewModels, repositories)
+## Why It Stands Out
 
-## Architecture at a glance
+- Faster aggregate data entry with structured sections and clearer forms
+- Offline-first capture with cached metadata and locally stored drafts
+- Tracker and event workflows inside the same app experience
+- Manual and background-assisted sync patterns designed to reduce login blocking
+- Practical UX for real deployments, especially where connectivity is inconsistent
 
-- Presentation layer: Compose screens + ViewModels, navigation in `app/src/main/java/com/ash/simpledataentry/navigation`
-- Domain layer: use cases and models under `app/src/main/java/com/ash/simpledataentry/domain`
-- Data layer: repositories + Room + sync services under `app/src/main/java/com/ash/simpledataentry/data`
-- Sync: WorkManager-backed background sync plus a foreground sync service for explicit user actions
+## Product Glimpse
 
-## Flow diagram
+<p align="center">
+  <img src="assets/screenshots/SDE_01.png" alt="SDE login and home workflow" width="100%" />
+</p>
+
+<p align="center">
+  <img src="assets/screenshots/SDE_02.png" alt="SDE dataset browsing and data entry workflow" width="100%" />
+</p>
+
+<p align="center">
+  <img src="assets/screenshots/SDE_03.png" alt="SDE form entry and validation workflow" width="100%" />
+</p>
+
+<p align="center">
+  <img src="assets/screenshots/SDE_04.png" alt="SDE tracker and profile workflow" width="100%" />
+</p>
+
+## Core Capabilities
+
+### Aggregate Dataset Entry
+- Sectioned dataset forms
+- Nested accordion-style form layout
+- Draft preservation and unsaved-change protection
+- Inline validation and completion feedback
+
+### Event Capture
+- Standalone event program support
+- Card-based and table-oriented list experiences
+- Controlled sync and local-first editing
+
+### Tracker Workflows
+- Enrollment lists
+- Tracker dashboard and stage event views
+- Tracked entity profile display
+
+### Sync and Offline Behavior
+- Metadata caching for faster reuse
+- Background metadata preparation
+- Explicit user-driven data sync patterns
+- Room-backed local persistence
+
+## Tech Stack
+
+- Kotlin
+- Jetpack Compose
+- DHIS2 Android SDK
+- DHIS2 Rules Engine
+- Hilt
+- Room
+- WorkManager
+- MVVM + StateFlow + repository pattern
+
+## Architecture At A Glance
 
 ```mermaid
 flowchart LR
@@ -52,109 +103,98 @@ flowchart LR
   Sync --> API
 ```
 
-## Getting started
+## Project Layout
 
-Prerequisites:
-- Android Studio (Giraffe or newer) with Android SDK
-- JDK 17+ (Android Studio bundled JDK 21 works)
+- `app/` Android application source
+- `app/src/main/java/com/ash/simpledataentry/presentation/` Compose screens and ViewModels
+- `app/src/main/java/com/ash/simpledataentry/domain/` domain models and use cases
+- `app/src/main/java/com/ash/simpledataentry/data/` repositories, Room, session, cache, and sync layers
 
-Build debug APK:
+## Getting Started
+
+### Prerequisites
+
+- Android Studio Giraffe or newer
+- Android SDK installed
+- JDK 17 or newer
+
+### Build Debug APK
+
 ```bash
 ./gradlew assembleDebug
 ```
 
-Run on a device or emulator:
-- Open the project in Android Studio and press Run
+### Run Locally
 
-## Screenshots
+- Open the project in Android Studio
+- Connect a device or start an emulator
+- Press `Run`
 
-### Authentication
-| Login | Sync Progress |
-|:---:|:---:|
-| ![Login](assets/screenshots/01_login.png) | ![Loading](assets/screenshots/02_loading.png) |
+## Release and Distribution
 
-### Home & Navigation
-| Home - All Programs | Datasets Tab |
-|:---:|:---:|
-| ![Home](assets/screenshots/03_home.png) | ![Datasets](assets/screenshots/04_datasets.png) |
+Release builds are automated through `.github/workflows/release.yml` and publish APK and AAB artifacts on GitHub Release tag pushes.
 
-### Dataset Data Entry
-| Dataset Instances | Data Entry Form |
-|:---:|:---:|
-| ![Instances](assets/screenshots/05_dataset_instances.png) | ![Entry Form](assets/screenshots/06_data_entry_form.png) |
+### Required GitHub Secrets
 
-| Nested Accordions | Radio Options |
-|:---:|:---:|
-| ![Accordions](assets/screenshots/07_nested_accordions.png) | ![Radio](assets/screenshots/08_radio_options.png) |
-
-| Validation | Unsaved Changes |
-|:---:|:---:|
-| ![Validation](assets/screensho<br/>ts/09_validation.png) | ![Unsaved](assets/screenshots/10_unsaved_changes.png) |
-
-### Tracker Programs
-| Enrollment List |                  Tracker Dashboard<br/><br/>                   |
-|:---:|:---------------------------------------------------------:|
-| ![Enrollments](assets/screenshots/11_tracker_enrollments.png) | ![Dashboard](assets/screenshots/12_tracker_dashboard.png) |
-
-| Events Summary | Events Table |
-|:---:|:---:|
-| ![Events](assets/screenshots/13_tracker_with_events.png) | ![Events Table](assets/screenshots/14_tracker_events_expanded.png) |
-
-| Tracked Entity Profile |
-|:---:|
-| ![Profile](assets/screenshots/15_tracker_profile.png) |
-
-## Distribution (GitHub Actions)
-
-Release builds are automated via `.github/workflows/release.yml` and attach APK + AAB artifacts to a GitHub Release on tag push.
-
-Set GitHub Secrets:
-- `ANDROID_KEYSTORE_BASE64` - base64 of your `*.jks` file
+- `ANDROID_KEYSTORE_BASE64`
 - `ANDROID_KEYSTORE_PASSWORD`
 - `ANDROID_KEY_ALIAS`
 - `ANDROID_KEY_PASSWORD`
 
-Example to create the base64 payload:
+### Create Base64 Keystore Payload
+
 ```bash
 base64 < /path/to/keystore.jks
 ```
 
-Create a release:
+### Create a Release
+
 ```bash
 git tag v1.0.0
 git push origin v1.0.0
 ```
 
-Artifacts:
+### Release Artifacts
+
 - APK: `app/build/outputs/apk/release/app-release.apk`
 - AAB: `app/build/outputs/bundle/release/app-release.aab`
 
 ## Configuration
 
-- `local.properties` (ignored) holds your Android SDK path; keep it out of version control.
-- Server credentials are entered at runtime via the login flow; no `.env` is required.
+- `local.properties` is ignored and should contain your Android SDK path
+- Server credentials are entered through the runtime login flow
+- No `.env` file is required for normal app usage
 
 ## Testing
 
-Unit tests:
+### Unit Tests
+
 ```bash
 ./gradlew test
 ```
 
-Instrumentation tests:
+### Instrumentation Tests
+
 ```bash
 ./gradlew connectedAndroidTest
 ```
 
 ## Notes
 
-- Sync is intentionally user-driven after login; datasets and metadata use cached values by default.
-- Event line lists and tracker stage tables may load data values in the background.
+- Sync is intentionally explicit after login to avoid unnecessary network cost
+- Metadata and forms are optimized around cached local availability
+- Large-role users benefit from the staged background metadata preparation flow
 
 ## Contributing
 
-Issues and PRs are welcome. Please describe the use case, expected behavior, and test coverage.
+Issues and pull requests are welcome. When reporting changes, include:
+
+- the user flow or deployment scenario
+- the expected behavior
+- the observed behavior
+- screenshots or logs where relevant
+- test coverage for functional changes
 
 ## License
 
-MIT. See `LICENSE`.
+MIT. See [LICENSE](LICENSE).

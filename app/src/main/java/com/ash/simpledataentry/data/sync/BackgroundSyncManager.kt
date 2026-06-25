@@ -26,6 +26,8 @@ class BackgroundSyncManager @Inject constructor(
         private const val TAG = "BackgroundSyncManager"
         private const val SYNC_WORK_NAME = "background_sync_work"
         private const val METADATA_SYNC_WORK_NAME = "metadata_sync_work"
+        const val IMMEDIATE_METADATA_SYNC_WORK_NAME = "immediate_metadata_sync_work"
+        const val IMMEDIATE_METADATA_SYNC_TAG = "immediate_metadata_sync"
     }
     
     private val workManager = WorkManager.getInstance(context)
@@ -189,19 +191,18 @@ class BackgroundSyncManager @Inject constructor(
             .setRequiredNetworkType(androidx.work.NetworkType.CONNECTED)
             .build()
 
-        val workName = "immediate_metadata_sync_${System.currentTimeMillis()}"
         val oneTimeWorkRequest = OneTimeWorkRequestBuilder<MetadataSyncWorker>()
             .setConstraints(constraints)
-            .addTag("immediate_metadata_sync")
+            .addTag(IMMEDIATE_METADATA_SYNC_TAG)
             .build()
 
         workManager.enqueueUniqueWork(
-            workName,
-            ExistingWorkPolicy.REPLACE,
+            IMMEDIATE_METADATA_SYNC_WORK_NAME,
+            ExistingWorkPolicy.KEEP,
             oneTimeWorkRequest
         )
-        Log.d(TAG, "Triggered immediate metadata sync with work name: $workName")
-        return workName
+        Log.d(TAG, "Triggered immediate metadata sync with work name: $IMMEDIATE_METADATA_SYNC_WORK_NAME")
+        return IMMEDIATE_METADATA_SYNC_WORK_NAME
     }
 
     /**
@@ -220,6 +221,9 @@ class BackgroundSyncManager @Inject constructor(
     /**
      * Get work info for monitoring immediate metadata sync status (one-time jobs by tag)
      */
+    fun getImmediateMetadataSyncWorkInfo() =
+        workManager.getWorkInfosForUniqueWorkLiveData(IMMEDIATE_METADATA_SYNC_WORK_NAME)
+
     fun getImmediateMetadataSyncWorkInfoByTag() =
-        workManager.getWorkInfosByTagLiveData("immediate_metadata_sync")
+        workManager.getWorkInfosByTagLiveData(IMMEDIATE_METADATA_SYNC_TAG)
 }

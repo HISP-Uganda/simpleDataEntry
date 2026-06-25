@@ -348,9 +348,17 @@ object AppModule {
     @Provides
     @Singleton
     fun provideSyncStatusController(
-        syncQueueManager: SyncQueueManager
+        syncQueueManager: SyncQueueManager,
+        backgroundSyncManager: BackgroundSyncManager,
+        sessionManager: SessionManager,
+        @ApplicationContext context: Context
     ): SyncStatusController {
-        return SyncStatusController(syncQueueManager)
+        return SyncStatusController(
+            syncQueueManager = syncQueueManager,
+            backgroundSyncManager = backgroundSyncManager,
+            sessionManager = sessionManager,
+            appContext = context
+        )
     }
 
     @Provides

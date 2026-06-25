@@ -8,12 +8,14 @@ import com.ash.simpledataentry.data.security.AccountEncryption
 import com.ash.simpledataentry.domain.model.SavedAccount
 import com.ash.simpledataentry.domain.repository.SettingsRepository
 import com.ash.simpledataentry.data.sync.BackgroundSyncManager
+import com.ash.simpledataentry.data.sync.MetadataBootstrapPhase
+import com.ash.simpledataentry.data.sync.SyncStatusController
 import com.ash.simpledataentry.data.sync.SyncLogEntry
 import com.ash.simpledataentry.data.sync.SyncQueueManager
-import com.ash.simpledataentry.data.RoomHydrationMode
 import com.ash.simpledataentry.data.DatabaseProvider
 import com.ash.simpledataentry.data.SessionManager
 import com.ash.simpledataentry.data.cache.MetadataCacheService
+import com.ash.simpledataentry.data.sync.MobileMetadataBootstrapper
 import com.ash.simpledataentry.presentation.core.UiState
 import com.ash.simpledataentry.presentation.core.UiError
 import com.ash.simpledataentry.presentation.core.LoadingOperation
@@ -87,6 +89,8 @@ class SettingsViewModel @Inject constructor(
     private val metadataCacheService: MetadataCacheService,
     private val databaseProvider: DatabaseProvider,
     private val sessionManager: SessionManager,
+    private val mobileMetadataBootstrapper: MobileMetadataBootstrapper,
+    private val syncStatusController: SyncStatusController,
     @ApplicationContext private val appContext: Context
 ) : ViewModel() {
 
@@ -101,6 +105,7 @@ class SettingsViewModel @Inject constructor(
         loadSyncFrequency()
         observeSyncStatus()
         observeSyncLogs()
+        observeMetadataBootstrapState()
     }
     
     fun loadAccounts() {
@@ -168,29 +173,10 @@ class SettingsViewModel @Inject constructor(
                 _uiState.emitSuccess(
                     currentData.copy(
                         isMetadataSyncing = true,
-                        metadataSyncMessage = "Refreshing metadata (clearing local cache first)..."
+                        metadataSyncMessage = "Refreshing metadata in the background..."
                     )
                 )
-
-                val db = databaseProvider.getCurrentDatabase()
-                clearMetadataTables(db)
-                metadataCacheService.clearAllCaches()
-
-                val result = sessionManager.downloadMetadataResilient { _ -> }
-                sessionManager.hydrateRoomFromSdk(appContext, db, RoomHydrationMode.MINIMAL)
-
-                _uiState.emitSuccess(
-                    getCurrentData().copy(
-                        isMetadataSyncing = false,
-                        metadataSyncMessage = if (result.hasCriticalFailures) {
-                            "Metadata sync failed: critical metadata missing."
-                        } else if (result.hasAnyFailures) {
-                            "Metadata refreshed with warnings (${result.successful} succeeded, ${result.failed} failed)."
-                        } else {
-                            "Metadata refreshed successfully."
-                        }
-                    )
-                )
+                backgroundSyncManager.triggerImmediateMetadataSync()
             } catch (e: Exception) {
                 _uiState.emitSuccess(
                     getCurrentData().copy(
@@ -228,16 +214,30 @@ class SettingsViewModel @Inject constructor(
                 clearDataTables(db)
                 metadataCacheService.clearAllCaches()
 
-                val metadataResult = sessionManager.downloadMetadataResilient { _ -> }
-                sessionManager.hydrateRoomFromSdk(appContext, db, RoomHydrationMode.MINIMAL)
+                val metadataResult = mobileMetadataBootstrapper.bootstrap { progress ->
+                    _uiState.emitSuccess(
+                        getCurrentData().copy(
+                            isFullSyncing = true,
+                            fullSyncMessage = progress.message
+                        )
+                    )
+                }
+
+                if (!metadataResult.success) {
+                    _uiState.emitSuccess(
+                        getCurrentData().copy(
+                            isFullSyncing = false,
+                            fullSyncMessage = metadataResult.message
+                        )
+                    )
+                    return@launch
+                }
 
                 sessionManager.startBackgroundDataSync(appContext) { success, message ->
                     val updated = getCurrentData().copy(
                         isFullSyncing = false,
-                        fullSyncMessage = if (success && !metadataResult.hasCriticalFailures) {
+                        fullSyncMessage = if (success) {
                             "Full data refresh complete."
-                        } else if (success) {
-                            "Data downloaded, but metadata has critical issues."
                         } else {
                             message ?: "Full data sync failed."
                         }
@@ -619,6 +619,29 @@ class SettingsViewModel @Inject constructor(
         viewModelScope.launch {
             syncQueueManager.syncLogs.collect { logs ->
                 _uiState.emitSuccess(getCurrentData().copy(syncErrorLogs = logs))
+            }
+        }
+    }
+
+    private fun observeMetadataBootstrapState() {
+        viewModelScope.launch {
+            syncStatusController.metadataBootstrapState.collect { metadataState ->
+                val message = when (metadataState.phase) {
+                    MetadataBootstrapPhase.Idle ->
+                        if (metadataState.isReady) null else getCurrentData().metadataSyncMessage
+                    MetadataBootstrapPhase.Enqueued,
+                    MetadataBootstrapPhase.Running -> metadataState.message ?: "Refreshing metadata in the background..."
+                    MetadataBootstrapPhase.Succeeded -> metadataState.message ?: "Metadata refreshed successfully."
+                    MetadataBootstrapPhase.Failed -> metadataState.message ?: "Metadata sync failed."
+                    MetadataBootstrapPhase.Cancelled -> metadataState.message ?: "Metadata sync cancelled."
+                }
+
+                _uiState.emitSuccess(
+                    getCurrentData().copy(
+                        isMetadataSyncing = metadataState.isRunning,
+                        metadataSyncMessage = message
+                    )
+                )
             }
         }
     }

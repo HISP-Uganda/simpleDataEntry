@@ -10,11 +10,9 @@ import androidx.hilt.work.HiltWorker
 import androidx.work.CoroutineWorker
 import androidx.work.ForegroundInfo
 import androidx.work.WorkerParameters
+import androidx.work.Data
 import androidx.work.workDataOf
-import com.ash.simpledataentry.data.AccountManager
-import com.ash.simpledataentry.data.DatabaseManager
 import com.ash.simpledataentry.data.SessionManager
-import com.ash.simpledataentry.data.RoomHydrationMode
 import androidx.core.app.NotificationCompat
 import com.ash.simpledataentry.presentation.MainActivity
 import android.app.PendingIntent
@@ -22,7 +20,6 @@ import android.content.Intent
 import dagger.assisted.Assisted
 import dagger.assisted.AssistedInject
 import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withContext
 
 /**
@@ -40,8 +37,7 @@ class MetadataSyncWorker @AssistedInject constructor(
     @Assisted workerParams: WorkerParameters,
     private val sessionManager: SessionManager,
     private val networkStateManager: NetworkStateManager,
-    private val accountManager: AccountManager,
-    private val databaseManager: DatabaseManager
+    private val mobileMetadataBootstrapper: MobileMetadataBootstrapper
 ) : CoroutineWorker(context, workerParams) {
 
     companion object {
@@ -51,13 +47,32 @@ class MetadataSyncWorker @AssistedInject constructor(
         private const val CHANNEL_ID = "metadata_sync_channel"
     }
 
-    private suspend fun updateProgress(step: String, progress: Int) {
+    private suspend fun updateProgress(step: String, progress: Int, stage: String? = null) {
         setProgress(workDataOf(
             "step" to step,
-            "progress" to progress
+            "progress" to progress,
+            "stage" to stage
         ))
         setForeground(createForegroundInfo(step, progress))
     }
+
+    private fun successData(message: String, stage: String): Data = workDataOf(
+        "message" to message,
+        "stage" to stage,
+        "completedAt" to System.currentTimeMillis()
+    )
+
+    private fun failureData(
+        message: String,
+        stage: String,
+        diagnostic: String?,
+        retryable: Boolean
+    ): Data = workDataOf(
+        "error" to message,
+        "stage" to stage,
+        "diagnostic" to diagnostic,
+        "retryable" to retryable
+    )
 
     private fun ensureChannel() {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
@@ -105,7 +120,7 @@ class MetadataSyncWorker @AssistedInject constructor(
 
     override suspend fun doWork(): Result = withContext(Dispatchers.IO) {
         try {
-            updateProgress("Initializing metadata sync...", 0)
+            updateProgress("Initializing metadata sync...", 0, BootstrapStage.VERIFY_SESSION.name)
             Log.d(TAG, "Starting metadata sync...")
 
             // Check if we have an active session
@@ -120,67 +135,67 @@ class MetadataSyncWorker @AssistedInject constructor(
                 return@withContext Result.retry()
             }
 
-            // Download metadata with resilient error handling
             try {
-                updateProgress("Syncing metadata...", 20)
-                Log.d(TAG, "Downloading metadata...")
-
-                // Use SessionManager's resilient metadata download with progress tracking
-                val metadataResult = sessionManager.downloadMetadataResilient { progress ->
-                    // Convert NavigationProgress to work progress percentage
-                    // Metadata download uses 20-80% of overall progress
-                    val workProgress = 20 + ((progress.overallPercentage - 30) * 0.6).toInt()
-                    runBlocking {
-                        updateProgress(progress.phaseDetail, workProgress.coerceIn(20, 80))
-                    }
-                }
-
-                // Check if critical metadata failed
-                if (metadataResult.hasCriticalFailures) {
-                    val criticalErrors = metadataResult.criticalFailures.joinToString(", ") { it.type }
-                    Log.e(TAG, "CRITICAL metadata failures: $criticalErrors")
-                    updateProgress("Metadata sync failed - will retry", 0)
-                    return@withContext Result.retry()
-                }
-
-                // Log warnings for non-critical failures
-                if (metadataResult.hasAnyFailures) {
-                    val failures = metadataResult.details.filter { !it.success }
-                    failures.forEach { failure ->
-                        Log.w(TAG, "Non-critical metadata '${failure.type}' failed but continuing: ${failure.error}")
-                    }
-                }
-
-                val successMessage = if (metadataResult.hasAnyFailures) {
-                    "⚠ ${metadataResult.successful} of ${metadataResult.successful + metadataResult.failed} metadata types synced"
-                } else {
-                    "✓ All metadata synced successfully"
-                }
-
-                // Refresh active account Room cache after metadata update.
-                val activeAccount = accountManager.getActiveAccount(applicationContext)
-                if (activeAccount != null) {
-                    val db = databaseManager.getDatabaseForAccount(applicationContext, activeAccount)
-                    sessionManager.hydrateRoomFromSdk(
-                        context = applicationContext,
-                        db = db,
-                        mode = RoomHydrationMode.MINIMAL
+                val metadataResult = mobileMetadataBootstrapper.bootstrap { progress ->
+                    updateProgress(
+                        step = progress.message,
+                        progress = progress.progress,
+                        stage = progress.stage.name
                     )
                 }
 
-                updateProgress(successMessage, 100)
-                Log.d(TAG, "Metadata sync completed: $successMessage")
-                return@withContext Result.success()
+                if (!metadataResult.success) {
+                    Log.e(
+                        TAG,
+                        "Metadata bootstrap failed at ${metadataResult.stage.name}: ${metadataResult.diagnosticMessage}"
+                    )
+                    updateProgress(
+                        step = metadataResult.message,
+                        progress = metadataResult.stage.progress,
+                        stage = metadataResult.stage.name
+                    )
+                    return@withContext Result.failure(
+                        failureData(
+                            message = metadataResult.message,
+                            stage = metadataResult.stage.name,
+                            diagnostic = metadataResult.diagnosticMessage,
+                            retryable = metadataResult.retryable
+                        )
+                    )
+                }
+
+                updateProgress(metadataResult.message, 100, metadataResult.stage.name)
+                Log.d(TAG, "Metadata sync completed: ${metadataResult.message}")
+                return@withContext Result.success(
+                    successData(
+                        message = metadataResult.message,
+                        stage = metadataResult.stage.name
+                    )
+                )
 
             } catch (e: Exception) {
                 Log.e(TAG, "Error syncing metadata", e)
-                updateProgress("Metadata sync failed - will retry", 0)
-                return@withContext Result.retry()
+                updateProgress("Metadata sync failed. Retry metadata sync.", 0, BootstrapStage.VERIFY_SESSION.name)
+                return@withContext Result.failure(
+                    failureData(
+                        message = "Metadata sync failed. Retry metadata sync.",
+                        stage = BootstrapStage.VERIFY_SESSION.name,
+                        diagnostic = e.message,
+                        retryable = true
+                    )
+                )
             }
 
         } catch (e: Exception) {
             Log.e(TAG, "Metadata sync failed with exception", e)
-            return@withContext Result.retry()
+            return@withContext Result.failure(
+                failureData(
+                    message = "Metadata sync failed. Retry metadata sync.",
+                    stage = BootstrapStage.VERIFY_SESSION.name,
+                    diagnostic = e.message,
+                    retryable = true
+                )
+            )
         }
     }
 }

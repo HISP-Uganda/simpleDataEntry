@@ -29,6 +29,8 @@ import okhttp3.Interceptor
 import org.koin.core.context.GlobalContext
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
+import kotlinx.coroutines.flow.first
+import com.ash.simpledataentry.data.sync.MetadataReadinessLevel
 
 import java.security.MessageDigest
 import java.nio.charset.StandardCharsets
@@ -63,6 +65,7 @@ data class MetadataDownloadResult(
 
 enum class RoomHydrationMode {
     MINIMAL,
+    FORM_METADATA,
     FULL
 }
 
@@ -83,6 +86,7 @@ class SessionManager @Inject constructor(
     val currentAccountId: StateFlow<String?> = _currentAccountId.asStateFlow()
 
     private val mutex = kotlinx.coroutines.sync.Mutex()
+    private val formMetadataHydrationMutex = Mutex()
 
     /**
      * Extract D2Error from potentially nested exceptions.
@@ -749,6 +753,58 @@ class SessionManager @Inject constructor(
         return d2?.userModule()?.isLogged()?.blockingGet() ?: false
     }
 
+    suspend fun getMetadataReadinessLevel(context: Context): MetadataReadinessLevel = withContext(Dispatchers.IO) {
+        val activeAccount = accountManager.getActiveAccount(context) ?: return@withContext MetadataReadinessLevel.None
+        val db = databaseManager.getDatabaseForAccount(context, activeAccount)
+
+        val hasOrgUnits = db.organisationUnitDao().getAll().isNotEmpty()
+        val hasDataElements = db.dataElementDao().count() > 0
+        val hasCategoryCombos = db.categoryComboDao().getAll().isNotEmpty()
+        val hasCategoryOptionCombos = db.categoryOptionComboDao().getAll().isNotEmpty()
+        val hasDatasets = db.datasetDao().getAll().first().isNotEmpty()
+        val hasPrograms = db.trackerProgramDao().getAll().first().isNotEmpty() ||
+            db.eventProgramDao().getAll().first().isNotEmpty()
+
+        if (!hasOrgUnits || (!hasDatasets && !hasPrograms)) {
+            return@withContext MetadataReadinessLevel.None
+        }
+
+        if (hasDataElements && hasCategoryCombos && hasCategoryOptionCombos) {
+            MetadataReadinessLevel.FormReady
+        } else {
+            MetadataReadinessLevel.ListReady
+        }
+    }
+
+    suspend fun isListMetadataReadyForActiveAccount(context: Context): Boolean = withContext(Dispatchers.IO) {
+        getMetadataReadinessLevel(context) != MetadataReadinessLevel.None
+    }
+
+    suspend fun isMinimumMetadataReadyForActiveAccount(context: Context): Boolean = withContext(Dispatchers.IO) {
+        getMetadataReadinessLevel(context) == MetadataReadinessLevel.FormReady
+    }
+
+    suspend fun ensureFormMetadataReadyForActiveAccount(context: Context): Boolean = withContext(Dispatchers.IO) {
+        if (getMetadataReadinessLevel(context) == MetadataReadinessLevel.FormReady) {
+            return@withContext true
+        }
+
+        formMetadataHydrationMutex.withLock {
+            if (getMetadataReadinessLevel(context) == MetadataReadinessLevel.FormReady) {
+                return@withLock true
+            }
+
+            val activeAccount = accountManager.getActiveAccount(context) ?: return@withLock false
+            val db = databaseManager.getDatabaseForAccount(context, activeAccount)
+            hydrateRoomFromSdk(
+                context = context,
+                db = db,
+                mode = RoomHydrationMode.FORM_METADATA
+            )
+            getMetadataReadinessLevel(context) == MetadataReadinessLevel.FormReady
+        }
+    }
+
     /**
      * Attempt offline login using existing DHIS2 session data with SECURE password validation
      * This validates the password against stored encrypted credentials before granting access
@@ -1135,8 +1191,12 @@ class SessionManager @Inject constructor(
         val startTime = System.currentTimeMillis()
         Log.d("SessionManager", "Hydrating Room from SDK (mode=$mode)")
 
-        // PERFORMANCE OPTIMIZATION: Fetch all metadata in parallel using async
-        val datasetsDeferred = async {
+        val includeListMetadata = mode == RoomHydrationMode.MINIMAL || mode == RoomHydrationMode.FULL
+        val includeFormMetadata = mode == RoomHydrationMode.FORM_METADATA || mode == RoomHydrationMode.FULL
+
+        // PERFORMANCE OPTIMIZATION: Fetch only the metadata needed for the requested hydration level.
+        val datasetsDeferred = async<List<com.ash.simpledataentry.data.local.DatasetEntity>> {
+            if (!includeListMetadata) return@async emptyList()
             d2Instance.dataSetModule().dataSets().blockingGet().map {
                 val datasetStyle = it.style()
 
@@ -1151,7 +1211,8 @@ class SessionManager @Inject constructor(
             }
         }
 
-        val dataElementsDeferred = async {
+        val dataElementsDeferred = async<List<com.ash.simpledataentry.data.local.DataElementEntity>> {
+            if (!includeFormMetadata) return@async emptyList()
             d2Instance.dataElementModule().dataElements().blockingGet().map {
                 com.ash.simpledataentry.data.local.DataElementEntity(
                     id = it.uid(),
@@ -1163,7 +1224,8 @@ class SessionManager @Inject constructor(
             }
         }
 
-        val categoryCombosDeferred = async {
+        val categoryCombosDeferred = async<List<com.ash.simpledataentry.data.local.CategoryComboEntity>> {
+            if (!includeFormMetadata) return@async emptyList()
             d2Instance.categoryModule().categoryCombos().blockingGet().map {
                 com.ash.simpledataentry.data.local.CategoryComboEntity(
                     id = it.uid(),
@@ -1172,7 +1234,8 @@ class SessionManager @Inject constructor(
             }
         }
 
-        val categoryOptionCombosDeferred = async {
+        val categoryOptionCombosDeferred = async<List<com.ash.simpledataentry.data.local.CategoryOptionComboEntity>> {
+            if (!includeFormMetadata) return@async emptyList()
             d2Instance.categoryModule()
                 .categoryOptionCombos()
                 .withCategoryOptions()
@@ -1187,7 +1250,8 @@ class SessionManager @Inject constructor(
             }
         }
 
-        val orgUnitsDeferred = async {
+        val orgUnitsDeferred = async<List<com.ash.simpledataentry.data.local.OrganisationUnitEntity>> {
+            if (!includeListMetadata) return@async emptyList()
             d2Instance.organisationUnitModule().organisationUnits().blockingGet().map {
                 com.ash.simpledataentry.data.local.OrganisationUnitEntity(
                     id = it.uid(),
@@ -1198,7 +1262,8 @@ class SessionManager @Inject constructor(
         }
 
         // Tracker & event program hydration (keep for MINIMAL to render program lists)
-        val trackerProgramsDeferred = async {
+        val trackerProgramsDeferred = async<List<com.ash.simpledataentry.data.local.TrackerProgramEntity>> {
+            if (!includeListMetadata) return@async emptyList()
             d2Instance.programModule().programs()
                 .byProgramType().eq(org.hisp.dhis.android.core.program.ProgramType.WITH_REGISTRATION)
                 .blockingGet()
@@ -1224,7 +1289,8 @@ class SessionManager @Inject constructor(
                 }
         }
 
-        val eventProgramsDeferred = async {
+        val eventProgramsDeferred = async<List<com.ash.simpledataentry.data.local.EventProgramEntity>> {
+            if (!includeListMetadata) return@async emptyList()
             d2Instance.programModule().programs()
                 .byProgramType().eq(org.hisp.dhis.android.core.program.ProgramType.WITHOUT_REGISTRATION)
                 .blockingGet()
@@ -1242,7 +1308,7 @@ class SessionManager @Inject constructor(
         }
 
         // Tracker enrollment and event instance hydration (FULL only)
-        val trackerEnrollmentsDeferred = async {
+        val trackerEnrollmentsDeferred = async<List<com.ash.simpledataentry.data.local.TrackerEnrollmentEntity>> {
             if (mode != RoomHydrationMode.FULL) return@async emptyList()
             val orgUnitMap = d2Instance.organisationUnitModule().organisationUnits()
                 .blockingGet()
@@ -1267,7 +1333,7 @@ class SessionManager @Inject constructor(
                 }
         }
 
-        val eventInstancesDeferred = async {
+        val eventInstancesDeferred = async<List<com.ash.simpledataentry.data.local.EventInstanceEntity>> {
             if (mode != RoomHydrationMode.FULL) return@async emptyList()
             val orgUnitMap = d2Instance.organisationUnitModule().organisationUnits()
                 .blockingGet()
@@ -1308,54 +1374,72 @@ class SessionManager @Inject constructor(
 
         // Insert all data sequentially (Room doesn't handle parallel writes well)
         // CRITICAL: Log what SDK returns to diagnose empty Room issues
-        Log.d("SessionManager", "SDK returned: ${datasets.size} datasets, ${dataElements.size} dataElements, ${categoryCombos.size} categoryCombos, ${categoryOptionCombos.size} COCs, ${orgUnits.size} orgUnits")
+        Log.d(
+            "SessionManager",
+            "SDK returned: ${datasets.size} datasets, ${dataElements.size} dataElements, ${categoryCombos.size} categoryCombos, ${categoryOptionCombos.size} COCs, ${orgUnits.size} orgUnits"
+        )
 
-        db.datasetDao().clearAll()
-        db.datasetDao().insertAll(datasets)
-        Log.d("SessionManager", "Hydrated Room with ${datasets.size} datasets")
+        if (includeListMetadata) {
+            db.datasetDao().clearAll()
+            db.datasetDao().insertAll(datasets)
+            Log.d("SessionManager", "Hydrated Room with ${datasets.size} datasets")
+        } else {
+            Log.d("SessionManager", "Skipping dataset hydration for mode=$mode")
+        }
 
         // CRITICAL FIX: Only clear and re-insert if SDK returned data
         // This prevents wiping Room when SDK returns empty (e.g., during offline mode)
-        if (dataElements.isNotEmpty()) {
+        if (includeFormMetadata && dataElements.isNotEmpty()) {
             db.dataElementDao().clearAll()
             db.dataElementDao().insertAll(dataElements)
             Log.d("SessionManager", "Hydrated Room with ${dataElements.size} dataElements")
-        } else {
+        } else if (includeFormMetadata) {
             Log.w("SessionManager", "SDK returned 0 dataElements - preserving existing Room data")
+        } else {
+            Log.d("SessionManager", "Skipping data element hydration for mode=$mode")
         }
 
-        if (categoryCombos.isNotEmpty()) {
+        if (includeFormMetadata && categoryCombos.isNotEmpty()) {
             db.categoryComboDao().clearAll()
             db.categoryComboDao().insertAll(categoryCombos)
             Log.d("SessionManager", "Hydrated Room with ${categoryCombos.size} categoryCombos")
-        } else {
+        } else if (includeFormMetadata) {
             Log.w("SessionManager", "SDK returned 0 categoryCombos - preserving existing Room data")
+        } else {
+            Log.d("SessionManager", "Skipping category combo hydration for mode=$mode")
         }
 
-        if (categoryOptionCombos.isNotEmpty()) {
+        if (includeFormMetadata && categoryOptionCombos.isNotEmpty()) {
             db.categoryOptionComboDao().clearAll()
             db.categoryOptionComboDao().insertAll(categoryOptionCombos)
             Log.d("SessionManager", "Hydrated Room with ${categoryOptionCombos.size} categoryOptionCombos")
-        } else {
+        } else if (includeFormMetadata) {
             Log.w("SessionManager", "SDK returned 0 categoryOptionCombos - preserving existing Room data")
+        } else {
+            Log.d("SessionManager", "Skipping category option combo hydration for mode=$mode")
         }
 
-        if (orgUnits.isNotEmpty()) {
+        if (includeListMetadata && orgUnits.isNotEmpty()) {
             db.organisationUnitDao().clearAll()
             db.organisationUnitDao().insertAll(orgUnits)
             Log.d("SessionManager", "Hydrated Room with ${orgUnits.size} orgUnits")
-        } else {
+        } else if (includeListMetadata) {
             Log.w("SessionManager", "SDK returned 0 orgUnits - preserving existing Room data")
+        } else {
+            Log.d("SessionManager", "Skipping org unit hydration for mode=$mode")
         }
 
-        // Insert tracker and event programs into Room
-        db.trackerProgramDao().clearAll()
-        db.trackerProgramDao().insertAll(trackerPrograms)
-        Log.d("SessionManager", "Hydrated ${trackerPrograms.size} tracker programs")
+        if (includeListMetadata) {
+            db.trackerProgramDao().clearAll()
+            db.trackerProgramDao().insertAll(trackerPrograms)
+            Log.d("SessionManager", "Hydrated ${trackerPrograms.size} tracker programs")
 
-        db.eventProgramDao().clearAll()
-        db.eventProgramDao().insertAll(eventPrograms)
-        Log.d("SessionManager", "Hydrated ${eventPrograms.size} event programs")
+            db.eventProgramDao().clearAll()
+            db.eventProgramDao().insertAll(eventPrograms)
+            Log.d("SessionManager", "Hydrated ${eventPrograms.size} event programs")
+        } else {
+            Log.d("SessionManager", "Skipping program hydration for mode=$mode")
+        }
 
         if (mode == RoomHydrationMode.FULL) {
             db.trackerEnrollmentDao().clearAll()

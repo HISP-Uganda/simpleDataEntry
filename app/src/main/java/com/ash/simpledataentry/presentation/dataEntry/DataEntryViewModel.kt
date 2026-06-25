@@ -28,6 +28,7 @@ import com.ash.simpledataentry.domain.useCase.DataEntryUseCases
 import com.ash.simpledataentry.presentation.MainActivity
 import com.ash.simpledataentry.util.NetworkUtils
 import com.ash.simpledataentry.data.sync.NetworkStateManager
+import com.ash.simpledataentry.data.sync.MetadataReadinessLevel
 import com.ash.simpledataentry.presentation.core.LoadingOperation
 import com.ash.simpledataentry.presentation.core.LoadingProgress
 import com.ash.simpledataentry.presentation.core.UiError
@@ -322,6 +323,32 @@ class DataEntryViewModel @Inject constructor(
             }
             try {
                 logStage("START loadDataValues(period=$period, orgUnit=${orgUnitId.takeLast(6)})")
+                val readinessLevel = sessionManager.getMetadataReadinessLevel(application.applicationContext)
+                if (readinessLevel == MetadataReadinessLevel.None) {
+                    clearFormPreparationNotification()
+                    setUiError(
+                        UiError.Local(
+                            "Metadata sync is still preparing program lists. Please wait for metadata to finish syncing, then retry."
+                        )
+                    )
+                    return@launch
+                }
+                if (readinessLevel != MetadataReadinessLevel.FormReady) {
+                    updateFormPreparationNotification(5, "Preparing form metadata...")
+                    val formMetadataReady = sessionManager.ensureFormMetadataReadyForActiveAccount(
+                        application.applicationContext
+                    )
+                    if (!formMetadataReady) {
+                        clearFormPreparationNotification()
+                        setUiError(
+                            UiError.Local(
+                                "Form metadata is still preparing. Please retry in a moment."
+                            )
+                        )
+                        return@launch
+                    }
+                }
+                metadataCacheService.preWarmCaches(listOf(datasetId))
                 updateFormPreparationNotification(5, "Initializing form...")
                 val attributeOptionCombos = repository.getAttributeOptionCombos(datasetId)
                 logStage("Fetched attribute option combos: ${attributeOptionCombos.size}")

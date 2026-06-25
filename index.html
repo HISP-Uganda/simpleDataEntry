@@ -3,169 +3,344 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>The Simple Data Entry App</title>
-  <meta name="description" content="A faster and simpler DHIS2 data capture experience for Android. Download APK, watch demo, and explore screenshots." />
+  <title>The Simple Data Entry</title>
+  <meta
+    name="description"
+    content="The Simple Data Entry (SDE) app for Android. Built for field teams and district data officers with offline-first DHIS2 data capture."
+  />
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
-  <link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;700&family=Source+Sans+3:wght@400;600&display=swap" rel="stylesheet" />
+  <link
+    href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@500;700&family=Source+Sans+3:wght@400;500;600;700&display=swap"
+    rel="stylesheet"
+  />
   <link rel="stylesheet" href="styles.css" />
 </head>
 <body>
-  <div class="bg-orb orb-a"></div>
-  <div class="bg-orb orb-b"></div>
+  <div class="page-glow glow-left"></div>
+  <div class="page-glow glow-right"></div>
 
-  <header class="topbar">
-    <div class="container topbar-inner">
-      <div class="brand">The Simple Data Entry</div>
-      <a class="btn btn-ghost" href="https://www.mediafire.com/file/0rbhjtcyzxfj2jb/SDE-v1.5.apk/file">Download APK</a>
+  <header class="site-header">
+    <div class="container header-inner">
+      <a class="brand" href="#top">The Simple Data Entry</a>
+      <nav class="header-links" aria-label="Quick links">
+        <a href="#demo">Demo</a>
+        <a href="#features">Features</a>
+        <a href="#screenshots">Screenshots</a>
+      </nav>
     </div>
   </header>
 
-  <main>
-    <section class="hero container">
-      <div class="hero-copy reveal">
-        <p class="kicker">Built for field teams and district data officers</p>
-        <h1>DHIS2 data capture that feels clean, fast, and practical.</h1>
-        <p class="lead">
-          A simplified Android app for entering aggregate data, managing forms offline,
-          and syncing when internet is available.
-        </p>
-        <div class="hero-actions">
-          <a id="download" class="btn btn-primary" href="https://www.mediafire.com/file/0rbhjtcyzxfj2jb/SDE-v1.5.apk/file" aria-label="Download APK">Download Latest APK</a>
-          <a class="btn btn-secondary" href="https://youtu.be/xs7JZZeayUw">Watch Demo</a>
+  <main id="top">
+    <section class="hero">
+      <div class="container hero-grid">
+        <div class="hero-copy reveal">
+          <p class="eyebrow">Built for field teams and district data officers</p>
+          <h1>The Simple Data Entry</h1>
+          <p class="hero-subtitle">
+            Clean, reliable DHIS2 capture for Android with offline-first workflows,
+            simpler data entry, and a deployment flow that is easy to manage in the field.
+          </p>
+
+          <div class="download-block">
+            <div class="download-main">
+              <a
+                class="btn btn-primary"
+                href="https://www.mediafire.com/file/imnhbg8o2y0c7xd/SDE-v1.6.0.0.apk/file"
+              >
+                Download Latest APK (v1.6.0.0)
+              </a>
+
+              <div class="version-menu" data-version-menu>
+                <button
+                  class="btn btn-secondary version-toggle"
+                  type="button"
+                  aria-haspopup="true"
+                  aria-expanded="false"
+                  aria-controls="version-list"
+                >
+                  Other Versions
+                  <span class="caret" aria-hidden="true"></span>
+                </button>
+                <div class="version-popover" id="version-list" role="menu" hidden>
+                  <a
+                    role="menuitem"
+                    class="version-option"
+                    href="https://www.mediafire.com/file/imnhbg8o2y0c7xd/SDE-v1.6.0.0.apk/file"
+                  >
+                    <span class="version-option-title">v1.6.0.0</span>
+                    <span class="version-option-meta">Latest, Recommended, Android 10+, ~70MB</span>
+                  </a>
+                  <a
+                    role="menuitem"
+                    class="version-option"
+                    href="https://www.mediafire.com/file/0rbhjtcyzxfj2jb/SDE-v1.5.apk/file"
+                  >
+                    <span class="version-option-title">v1.5</span>
+                    <span class="version-option-meta">Older Version / Rollback compatibility</span>
+                  </a>
+                  <div class="version-popover-footer">
+                    <a
+                      class="version-fallback-link"
+                      href="https://www.mediafire.com/file/0rbhjtcyzxfj2jb/SDE-v1.5.apk/file"
+                    >
+                      Direct previous APK download
+                    </a>
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            <div class="requirements-note" aria-label="System requirements">
+              <span>Android 10+</span>
+              <span>~70MB APK</span>
+              <span>Offline-first workflow</span>
+            </div>
+          </div>
         </div>
-        <p class="meta">Version: <strong>v1.5</strong> · Android 10+ · Offline-first workflow</p>
-      </div>
-      <div class="hero-shot reveal delay-1">
-        <img src="assets/screenshots/03_home.png" alt="Home screen overview" />
+
+        <div class="hero-visual reveal delay-1">
+          <div class="hero-frame">
+            <img src="assets/screenshots/03_home.png" alt="SDE home screen preview" />
+          </div>
+        </div>
       </div>
     </section>
 
-    <section id="demo" class="section container reveal delay-2">
-      <div class="section-head">
-        <h2>See It In Action</h2>
-        <p>Short walkthrough video of the app experience and flow.</p>
+    <section id="demo" class="section container reveal">
+      <div class="section-heading">
+        <p class="section-kicker">Demo</p>
+        <h2>Product walkthrough, ready for clean embedding</h2>
+        <p>
+          The live embed is currently disabled. This placeholder keeps the layout stable and can be replaced
+          with a YouTube iframe or native player without breaking the page.
+        </p>
       </div>
-      <div class="video-wrap">
-            <iframe
-          src="https://www.youtube.com/embed/xs7JZZeayUw"
-          title="Simple Data Entry walkthrough"
-          loading="lazy"
-          allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture; web-share"
-          allowfullscreen>
-        </iframe>
-      </div>
+
+      <a class="video-placeholder" href="https://youtu.be/xs7JZZeayUw" target="_blank" rel="noreferrer">
+        <div class="video-placeholder-copy">
+          <span class="video-chip">Demo video</span>
+          <h3>Open the SDE walkthrough</h3>
+          <p>Tap to launch the current demo in YouTube while the embedded player is being refreshed.</p>
+        </div>
+        <div class="video-play" aria-hidden="true">
+          <span class="play-triangle"></span>
+        </div>
+      </a>
     </section>
 
-    <section class="section container">
-      <div class="section-head reveal">
-        <h2>What Users Get</h2>
-        <p>Focused design for faster routine reporting and cleaner data entry.</p>
+    <section id="features" class="section container reveal">
+      <div class="section-heading">
+        <p class="section-kicker">Why teams use it</p>
+        <h2>Built for focused data capture, not clutter</h2>
       </div>
+
       <div class="feature-grid">
-        <article class="feature-card reveal delay-1">
+        <article class="feature-tile">
+          <div class="feature-icon" aria-hidden="true">
+            <svg viewBox="0 0 24 24"><path d="M5 6h14M5 12h14M5 18h9"/></svg>
+          </div>
           <h3>Simple New Entry Flow</h3>
-          <p>Choose org unit, period, and begin with fewer taps and less confusion.</p>
+          <p>Move from org unit selection to form entry with fewer steps and clearer choices.</p>
         </article>
-        <article class="feature-card reveal delay-2">
+
+        <article class="feature-tile">
+          <div class="feature-icon" aria-hidden="true">
+            <svg viewBox="0 0 24 24"><path d="M12 3a9 9 0 1 0 9 9M12 7v5l3 3"/></svg>
+          </div>
           <h3>Offline Capture</h3>
-          <p>Enter data without internet and sync when connectivity returns.</p>
+          <p>Collect and save work locally, then sync when connectivity returns.</p>
         </article>
-        <article class="feature-card reveal delay-3">
-          <h3>Validation Support</h3>
-          <p>Inline checks help catch mistakes before completion and submission.</p>
+
+        <article class="feature-tile">
+          <div class="feature-icon" aria-hidden="true">
+            <svg viewBox="0 0 24 24"><path d="M12 3l8 4v5c0 5-3.5 7.5-8 9-4.5-1.5-8-4-8-9V7l8-4Zm-2 9 1.8 1.8L15.5 10"/></svg>
+          </div>
+          <h3>Inline Validation Support</h3>
+          <p>Catch errors earlier with validation feedback before completing submission.</p>
         </article>
-        <article class="feature-card reveal delay-4">
-          <h3>Tracker + Dataset Modes</h3>
-          <p>Supports both aggregate dataset entry and tracker/event workflows.</p>
+
+        <article class="feature-tile">
+          <div class="feature-icon" aria-hidden="true">
+            <svg viewBox="0 0 24 24"><path d="M4 7h7v13H4zM13 4h7v16h-7z"/></svg>
+          </div>
+          <h3>Tracker & Aggregate Modes</h3>
+          <p>Support both aggregate dataset workflows and tracker-based field operations.</p>
         </article>
       </div>
     </section>
 
-    <section class="section container">
-      <div class="section-head reveal">
-        <h2>App Screenshots</h2>
-        <p>Preview major screens from login to data entry and validation.</p>
-      </div>
-      <div class="gallery">
-        <img class="reveal" src="assets/screenshots/01_login.png" alt="Login screen" />
-        <img class="reveal delay-1" src="assets/screenshots/04_datasets.png" alt="Datasets list" />
-        <img class="reveal delay-2" src="assets/screenshots/05_dataset_instances.png" alt="Dataset instances screen" />
-        <img class="reveal delay-3" src="assets/screenshots/06_data_entry_form.png" alt="Data entry form" />
-        <img class="reveal" src="assets/screenshots/09_validation.png" alt="Validation feedback" />
-        <img class="reveal delay-1" src="assets/screenshots/11_tracker_enrollments.png" alt="Tracker enrollments" />
-      </div>
-    </section>
+    <section id="screenshots" class="section section-screens reveal">
+      <div class="container">
+        <div class="section-heading">
+          <p class="section-kicker">Screens</p>
+          <h2>Large combined views of the real app flow</h2>
+          <p>
+            Each slide groups multiple mobile screens together so district teams can see the product flow clearly.
+          </p>
+        </div>
 
-    <section class="section container reveal">
-      <div class="section-head">
-        <h2>Release Details</h2>
-      </div>
-      <div class="release-grid">
-        <div class="release-item"><span>Version</span><strong>v1.5</strong></div>
-        <div class="release-item"><span>Release date</span><strong>May 7, 2026</strong></div>
-        <div class="release-item"><span>File size</span><strong>~70 MB</strong></div>
-        <div class="release-item"><span>Minimum Android</span><strong>Android 10+</strong></div>
-      </div>
-      <div class="checksum-box">
-        <p><strong>SHA-256 checksum</strong></p>
-        <code>03e78d925949fa25b2ccb47597fe2e475e8321d6cba4416501a41fa746c3d59f </code>
-      </div>
-    </section>
+        <div class="carousel" data-carousel>
+          <div class="carousel-stage">
+            <button class="carousel-control carousel-prev" type="button" data-carousel-prev aria-label="Previous screenshot">
+              <span aria-hidden="true">‹</span>
+            </button>
 
-    <section class="section container reveal">
-      <div class="section-head">
-        <h2>Install In 3 Steps</h2>
-      </div>
-      <ol class="steps">
-        <li>Tap <strong>Download Latest APK</strong>.</li>
-        <li>Open the file and allow install from unknown sources if prompted.</li>
-        <li>Launch the app, sign in, and start capture.</li>
-      </ol>
-    </section>
+            <div class="carousel-viewport">
+              <div class="carousel-track">
+                <article class="carousel-slide is-active">
+                  <img src="assets/screenshots/SDE_01.png" alt="Combined SDE screens showing login and early workflow" />
+                </article>
+                <article class="carousel-slide">
+                  <img src="assets/screenshots/SDE_02.png" alt="Combined SDE screens showing dataset and capture flow" />
+                </article>
+                <article class="carousel-slide">
+                  <img src="assets/screenshots/SDE_03.png" alt="Combined SDE screens showing form interaction and validation" />
+                </article>
+                <article class="carousel-slide">
+                  <img src="assets/screenshots/SDE_04.png" alt="Combined SDE screens showing tracker and profile flow" />
+                </article>
+              </div>
+            </div>
 
-    <section class="section container reveal">
-      <div class="section-head">
-        <h2>Known Limitations (Beta)</h2>
-      </div>
-      <div class="notice">
-        <p>This APK is a public beta. You may see intermittent sync/validation issues on some accounts while we continue stabilization.</p>
-      </div>
-    </section>
+            <button class="carousel-control carousel-next" type="button" data-carousel-next aria-label="Next screenshot">
+              <span aria-hidden="true">›</span>
+            </button>
+          </div>
 
-    <section class="section container reveal">
-      <div class="section-head">
-        <h2>Support & Trust</h2>
+          <div class="carousel-footer">
+            <div class="carousel-copy">
+              <p class="carousel-label">Screenshot set</p>
+              <h3 data-carousel-title>Login to entry workflow</h3>
+            </div>
+            <div class="carousel-dots" role="tablist" aria-label="Screenshot navigation">
+              <button class="carousel-dot is-active" type="button" data-carousel-dot="0" aria-label="Go to slide 1"></button>
+              <button class="carousel-dot" type="button" data-carousel-dot="1" aria-label="Go to slide 2"></button>
+              <button class="carousel-dot" type="button" data-carousel-dot="2" aria-label="Go to slide 3"></button>
+              <button class="carousel-dot" type="button" data-carousel-dot="3" aria-label="Go to slide 4"></button>
+            </div>
+          </div>
+        </div>
       </div>
-      <ul class="steps">
-        <li>Support email: <a href="mailto:support@example.com">support@example.com</a></li>
-        <li>WhatsApp: <a href="https://wa.me/256700000000">+256 700 000000</a></li>
-        <li>Report fake APK: <a href="mailto:security@example.com">security@example.com</a></li>
-        <li>Privacy policy: <a href="./privacy-policy.html">View policy</a></li>
-        <li>Terms / disclaimer: <a href="./terms.html">View terms</a></li>
-        <li>Changelog: <a href="./changelog.html">View changelog</a></li>
-      </ul>
     </section>
   </main>
 
-  <footer class="footer">
-    <div class="container footer-inner">
+  <footer class="site-footer">
+    <div class="container footer-grid">
+      <div>
+        <p class="footer-title">The Simple Data Entry</p>
+        <p class="footer-copy">
+          Clean Android data capture for DHIS2 deployments that need a practical field workflow.
+        </p>
+        <div class="footer-requirements">
+          <span>System requirements</span>
+          <span>Android 10+</span>
+          <span>Approx. 70MB</span>
+        </div>
+      </div>
+
+      <div>
+        <p class="footer-title">Documentation</p>
+        <ul class="footer-links">
+          <li><a href="./privacy-policy.html">Privacy Policy</a></li>
+          <li><a href="./terms.html">Terms</a></li>
+          <li><a href="./changelog.html">Changelog</a></li>
+        </ul>
+      </div>
+
+      <div>
+        <p class="footer-title">Support</p>
+        <ul class="footer-links">
+          <li><a href="mailto:support@example.com">support@example.com</a></li>
+          <li><a href="https://wa.me/256700000000">WhatsApp Support</a></li>
+          <li><a href="mailto:security@example.com">Report APK issues</a></li>
+        </ul>
+      </div>
+    </div>
+
+    <div class="footer-bottom">
       <p>© 2026 The Simple Data Entry</p>
-      <p>Built for practical DHIS2 data capture.</p>
     </div>
   </footer>
 
   <script>
-    const observer = new IntersectionObserver((entries) => {
+    const revealObserver = new IntersectionObserver((entries) => {
       entries.forEach((entry) => {
         if (entry.isIntersecting) {
           entry.target.classList.add('visible');
-          observer.unobserve(entry.target);
+          revealObserver.unobserve(entry.target);
         }
       });
     }, { threshold: 0.15 });
 
-    document.querySelectorAll('.reveal').forEach((el) => observer.observe(el));
+    document.querySelectorAll('.reveal').forEach((element) => revealObserver.observe(element));
+
+    const versionMenu = document.querySelector('[data-version-menu]');
+    if (versionMenu) {
+      const toggle = versionMenu.querySelector('.version-toggle');
+      const popover = versionMenu.querySelector('.version-popover');
+
+      const closeMenu = () => {
+        popover.hidden = true;
+        toggle.setAttribute('aria-expanded', 'false');
+      };
+
+      const openMenu = () => {
+        popover.hidden = false;
+        toggle.setAttribute('aria-expanded', 'true');
+      };
+
+      toggle.addEventListener('click', () => {
+        const isOpen = toggle.getAttribute('aria-expanded') === 'true';
+        if (isOpen) closeMenu();
+        else openMenu();
+      });
+
+      document.addEventListener('click', (event) => {
+        if (!versionMenu.contains(event.target)) closeMenu();
+      });
+
+      document.addEventListener('keydown', (event) => {
+        if (event.key === 'Escape') closeMenu();
+      });
+    }
+
+    const carousel = document.querySelector('[data-carousel]');
+    if (carousel) {
+      const slides = Array.from(carousel.querySelectorAll('.carousel-slide'));
+      const dots = Array.from(carousel.querySelectorAll('.carousel-dot'));
+      const title = carousel.querySelector('[data-carousel-title]');
+      const prev = carousel.querySelector('[data-carousel-prev]');
+      const next = carousel.querySelector('[data-carousel-next]');
+      const titles = [
+        'Login to entry workflow',
+        'Dataset browsing and setup',
+        'Form entry and validation',
+        'Tracker and profile views'
+      ];
+
+      let activeIndex = 0;
+
+      const renderCarousel = (index) => {
+        activeIndex = (index + slides.length) % slides.length;
+        slides.forEach((slide, slideIndex) => {
+          slide.classList.toggle('is-active', slideIndex === activeIndex);
+        });
+        dots.forEach((dot, dotIndex) => {
+          dot.classList.toggle('is-active', dotIndex === activeIndex);
+          dot.setAttribute('aria-current', dotIndex === activeIndex ? 'true' : 'false');
+        });
+        if (title) title.textContent = titles[activeIndex];
+      };
+
+      prev.addEventListener('click', () => renderCarousel(activeIndex - 1));
+      next.addEventListener('click', () => renderCarousel(activeIndex + 1));
+      dots.forEach((dot, index) => {
+        dot.addEventListener('click', () => renderCarousel(index));
+      });
+
+      renderCarousel(0);
+    }
   </script>
 </body>
 </html>

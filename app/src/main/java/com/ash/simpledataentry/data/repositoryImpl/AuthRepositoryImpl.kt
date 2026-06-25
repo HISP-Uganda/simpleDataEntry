@@ -20,9 +20,9 @@ class AuthRepositoryImpl @Inject constructor(
 
     override suspend fun login(serverUrl: String, username: String, password: String, context: Context): Boolean {
         return try {
-            sessionManager.login(context, Dhis2Config(serverUrl, username, password))
-            // CRITICAL: Clear metadata caches after successful login (handles user-switch scenarios)
+            sessionManager.authenticateOnly(context, Dhis2Config(serverUrl, username, password))
             metadataCacheService.clearAllCaches()
+            backgroundSyncManager.triggerImmediateMetadataSync()
             true
         } catch (e: Exception) {
             false

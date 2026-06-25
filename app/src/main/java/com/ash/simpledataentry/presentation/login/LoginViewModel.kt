@@ -223,18 +223,18 @@ class LoginViewModel @Inject constructor(
         viewModelScope.launch {
             autoSessionCheckJob?.cancel()
             try {
-                // Show splash screen immediately with NavigationProgress
                 val currentData = getCurrentData()
                 val loadingData = currentData.copy(showSplash = true)
-                val initialProgress = NavigationProgress.initial()
+                val initialProgress = NavigationProgress.initial().copy(
+                    phaseTitle = "Authenticating",
+                    phaseDetail = "Signing in..."
+                )
                 _uiState.value = UiState.Loading(LoadingOperation.Navigation(initialProgress))
 
-                // Check if offline login is possible first
                 val canLoginOffline = authRepository.canLoginOffline(context, username, serverUrl)
                 android.util.Log.d("LoginViewModel", "Can login offline: $canLoginOffline")
 
                 val loginResult = if (canLoginOffline) {
-                    // Try offline login first
                     android.util.Log.d("LoginViewModel", "Attempting offline login for $username")
                     val offlineProgress = NavigationProgress.initial().copy(
                         phaseTitle = "Offline Login",
@@ -249,27 +249,26 @@ class LoginViewModel @Inject constructor(
                         context = context
                     )
                 } else {
-                    // Fall back to online login with progress tracking
-                    android.util.Log.d("LoginViewModel", "Offline login not possible, attempting online login")
-                    authRepository.loginWithProgress(
+                    android.util.Log.d("LoginViewModel", "Offline login not possible, starting background bootstrap login")
+                    authRepository.loginAuthOnly(
                         username = username,
                         password = password,
                         serverUrl = serverUrl,
                         context = context
-                    ) { progress ->
-                        _uiState.value = UiState.Loading(LoadingOperation.Navigation(progress))
+                    ).also { authOk ->
+                        if (authOk) {
+                            backgroundSyncManager.triggerImmediateMetadataSync()
+                        }
                     }
                 }
 
                 if (loginResult) {
-                    // Cache the successful URL
                     urlCacheRepository.addOrUpdateUrl(serverUrl)
-
                     persistAndActivateAccountCredentials(serverUrl, username, password)
 
                     val successData = loadingData.copy(
                         isLoggedIn = true,
-                        showSplash = true,
+                        showSplash = false,
                         saveAccountOffered = false,
                         pendingCredentials = null
                     )

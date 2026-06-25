@@ -89,6 +89,8 @@ import com.ash.simpledataentry.presentation.datasets.components.DatasetIcon
 import com.ash.simpledataentry.presentation.datasets.components.ProgramType
 import com.ash.simpledataentry.presentation.core.AdaptiveLoadingOverlay
 import com.ash.simpledataentry.presentation.core.UiState
+import com.ash.simpledataentry.data.sync.MetadataBootstrapPhase
+import com.ash.simpledataentry.data.sync.MetadataBootstrapState
 import com.ash.simpledataentry.ui.theme.DatasetAccent
 import com.ash.simpledataentry.ui.theme.DatasetAccentLight
 import com.ash.simpledataentry.ui.theme.EventAccent
@@ -506,6 +508,7 @@ fun DatasetsScreen(
     val activeAccountLabel by viewModel.activeAccountLabel.collectAsState()
     val activeAccountSubtitle by viewModel.activeAccountSubtitle.collectAsState()
     val syncState by viewModel.syncController.appSyncState.collectAsState()
+    val metadataBootstrapState by viewModel.syncController.metadataBootstrapState.collectAsState()
     val backgroundSyncRunning by viewModel.backgroundSyncRunning.collectAsState()
     val isRefreshingAfterSync by viewModel.isRefreshingAfterSync.collectAsState()
     val hasActiveSession by viewModel.hasActiveSession.collectAsState()
@@ -640,7 +643,10 @@ fun DatasetsScreen(
                         activeAccountLabel = activeAccountLabel,
                         lastSyncLabel = lastSyncLabel,
                         syncStatusLabel = syncStatusLabel,
-                        syncState = syncState
+                        syncState = syncState,
+                        metadataBootstrapState = metadataBootstrapState,
+                        onRetryMetadataBootstrap = viewModel::retryMetadataBootstrap,
+                        onMetadataBlocked = viewModel::notifyMetadataBootstrapPending
                     )
                 }
 
@@ -648,7 +654,9 @@ fun DatasetsScreen(
                     ActivitiesContent(
                         recentPrograms = recentPrograms,
                         navController = navController,
-                        activeAccountLabel = activeAccountLabel
+                        activeAccountLabel = activeAccountLabel,
+                        metadataBootstrapState = metadataBootstrapState,
+                        onMetadataBlocked = viewModel::notifyMetadataBootstrapPending
                     )
                 }
 
@@ -717,12 +725,18 @@ private fun HomeContent(
     activeAccountLabel: String?,
     lastSyncLabel: String,
     syncStatusLabel: String,
-    syncState: com.ash.simpledataentry.data.sync.AppSyncState
+    syncState: com.ash.simpledataentry.data.sync.AppSyncState,
+    metadataBootstrapState: MetadataBootstrapState,
+    onRetryMetadataBootstrap: () -> Unit,
+    onMetadataBlocked: () -> Unit
 ) {
     val welcomeName = activeAccountLabel ?: "User"
     val programs = data.filteredPrograms
     val showProgramList = searchQuery.isNotBlank() || data.currentProgramType != DomainProgramType.ALL
     val showSyncChip = syncInProgress || backgroundSyncRunning
+    val listReady = metadataBootstrapState.isListReady
+    val metadataReady = metadataBootstrapState.isFormReady
+    val metadataBlockedMessage = metadataBootstrapState.message ?: "Metadata is still preparing."
 
     Box(modifier = Modifier.fillMaxSize()) {
         LazyColumn(
@@ -837,10 +851,18 @@ private fun HomeContent(
                         shape = RoundedCornerShape(18.dp)
                     )
 
-                    if (showSyncChip) {
+                    if (showSyncChip || !metadataReady) {
                         Surface(
-                            color = MaterialTheme.colorScheme.secondaryContainer,
-                            contentColor = MaterialTheme.colorScheme.onSecondaryContainer,
+                            color = if (metadataBootstrapState.phase == MetadataBootstrapPhase.Failed) {
+                                MaterialTheme.colorScheme.errorContainer
+                            } else {
+                                MaterialTheme.colorScheme.secondaryContainer
+                            },
+                            contentColor = if (metadataBootstrapState.phase == MetadataBootstrapPhase.Failed) {
+                                MaterialTheme.colorScheme.onErrorContainer
+                            } else {
+                                MaterialTheme.colorScheme.onSecondaryContainer
+                            },
                             shape = RoundedCornerShape(999.dp)
                         ) {
                             Row(
@@ -848,14 +870,39 @@ private fun HomeContent(
                                 verticalAlignment = Alignment.CenterVertically,
                                 horizontalArrangement = Arrangement.spacedBy(8.dp)
                             ) {
-                                CircularProgressIndicator(
-                                    modifier = Modifier.size(14.dp),
-                                    strokeWidth = 2.dp
-                                )
+                                if (!metadataReady && metadataBootstrapState.phase != MetadataBootstrapPhase.Failed) {
+                                    CircularProgressIndicator(
+                                        modifier = Modifier.size(14.dp),
+                                        strokeWidth = 2.dp
+                                    )
+                                }
                                 Text(
-                                    text = "Syncing metadata...",
+                                    text = when {
+                                        !metadataReady && metadataBootstrapState.phase == MetadataBootstrapPhase.Failed ->
+                                            "Metadata sync failed"
+                                        listReady && !metadataReady -> "Programs are ready. Forms are still preparing."
+                                        !metadataReady -> metadataBlockedMessage
+                                        else -> "Syncing metadata..."
+                                    },
                                     style = MaterialTheme.typography.labelMedium
                                 )
+                            }
+                        }
+                    }
+
+                    if (!metadataReady) {
+                        Text(
+                            text = if (listReady) {
+                                "Programs are available now. Forms will open once background preparation finishes."
+                            } else {
+                                "Forms stay read-only until minimum metadata is ready for this account."
+                            },
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                        if (metadataBootstrapState.canRetry) {
+                            TextButton(onClick = onRetryMetadataBootstrap) {
+                                Text("Retry metadata sync")
                             }
                         }
                     }
@@ -880,7 +927,22 @@ private fun HomeContent(
                                     horizontalAlignment = Alignment.CenterHorizontally,
                                     verticalArrangement = Arrangement.spacedBy(8.dp)
                                 ) {
-                                    if (isSyncing) {
+                                    if (!listReady && metadataBootstrapState.phase == MetadataBootstrapPhase.Failed) {
+                                        Text(
+                                            text = "Metadata sync failed",
+                                            style = MaterialTheme.typography.titleMedium,
+                                            color = MaterialTheme.colorScheme.onSurface
+                                        )
+                                        Text(
+                                            text = metadataBlockedMessage,
+                                            style = MaterialTheme.typography.bodySmall,
+                                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                            textAlign = TextAlign.Center
+                                        )
+                                        TextButton(onClick = onRetryMetadataBootstrap) {
+                                            Text("Retry metadata sync")
+                                        }
+                                    } else if (isSyncing || !listReady) {
                                         CircularProgressIndicator(
                                             modifier = Modifier.size(22.dp),
                                             strokeWidth = 2.dp
@@ -891,7 +953,7 @@ private fun HomeContent(
                                             color = MaterialTheme.colorScheme.onSurface
                                         )
                                         Text(
-                                            text = "Programs will appear automatically when sync completes.",
+                                            text = "Programs will appear automatically when list preparation completes.",
                                             style = MaterialTheme.typography.bodySmall,
                                             color = MaterialTheme.colorScheme.onSurfaceVariant,
                                             textAlign = TextAlign.Center
@@ -908,7 +970,7 @@ private fun HomeContent(
                                             color = MaterialTheme.colorScheme.onSurfaceVariant,
                                             textAlign = TextAlign.Center
                                         )
-                                        TextButton(onClick = onSyncClick) {
+                                        TextButton(onClick = onRetryMetadataBootstrap) {
                                             Text("Sync metadata")
                                         }
                                     }
@@ -930,13 +992,17 @@ private fun HomeContent(
                                 pressedElevation = 4.dp
                             ),
                         onClick = {
-                            onProgramSelected(program)
-                            val route = when (program.programType) {
-                                DomainProgramType.TRACKER -> "TrackerEnrollments/${program.id}/${program.name}"
-                                DomainProgramType.EVENT -> "EventInstances/${program.id}/${program.name}"
-                                else -> "DatasetInstances/${program.id}/${program.name}"
+                            if (listReady) {
+                                onProgramSelected(program)
+                                val route = when (program.programType) {
+                                    DomainProgramType.TRACKER -> "TrackerEnrollments/${program.id}/${program.name}"
+                                    DomainProgramType.EVENT -> "EventInstances/${program.id}/${program.name}"
+                                    else -> "DatasetInstances/${program.id}/${program.name}"
+                                }
+                                navController.navigate(route)
+                            } else {
+                                onMetadataBlocked()
                             }
-                            navController.navigate(route)
                         }
                         ) {
                             Row(
@@ -1071,9 +1137,12 @@ private fun HomeContent(
 private fun ActivitiesContent(
     recentPrograms: List<ProgramItem>,
     navController: NavController,
-    activeAccountLabel: String?
+    activeAccountLabel: String?,
+    metadataBootstrapState: MetadataBootstrapState,
+    onMetadataBlocked: () -> Unit
 ) {
     val welcomeName = activeAccountLabel ?: "User"
+    val metadataReady = metadataBootstrapState.isListReady
 
     LazyColumn(
         modifier = Modifier.fillMaxSize(),
@@ -1123,12 +1192,16 @@ private fun ActivitiesContent(
                 HomeRecentItem(
                     program = program,
                     onClick = {
-                        val route = when (program.programType) {
-                            DomainProgramType.TRACKER -> "TrackerEnrollments/${program.id}/${program.name}"
-                            DomainProgramType.EVENT -> "EventInstances/${program.id}/${program.name}"
-                            else -> "DatasetInstances/${program.id}/${program.name}"
+                        if (metadataReady) {
+                            val route = when (program.programType) {
+                                DomainProgramType.TRACKER -> "TrackerEnrollments/${program.id}/${program.name}"
+                                DomainProgramType.EVENT -> "EventInstances/${program.id}/${program.name}"
+                                else -> "DatasetInstances/${program.id}/${program.name}"
+                            }
+                            navController.navigate(route)
+                        } else {
+                            onMetadataBlocked()
                         }
-                        navController.navigate(route)
                     }
                 )
                 Spacer(modifier = Modifier.height(8.dp))
